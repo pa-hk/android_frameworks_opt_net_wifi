@@ -189,6 +189,7 @@ public class WifiServiceImpl extends IWifiManager.Stub {
     private WifiScanner mWifiScanner;
     private WifiLog mLog;
 
+    private boolean mIsControllerStarted = false;
     /**
      * Asynchronous channel to WifiStateMachine
      */
@@ -557,6 +558,7 @@ public class WifiServiceImpl extends IWifiManager.Stub {
             Log.wtf(TAG, "Failed to initialize WifiStateMachine");
         }
         mWifiController.start();
+        mIsControllerStarted = true;
 
         // If we are already disabled (could be due to airplane mode), avoid changing persist
         // state here
@@ -835,6 +837,10 @@ public class WifiServiceImpl extends IWifiManager.Stub {
             Binder.restoreCallingIdentity(ident);
         }
 
+        if (!mIsControllerStarted) {
+            Slog.e(TAG,"WifiController is not yet started, abort setWifiEnabled");
+            return false;
+        }
 
         if (mPermissionReviewRequired) {
             final int wiFiEnabledState = getWifiEnabledState();
