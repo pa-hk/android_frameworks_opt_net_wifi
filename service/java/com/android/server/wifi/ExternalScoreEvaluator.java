@@ -23,6 +23,7 @@ import android.net.NetworkScoreManager;
 import android.net.WifiKey;
 import android.net.wifi.ScanResult;
 import android.net.wifi.WifiConfiguration;
+import android.net.wifi.WifiNetworkScoreCache;
 import android.os.Process;
 import android.text.TextUtils;
 import android.util.LocalLog;
@@ -46,19 +47,18 @@ public class ExternalScoreEvaluator implements WifiNetworkSelector.NetworkEvalua
     private final NetworkScoreManager mScoreManager;
     private final WifiNetworkScoreCache mScoreCache;
 
-    ExternalScoreEvaluator(Context context, WifiConfigManager configManager, Clock clock,
-                        LocalLog localLog) {
+    ExternalScoreEvaluator(Context context, WifiConfigManager configManager,
+                           WifiNetworkScoreCache scoreCache, Clock clock, LocalLog localLog) {
         mWifiConfigManager = configManager;
         mClock = clock;
         mLocalLog = localLog;
+        mScoreCache = scoreCache;
         mScoreManager =
                 (NetworkScoreManager) context.getSystemService(Context.NETWORK_SCORE_SERVICE);
         if (mScoreManager != null) {
-            mScoreCache = new WifiNetworkScoreCache(context);
             mScoreManager.registerNetworkScoreCache(NetworkKey.TYPE_WIFI, mScoreCache);
         } else {
             localLog("Couldn't get NETWORK_SCORE_SERVICE.");
-            mScoreCache = null;
         }
     }
 

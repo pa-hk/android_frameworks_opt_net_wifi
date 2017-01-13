@@ -17,28 +17,32 @@
 package com.android.server.wifi;
 
 import android.content.Context;
+import android.net.NetworkScoreManager;
+import android.net.NetworkScorerAppManager;
 import android.net.wifi.IApInterface;
 import android.net.wifi.IWifiScanner;
 import android.net.wifi.IWificond;
 import android.net.wifi.WifiConfiguration;
+import android.net.wifi.WifiInfo;
+import android.net.wifi.WifiNetworkScoreCache;
 import android.net.wifi.WifiScanner;
 import android.os.HandlerThread;
 import android.os.IBinder;
 import android.os.INetworkManagementService;
 import android.os.ServiceManager;
 import android.os.SystemProperties;
-import android.os.UserHandle;
 import android.os.UserManager;
 import android.provider.Settings;
 import android.security.KeyStore;
 import android.telephony.TelephonyManager;
+import android.util.LocalLog;
 
 import com.android.internal.R;
 import com.android.server.am.BatteryStatsService;
 import com.android.server.net.DelayedDiskWrite;
 import com.android.server.net.IpConfigStore;
-import com.android.server.wifi.hotspot2.PasspointEventHandler;
 import com.android.server.wifi.hotspot2.PasspointManager;
+import com.android.server.wifi.hotspot2.PasspointObjectFactory;
 import com.android.server.wifi.util.WifiPermissionsUtil;
 import com.android.server.wifi.util.WifiPermissionsWrapper;
 
@@ -68,7 +72,6 @@ public class WifiInjector {
     private final WifiStateMachine mWifiStateMachine;
     private final WifiSettingsStore mSettingsStore;
     private final WifiCertManager mCertManager;
-    private final WifiNotificationController mNotificationController;
     private final WifiLockManager mLockManager;
     private final WifiController mWifiController;
     private final Clock mClock = new Clock();
@@ -87,11 +90,16 @@ public class WifiInjector {
     private final WifiConfigStoreLegacy mWifiConfigStoreLegacy;
     private final WifiConfigManager mWifiConfigManager;
     private final WifiNetworkSelector mWifiNetworkSelector;
+    private final SavedNetworkEvaluator mSavedNetworkEvaluator;
+    private final RecommendedNetworkEvaluator mRecommendedNetworkEvaluator;
+    private final WifiNetworkScoreCache mWifiNetworkScoreCache;
+    private final NetworkScoreManager mNetworkScoreManager;
     private WifiScanner mWifiScanner;
     private final WifiPermissionsWrapper mWifiPermissionsWrapper;
     private final WifiPermissionsUtil mWifiPermissionsUtil;
     private final PasspointManager mPasspointManager;
     private final SIMAccessor mSimAccessor;
+    private HandlerThread mWifiAwareHandlerThread;
 
     private final boolean mUseRealLogger;
 
@@ -134,8 +142,7 @@ public class WifiInjector {
         mWifiKeyStore = new WifiKeyStore(mKeyStore);
         mWifiConfigStore = new WifiConfigStore(
                 mContext, mWifiStateMachineHandlerThread.getLooper(), mClock,
-                WifiConfigStore.createSharedFile(),
-                WifiConfigStore.createUserFile(UserHandle.USER_SYSTEM));
+                WifiConfigStore.createSharedFile());
         // Legacy config store
         DelayedDiskWrite writer = new DelayedDiskWrite();
         mWifiNetworkHistory = new WifiNetworkHistory(mContext, mWifiNative.getLocalLog(), writer);
@@ -148,16 +155,24 @@ public class WifiInjector {
         mWifiConfigManager = new WifiConfigManager(mContext, mFrameworkFacade, mClock,
                 UserManager.get(mContext), TelephonyManager.from(mContext),
                 mWifiKeyStore, mWifiConfigStore, mWifiConfigStoreLegacy);
+        mNetworkScoreManager = (NetworkScoreManager)
+                mContext.getSystemService(Context.NETWORK_SCORE_SERVICE);
+        mWifiNetworkScoreCache = new WifiNetworkScoreCache(mContext);
         mWifiNetworkSelector = new WifiNetworkSelector(mContext, mWifiConfigManager, mClock);
-
+        LocalLog localLog = mWifiNetworkSelector.getLocalLog();
+        mSavedNetworkEvaluator = new SavedNetworkEvaluator(mContext,
+                mWifiConfigManager, mClock, localLog);
+        ExternalScoreEvaluator externalScoreEvaluator = new ExternalScoreEvaluator(
+                mContext, mWifiConfigManager, mWifiNetworkScoreCache, mClock, localLog);
+        mRecommendedNetworkEvaluator = new RecommendedNetworkEvaluator(context,
+                context.getContentResolver(), mWifiStateMachineHandlerThread.getLooper(),
+                mFrameworkFacade, mWifiNetworkScoreCache, mNetworkScoreManager, mWifiConfigManager,
+                localLog, externalScoreEvaluator);
         mWifiStateMachine = new WifiStateMachine(mContext, mFrameworkFacade,
                 mWifiStateMachineHandlerThread.getLooper(), UserManager.get(mContext),
                 this, mBackupManagerProxy, mCountryCode, mWifiNative);
         mSettingsStore = new WifiSettingsStore(mContext);
         mCertManager = new WifiCertManager(mContext);
-        mNotificationController = new WifiNotificationController(mContext,
-                mWifiServiceHandlerThread.getLooper(), mWifiStateMachine,
-                mFrameworkFacade, null, this);
         mLockManager = new WifiLockManager(mContext, BatteryStatsService.getService());
         mWifiController = new WifiController(mContext, mWifiStateMachine, mSettingsStore,
                 mLockManager, mWifiServiceHandlerThread.getLooper(), mFrameworkFacade);
@@ -166,9 +181,10 @@ public class WifiInjector {
                 BatteryStatsService.getService());
         mWifiPermissionsWrapper = new WifiPermissionsWrapper(mContext);
         mWifiPermissionsUtil = new WifiPermissionsUtil(mWifiPermissionsWrapper, mContext,
-                mSettingsStore, UserManager.get(mContext));
+                mSettingsStore, UserManager.get(mContext), new NetworkScorerAppManager(mContext));
         mSimAccessor = new SIMAccessor(mContext);
-        mPasspointManager = new PasspointManager(mContext, this, mSimAccessor);
+        mPasspointManager = new PasspointManager(mContext, mWifiNative, mWifiKeyStore, mClock,
+                mSimAccessor, new PasspointObjectFactory());
     }
 
     /**
@@ -227,10 +243,6 @@ public class WifiInjector {
 
     public WifiCertManager getWifiCertManager() {
         return mCertManager;
-    }
-
-    public WifiNotificationController getWifiNotificationController() {
-        return mNotificationController;
     }
 
     public WifiLockManager getWifiLockManager() {
@@ -329,14 +341,6 @@ public class WifiInjector {
     }
 
     /**
-     * Create a PasspointEventHandler instance with the given callbacks.
-     */
-    public PasspointEventHandler makePasspointEventHandler(
-            PasspointEventHandler.Callbacks callbacks) {
-        return new PasspointEventHandler(mWifiNative, callbacks);
-    }
-
-    /**
      * Obtain an instance of WifiScanner.
      * If it was not already created, then obtain an instance.  Note, this must be done lazily since
      * WifiScannerService is separate and created later.
@@ -358,11 +362,41 @@ public class WifiInjector {
         return mWifiNetworkSelector;
     }
 
+    /**
+     * Obtain a new instance of WifiConnectivityManager.
+     *
+     * Create and return a new WifiConnectivityManager.
+     * @param wifiInfo WifiInfo object for updating wifi state.
+     * @param hasConnectionRequests boolean indicating if WifiConnectivityManager to start
+     * immediately based on connection requests.
+     */
+    public WifiConnectivityManager makeWifiConnectivityManager(WifiInfo wifiInfo,
+                                                               boolean hasConnectionRequests) {
+        return new WifiConnectivityManager(mContext, mWifiStateMachine, getWifiScanner(),
+                mWifiConfigManager, wifiInfo, mWifiNetworkSelector, mWifiLastResortWatchdog,
+                mWifiMetrics, mWifiStateMachineHandlerThread.getLooper(), mClock,
+                hasConnectionRequests, mFrameworkFacade, mSavedNetworkEvaluator,
+                mRecommendedNetworkEvaluator);
+    }
+
     public WifiPermissionsUtil getWifiPermissionsUtil() {
         return mWifiPermissionsUtil;
     }
 
     public WifiPermissionsWrapper getWifiPermissionsWrapper() {
         return mWifiPermissionsWrapper;
+    }
+
+    /**
+     * Returns a singleton instance of a HandlerThread for injection. Uses lazy initialization.
+     *
+     * TODO: share worker thread with other Wi-Fi handlers (b/27924886)
+     */
+    public HandlerThread getmWifiAwareHandlerThread() {
+        if (mWifiAwareHandlerThread == null) { // lazy initialization
+            mWifiAwareHandlerThread = new HandlerThread("wifiAwareService");
+            mWifiAwareHandlerThread.start();
+        }
+        return mWifiAwareHandlerThread;
     }
 }

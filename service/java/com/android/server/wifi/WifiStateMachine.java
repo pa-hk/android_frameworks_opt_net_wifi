@@ -113,9 +113,9 @@ import com.android.server.wifi.hotspot2.Utils;
 import com.android.server.wifi.hotspot2.WnmData;
 import com.android.server.wifi.nano.WifiMetricsProto;
 import com.android.server.wifi.p2p.WifiP2pServiceImpl;
+import com.android.server.wifi.util.TelephonyUtil;
 import com.android.server.wifi.util.TelephonyUtil.SimAuthRequestData;
 import com.android.server.wifi.util.TelephonyUtil.SimAuthResponseData;
-import com.android.server.wifi.util.TelephonyUtil;
 
 import java.io.BufferedReader;
 import java.io.FileDescriptor;
@@ -878,6 +878,8 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
 
         mWifiConfigManager = mWifiInjector.getWifiConfigManager();
         mWifiSupplicantControl = mWifiInjector.getWifiSupplicantControl();
+        mWifiSupplicantControl.setSystemSupportsFastBssTransition(
+                mContext.getResources().getBoolean(R.bool.config_wifi_fast_bss_transition_enabled));
 
         mPasspointManager = mWifiInjector.getPasspointManager();
 
@@ -1021,17 +1023,9 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
         setLogRecSize(NUM_LOG_RECS_NORMAL);
         setLogOnlyTransitions(false);
 
-        // Clean up existing interfaces in wificond.
-        // This ensures that wificond continue to work if java framework restarts.
-        try {
-            mWificond = mWifiInjector.makeWificond();
-            if (mWificond != null) {
-                mWificond.tearDownInterfaces();
-            }
-        } catch (RemoteException e) {
-            // There is very little we can do here
-            Log.e(TAG, "Failed to tear down interfaces via wificond");
-        }
+        // wificond will be also restarted when zygote restarts
+        // no need to call tearDowninterfaces to clean up during init
+        mWificond = mWifiInjector.makeWificond();
 
         //start the state machine
         start();
@@ -1165,7 +1159,12 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
         }
     }
 
-    void enableVerboseLogging(int verbose) {
+    /**
+     * Method to update logging level in wifi service related classes.
+     *
+     * @param verbose int logging level to use
+     */
+    public void enableVerboseLogging(int verbose) {
         if (verbose > 0) {
             mVerboseLoggingEnabled = true;
             setLogRecSize(ActivityManager.isLowRamDeviceStatic()
@@ -2100,6 +2099,8 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
         pw.println("mUserWantsSuspendOpt " + mUserWantsSuspendOpt);
         pw.println("mSuspendOptNeedsDisabled " + mSuspendOptNeedsDisabled);
         pw.println("Supplicant status " + mWifiNative.status(true));
+        pw.println("mSystemSupportsFastBssTransition "
+                + mWifiSupplicantControl.getSystemSupportsFastBssTransition());
         if (mCountryCode.getCountryCodeSentToDriver() != null) {
             pw.println("CountryCode sent to driver " + mCountryCode.getCountryCodeSentToDriver());
         } else {
@@ -3864,7 +3865,13 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                     messageHandlingStatus = MESSAGE_HANDLING_STATUS_DISCARD;
                     break;
                 case CMD_USER_SWITCH:
-                    mWifiConfigManager.handleUserSwitch(message.arg1);
+                    Set<Integer> removedNetworkIds =
+                            mWifiConfigManager.handleUserSwitch(message.arg1);
+                    if (removedNetworkIds.contains(mTargetNetworkId) ||
+                            removedNetworkIds.contains(mLastNetworkId)) {
+                        // Disconnect and let autojoin reselect a new network
+                        sendMessage(CMD_DISCONNECT);
+                    }
                     break;
                 case CMD_USER_UNLOCK:
                     mWifiConfigManager.handleUserUnlock(message.arg1);
@@ -4054,7 +4061,7 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
             switch(message.what) {
                 case WifiMonitor.SUP_CONNECTION_EVENT:
                     if (mVerboseLoggingEnabled) log("Supplicant connection established");
-                    setWifiState(WIFI_STATE_ENABLED);
+
                     mSupplicantRestartCount = 0;
                     /* Reset the supplicant state to indicate the supplicant
                      * state is not known at this time */
@@ -4111,10 +4118,6 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                 logd("SupplicantStartedState enter");
             }
 
-            /* Wifi is available as long as we have a connection to supplicant */
-            mNetworkInfo.setIsAvailable(true);
-            if (mNetworkAgent != null) mNetworkAgent.sendNetworkInfo(mNetworkInfo);
-
             int defaultInterval = mContext.getResources().getInteger(
                     R.integer.config_wifi_supplicant_scan_interval);
 
@@ -4138,10 +4141,9 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                 mWifiScanner = mWifiInjector.getWifiScanner();
 
                 synchronized (mWifiReqCountLock) {
-                    mWifiConnectivityManager = new WifiConnectivityManager(mContext,
-                        WifiStateMachine.this, mWifiScanner, mWifiConfigManager, mWifiInfo,
-                        mWifiNetworkSelector, mWifiInjector,
-                        getHandler().getLooper(), hasConnectionRequests());
+                    mWifiConnectivityManager =
+                            mWifiInjector.makeWifiConnectivityManager(mWifiInfo,
+                                                                      hasConnectionRequests());
                     mWifiConnectivityManager.setUntrustedConnectionAllowed(mUntrustedReqCount > 0);
                     mWifiConnectivityManager.handleScreenStateChanged(mScreenOn);
                 }
@@ -4156,7 +4158,7 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
              * driver are changed to reduce interference with bluetooth
              */
             mWifiNative.setBluetoothCoexistenceScanMode(mBluetoothConnectionActive);
-            /* initialize network state */
+            // initialize network state
             setNetworkDetailedState(DetailedState.DISCONNECTED);
 
             // Disable legacy multicast filtering, which on some chipsets defaults to enabled.
@@ -4689,42 +4691,6 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
         }
     }
 
-    void noteWifiDisabledWhileAssociated() {
-        // We got disabled by user while we were associated, make note of it
-        int rssi = mWifiInfo.getRssi();
-        WifiConfiguration config = getCurrentWifiConfiguration();
-        if (getCurrentState() == mConnectedState
-                && rssi != WifiInfo.INVALID_RSSI
-                && config != null) {
-            boolean is24GHz = mWifiInfo.is24GHz();
-            boolean isBadRSSI = (is24GHz && rssi < mThresholdMinimumRssi24)
-                    || (!is24GHz && rssi < mThresholdMinimumRssi5);
-            boolean isLowRSSI =
-                    (is24GHz && rssi < mThresholdQualifiedRssi24)
-                            || (!is24GHz && mWifiInfo.getRssi() < mThresholdQualifiedRssi5);
-            boolean isHighRSSI = (is24GHz && rssi >= mThresholdSaturatedRssi24)
-                    || (!is24GHz && mWifiInfo.getRssi() >= mThresholdSaturatedRssi5);
-            if (isBadRSSI) {
-                // Take note that we got disabled while RSSI was Bad
-                config.numUserTriggeredWifiDisableLowRSSI++;
-            } else if (isLowRSSI) {
-                // Take note that we got disabled while RSSI was Low
-                config.numUserTriggeredWifiDisableBadRSSI++;
-            } else if (!isHighRSSI) {
-                // Take note that we got disabled while RSSI was Not high
-                config.numUserTriggeredWifiDisableNotHighRSSI++;
-            }
-            mWifiConfigManager.setNetworkRSSIStats(
-                    config.networkId,
-                    config.numUserTriggeredWifiDisableLowRSSI,
-                    config.numUserTriggeredWifiDisableBadRSSI,
-                    config.numUserTriggeredWifiDisableNotHighRSSI,
-                    config.numTicksAtLowRSSI,
-                    config.numTicksAtBadRSSI,
-                    config.numTicksAtNotHighRSSI);
-        }
-    }
-
     /**
      * Returns Wificonfiguration object correponding to the currently connected network, null if
      * not connected.
@@ -4766,6 +4732,16 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
 
         @Override
         public void enter() {
+            // Let the system know that wifi is available in client mode.
+            setWifiState(WIFI_STATE_ENABLED);
+
+            mNetworkInfo.setIsAvailable(true);
+            if (mNetworkAgent != null) mNetworkAgent.sendNetworkInfo(mNetworkInfo);
+
+            // initialize network state
+            setNetworkDetailedState(DetailedState.DISCONNECTED);
+
+
             // Inform WifiConnectivityManager that Wifi is enabled
             mWifiConnectivityManager.setWifiEnabled(true);
             // Inform metrics that Wifi is Enabled (but not yet connected)
@@ -4774,6 +4750,9 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
 
         @Override
         public void exit() {
+            // Let the system know that wifi is not available since we are exiting client mode.
+            mNetworkInfo.setIsAvailable(false);
+            if (mNetworkAgent != null) mNetworkAgent.sendNetworkInfo(mNetworkInfo);
             // Inform WifiConnectivityManager that Wifi is disabled
             mWifiConnectivityManager.setWifiEnabled(false);
             // Inform metrics that Wifi is being disabled (Toggled, airplane enabled, etc)
@@ -4789,6 +4768,8 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
             String bssid;
             String ssid;
             NetworkUpdateResult result;
+            Set<Integer> removedNetworkIds;
+            int reasonCode;
             logStateAndMessage(message, this);
 
             switch (message.what) {
@@ -4797,13 +4778,15 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                             WifiDiagnostics.REPORT_REASON_ASSOC_FAILURE);
                     didBlackListBSSID = false;
                     bssid = (String) message.obj;
+                    reasonCode = message.arg2;
                     if (bssid == null || TextUtils.isEmpty(bssid)) {
                         // If BSSID is null, use the target roam BSSID
                         bssid = mTargetRoamBSSID;
                     }
                     if (bssid != null) {
                         // If we have a BSSID, tell configStore to black list it
-                        didBlackListBSSID = mWifiConnectivityManager.trackBssid(bssid, false);
+                        didBlackListBSSID = mWifiConnectivityManager.trackBssid(bssid, false,
+                            reasonCode);
                     }
                     mWifiConfigManager.updateNetworkSelectionStatus(mTargetNetworkId,
                             WifiConfiguration.NetworkSelectionStatus
@@ -5094,10 +5077,22 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                     }
                     break;
                 case CMD_REMOVE_APP_CONFIGURATIONS:
-                    mWifiConfigManager.removeNetworksForApp((ApplicationInfo) message.obj);
+                    removedNetworkIds =
+                            mWifiConfigManager.removeNetworksForApp((ApplicationInfo) message.obj);
+                    if (removedNetworkIds.contains(mTargetNetworkId) ||
+                            removedNetworkIds.contains(mLastNetworkId)) {
+                        // Disconnect and let autojoin reselect a new network.
+                        sendMessage(CMD_DISCONNECT);
+                    }
                     break;
                 case CMD_REMOVE_USER_CONFIGURATIONS:
-                    mWifiConfigManager.removeNetworksForUser(message.arg1);
+                    removedNetworkIds =
+                            mWifiConfigManager.removeNetworksForUser((Integer) message.arg1);
+                    if (removedNetworkIds.contains(mTargetNetworkId) ||
+                            removedNetworkIds.contains(mLastNetworkId)) {
+                        // Disconnect and let autojoin reselect a new network.
+                        sendMessage(CMD_DISCONNECT);
+                    }
                     break;
                 case WifiManager.CONNECT_NETWORK:
                     /**
@@ -5238,6 +5233,7 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                     if (mVerboseLoggingEnabled) log("Network connection established");
                     mLastNetworkId = lookupFrameworkNetworkId(message.arg1);
                     mLastBssid = (String) message.obj;
+                    reasonCode = message.arg2;
                     // TODO: This check should not be needed after WifiStateMachinePrime refactor.
                     // Currently, the last connected network configuration is left in
                     // wpa_supplicant, this may result in wpa_supplicant initiating connection
@@ -5247,7 +5243,7 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                     if (getCurrentWifiConfiguration() != null) {
                         mWifiInfo.setBSSID(mLastBssid);
                         mWifiInfo.setNetworkId(mLastNetworkId);
-                        mWifiConnectivityManager.trackBssid(mLastBssid, true);
+                        mWifiConnectivityManager.trackBssid(mLastBssid, true, reasonCode);
                         sendNetworkStateChangeBroadcast(mLastBssid);
                         transitionTo(mObtainingIpState);
                     } else {
@@ -5616,10 +5612,6 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                     if (message.arg1 != CONNECT_MODE) {
                         sendMessage(CMD_DISCONNECT);
                         deferMessage(message);
-                        if (message.arg1 == SCAN_ONLY_WITH_WIFI_OFF_MODE ||
-                                message.arg1 == DISABLED_MODE) {
-                            noteWifiDisabledWhileAssociated();
-                        }
                     }
                     break;
                     /* Ignore connection to same network */
@@ -5969,7 +5961,8 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                         mLastBssid = (String) message.obj;
                         mWifiInfo.setBSSID(mLastBssid);
                         mWifiInfo.setNetworkId(mLastNetworkId);
-                        mWifiConnectivityManager.trackBssid(mLastBssid, true);
+                        int reasonCode = message.arg2;
+                        mWifiConnectivityManager.trackBssid(mLastBssid, true, reasonCode);
                         sendNetworkStateChangeBroadcast(mLastBssid);
 
                         // Successful framework roam! (probably)

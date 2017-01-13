@@ -19,7 +19,6 @@
 #include <ScopedUtfChars.h>
 #include <ScopedBytes.h>
 #include <utils/misc.h>
-#include <android_runtime/AndroidRuntime.h>
 #include <utils/Log.h>
 #include <utils/String16.h>
 #include <ctype.h>
@@ -407,7 +406,7 @@ wifi_error wifi_nan_data_request_initiator_mock(
 
   ALOGD("wifi_nan_data_request_initiator_mock");
   HalMockJsonWriter jsonW;
-  jsonW.put_int("service_instance_id", msg->service_instance_id);
+  jsonW.put_int("requestor_instance_id", msg->requestor_instance_id);
   jsonW.put_int("channel_request_type", (int)msg->channel_request_type);
   jsonW.put_int("channel", (int)msg->channel);
   jsonW.put_byte_array("peer_disc_mac_addr", msg->peer_disc_mac_addr, 6);

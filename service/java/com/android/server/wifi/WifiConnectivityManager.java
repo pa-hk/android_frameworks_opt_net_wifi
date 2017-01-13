@@ -35,6 +35,8 @@ import com.android.internal.R;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.server.wifi.util.ScanResultUtil;
 
+import java.io.FileDescriptor;
+import java.io.PrintWriter;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.LinkedList;
@@ -116,7 +118,7 @@ public class WifiConnectivityManager {
 
     // Saved network evaluator priority
     private static final int SAVED_NETWORK_EVALUATOR_PRIORITY = 1;
-    private static final int EXTERNAL_SCORE_EVALUATOR_PRIORITY = 2;
+    private static final int RECOMMENDED_NETWORK_EVALUATOR_PRIORITY = 2;
 
     private final WifiStateMachine mStateMachine;
     private final WifiScanner mScanner;
@@ -464,20 +466,23 @@ public class WifiConnectivityManager {
      * WifiConnectivityManager constructor
      */
     WifiConnectivityManager(Context context, WifiStateMachine stateMachine,
-                WifiScanner scanner, WifiConfigManager configManager, WifiInfo wifiInfo,
-                WifiNetworkSelector networkSelector, WifiInjector wifiInjector, Looper looper,
-                boolean enable) {
+            WifiScanner scanner, WifiConfigManager configManager, WifiInfo wifiInfo,
+            WifiNetworkSelector networkSelector,
+            WifiLastResortWatchdog wifiLastResortWatchdog, WifiMetrics wifiMetrics,
+            Looper looper, Clock clock, boolean enable, FrameworkFacade frameworkFacade,
+            SavedNetworkEvaluator savedNetworkEvaluator,
+            RecommendedNetworkEvaluator recommendedNetworkEvaluator) {
         mStateMachine = stateMachine;
         mScanner = scanner;
         mConfigManager = configManager;
         mWifiInfo = wifiInfo;
         mNetworkSelector = networkSelector;
         mLocalLog = networkSelector.getLocalLog();
-        mWifiLastResortWatchdog = wifiInjector.getWifiLastResortWatchdog();
-        mWifiMetrics = wifiInjector.getWifiMetrics();
+        mWifiLastResortWatchdog = wifiLastResortWatchdog;
+        mWifiMetrics = wifiMetrics;
         mAlarmManager = (AlarmManager) context.getSystemService(Context.ALARM_SERVICE);
         mEventHandler = new Handler(looper);
-        mClock = wifiInjector.getClock();
+        mClock = clock;
         mConnectionAttemptTimeStamps = new LinkedList<>();
 
         mMin5GHzRssi = context.getResources().getInteger(
@@ -511,15 +516,10 @@ public class WifiConnectivityManager {
                     + " initialScoreMax " + mInitialScoreMax);
 
         // Register the network evaluators
-        SavedNetworkEvaluator savedNetworkEvaluator = new SavedNetworkEvaluator(context,
-                mConfigManager, mClock, mLocalLog);
         mNetworkSelector.registerNetworkEvaluator(savedNetworkEvaluator,
-                    SAVED_NETWORK_EVALUATOR_PRIORITY);
-
-        ExternalScoreEvaluator externalScoreEvaluator = new ExternalScoreEvaluator(context,
-                mConfigManager, mClock, mLocalLog);
-        mNetworkSelector.registerNetworkEvaluator(externalScoreEvaluator,
-                    EXTERNAL_SCORE_EVALUATOR_PRIORITY);
+                SAVED_NETWORK_EVALUATOR_PRIORITY);
+        mNetworkSelector.registerNetworkEvaluator(recommendedNetworkEvaluator,
+                RECOMMENDED_NETWORK_EVALUATOR_PRIORITY);
 
         // Register for all single scan results
         mScanner.registerScanListener(mAllSingleScanListener);
@@ -980,11 +980,12 @@ public class WifiConnectivityManager {
     /**
      * Track whether a BSSID should be enabled or disabled for WifiNetworkSelector
      */
-    public boolean trackBssid(String bssid, boolean enable) {
-        localLog("trackBssid: " + (enable ? "enable " : "disable ") + bssid);
+    public boolean trackBssid(String bssid, boolean enable, int reasonCode) {
+        localLog("trackBssid: " + (enable ? "enable " : "disable ") + bssid + " reason code "
+                + reasonCode);
 
         boolean ret = mNetworkSelector
-                            .enableBssidForNetworkSelection(bssid, enable);
+                            .enableBssidForNetworkSelection(bssid, enable, reasonCode);
 
         if (ret && !enable) {
             // Disabling a BSSID can happen when the AP candidate to connect to has
@@ -1040,5 +1041,15 @@ public class WifiConnectivityManager {
     @VisibleForTesting
     long getLastPeriodicSingleScanTimeStamp() {
         return mLastPeriodicSingleScanTimeStamp;
+    }
+
+    /**
+     * Dump the local logs.
+     *
+     * Note: this call temporarily calls in to NetworkSelector to dump the LocalLog.  This should be
+     * refactored to dump from WifiConnectivityManager instead.
+     */
+    public void dump(FileDescriptor fd, PrintWriter pw, String[] args) {
+        mNetworkSelector.dump(fd, pw, args);
     }
 }

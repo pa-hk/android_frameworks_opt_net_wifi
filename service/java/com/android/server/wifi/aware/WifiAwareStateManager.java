@@ -19,12 +19,12 @@ package com.android.server.wifi.aware;
 import android.content.Context;
 import android.content.Intent;
 import android.net.wifi.RttManager;
+import android.net.wifi.aware.Characteristics;
 import android.net.wifi.aware.ConfigRequest;
 import android.net.wifi.aware.IWifiAwareDiscoverySessionCallback;
 import android.net.wifi.aware.IWifiAwareEventCallback;
 import android.net.wifi.aware.PublishConfig;
 import android.net.wifi.aware.SubscribeConfig;
-import android.net.wifi.aware.WifiAwareCharacteristics;
 import android.net.wifi.aware.WifiAwareManager;
 import android.os.Bundle;
 import android.os.Looper;
@@ -69,8 +69,6 @@ public class WifiAwareStateManager {
     @VisibleForTesting
     public static final String HAL_DATA_PATH_CONFIRM_TIMEOUT_TAG =
             TAG + " HAL Data Path Confirm Timeout";
-
-    private static WifiAwareStateManager sAwareStateManagerSingleton;
 
     /*
      * State machine message types. There are sub-types for the messages (except for TIMEOUTs).
@@ -170,6 +168,8 @@ public class WifiAwareStateManager {
     private static final String MESSAGE_BUNDLE_KEY_MESSAGE_ARRIVAL_SEQ = "message_arrival_seq";
     private static final String MESSAGE_BUNDLE_KEY_NOTIFY_IDENTITY_CHANGE = "notify_identity_chg";
 
+    private WifiAwareNative mWifiAwareNative;
+
     /*
      * Asynchronous access with no lock
      */
@@ -181,7 +181,7 @@ public class WifiAwareStateManager {
      */
     private Context mContext;
     private volatile WifiAwareNative.Capabilities mCapabilities;
-    private volatile WifiAwareCharacteristics mCharacteristics = null;
+    private volatile Characteristics mCharacteristics = null;
     private WifiAwareStateMachine mSm;
     private WifiAwareRttStateManager mRtt;
     private WifiAwareDataPathStateManager mDataPathMgr;
@@ -192,22 +192,12 @@ public class WifiAwareStateManager {
     private static final byte[] ALL_ZERO_MAC = new byte[] {0, 0, 0, 0, 0, 0};
     private byte[] mCurrentDiscoveryInterfaceMac = ALL_ZERO_MAC;
 
-    private WifiAwareStateManager() {
-        // EMPTY: singleton pattern
+    public WifiAwareStateManager() {
+        // empty
     }
 
-    /**
-     * Access the singleton Aware state manager. Use a singleton since need to be
-     * accessed (for now) from several other child classes.
-     *
-     * @return The state manager singleton.
-     */
-    public static WifiAwareStateManager getInstance() {
-        if (sAwareStateManagerSingleton == null) {
-            sAwareStateManagerSingleton = new WifiAwareStateManager();
-        }
-
-        return sAwareStateManagerSingleton;
+    public void setNative(WifiAwareNative awareNative) {
+        mWifiAwareNative = awareNative;
     }
 
     /**
@@ -253,7 +243,7 @@ public class WifiAwareStateManager {
     /**
      * Get the public characteristics derived from the capabilities. Use lazy initialization.
      */
-    public WifiAwareCharacteristics getCharacteristics() {
+    public Characteristics getCharacteristics() {
         if (mCharacteristics == null && mCapabilities != null) {
             mCharacteristics = mCapabilities.toPublicCharacteristics();
         }
@@ -1340,8 +1330,7 @@ public class WifiAwareStateManager {
                 }
                 case COMMAND_TYPE_GET_CAPABILITIES:
                     if (mCapabilities == null) {
-                        waitForResponse = WifiAwareNative.getInstance().getCapabilities(
-                                mCurrentTransactionId);
+                        waitForResponse = mWifiAwareNative.getCapabilities(mCurrentTransactionId);
                     } else {
                         if (VDBG) {
                             Log.v(TAG, "COMMAND_TYPE_GET_CAPABILITIES: already have capabilities - "
@@ -1359,11 +1348,11 @@ public class WifiAwareStateManager {
                     waitForResponse = false;
                     break;
                 case COMMAND_TYPE_CREATE_DATA_PATH_INTERFACE:
-                    waitForResponse = WifiAwareNative.getInstance().createAwareNetworkInterface(
+                    waitForResponse = mWifiAwareNative.createAwareNetworkInterface(
                             mCurrentTransactionId, (String) msg.obj);
                     break;
                 case COMMAND_TYPE_DELETE_DATA_PATH_INTERFACE:
-                    waitForResponse = WifiAwareNative.getInstance().deleteAwareNetworkInterface(
+                    waitForResponse = mWifiAwareNative.deleteAwareNetworkInterface(
                             mCurrentTransactionId, (String) msg.obj);
                     break;
                 case COMMAND_TYPE_INITIATE_DATA_PATH_SETUP: {
@@ -1800,7 +1789,7 @@ public class WifiAwareStateManager {
             return false;
         }
 
-        return WifiAwareNative.getInstance().enableAndConfigure(transactionId, merged,
+        return mWifiAwareNative.enableAndConfigure(transactionId, merged,
                 mCurrentAwareConfiguration == null);
     }
 
@@ -1820,7 +1809,7 @@ public class WifiAwareStateManager {
 
         if (mClients.size() == 0) {
             mCurrentAwareConfiguration = null;
-            WifiAwareNative.getInstance().disable((short) 0);
+            mWifiAwareNative.disable((short) 0);
             return false;
         }
 
@@ -1829,7 +1818,7 @@ public class WifiAwareStateManager {
             return false;
         }
 
-        return WifiAwareNative.getInstance().enableAndConfigure(transactionId, merged, false);
+        return mWifiAwareNative.enableAndConfigure(transactionId, merged, false);
     }
 
     private void terminateSessionLocal(int clientId, int sessionId) {
@@ -1860,7 +1849,7 @@ public class WifiAwareStateManager {
             return false;
         }
 
-        return WifiAwareNative.getInstance().publish(transactionId, 0, publishConfig);
+        return mWifiAwareNative.publish(transactionId, 0, publishConfig);
     }
 
     private boolean updatePublishLocal(short transactionId, int clientId, int sessionId,
@@ -1899,7 +1888,7 @@ public class WifiAwareStateManager {
             return false;
         }
 
-        return WifiAwareNative.getInstance().subscribe(transactionId, 0, subscribeConfig);
+        return mWifiAwareNative.subscribe(transactionId, 0, subscribeConfig);
     }
 
     private boolean updateSubscribeLocal(short transactionId, int clientId, int sessionId,
@@ -1959,7 +1948,7 @@ public class WifiAwareStateManager {
             return;
         }
 
-        WifiAwareNative.getInstance().deInitAware(); // force a re-init of Aware HAL
+        mWifiAwareNative.deInitAware(); // force a re-init of Aware HAL
 
         mUsageEnabled = true;
         queryCapabilities();
@@ -1978,8 +1967,8 @@ public class WifiAwareStateManager {
         deleteAllDataPathInterfaces();
 
         mUsageEnabled = false;
-        WifiAwareNative.getInstance().disable((short) 0);
-        WifiAwareNative.getInstance().deInitAware();
+        mWifiAwareNative.disable((short) 0);
+        mWifiAwareNative.deInitAware();
 
         sendAwareStateChangedBroadcast(false);
     }
@@ -2034,7 +2023,7 @@ public class WifiAwareStateManager {
                             + ", interfaceName=" + interfaceName + ", token=" + token);
         }
 
-        return WifiAwareNative.getInstance().initiateDataPath(transactionId, peerId,
+        return mWifiAwareNative.initiateDataPath(transactionId, peerId,
                 channelRequestType, channel, peer, interfaceName, token);
     }
 
@@ -2049,7 +2038,7 @@ public class WifiAwareStateManager {
 
         byte[] tokenBytes = token.getBytes();
 
-        return WifiAwareNative.getInstance().respondToDataPathRequest(transactionId, accept, ndpId,
+        return mWifiAwareNative.respondToDataPathRequest(transactionId, accept, ndpId,
                 interfaceName, tokenBytes);
     }
 
@@ -2059,7 +2048,7 @@ public class WifiAwareStateManager {
                     "endDataPathLocal: transactionId=" + transactionId + ", ndpId=" + ndpId);
         }
 
-        return WifiAwareNative.getInstance().endDataPath(transactionId, ndpId);
+        return mWifiAwareNative.endDataPath(transactionId, ndpId);
     }
 
     /*
@@ -2161,8 +2150,8 @@ public class WifiAwareStateManager {
                 return;
             }
 
-            WifiAwareDiscoverySessionState session = new WifiAwareDiscoverySessionState(sessionId,
-                    pubSubId, callback, isPublish);
+            WifiAwareDiscoverySessionState session = new WifiAwareDiscoverySessionState(
+                    mWifiAwareNative, sessionId, pubSubId, callback, isPublish);
             client.addSession(session);
         } else if (completedCommand.arg1 == COMMAND_TYPE_UPDATE_PUBLISH
                 || completedCommand.arg1 == COMMAND_TYPE_UPDATE_SUBSCRIBE) {

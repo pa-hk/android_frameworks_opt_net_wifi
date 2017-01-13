@@ -19,14 +19,14 @@ package com.android.server.wifi.aware;
 import android.content.Context;
 import android.content.pm.PackageManager;
 import android.net.wifi.RttManager;
+import android.net.wifi.aware.Characteristics;
 import android.net.wifi.aware.ConfigRequest;
+import android.net.wifi.aware.DiscoverySession;
 import android.net.wifi.aware.IWifiAwareDiscoverySessionCallback;
 import android.net.wifi.aware.IWifiAwareEventCallback;
 import android.net.wifi.aware.IWifiAwareManager;
 import android.net.wifi.aware.PublishConfig;
 import android.net.wifi.aware.SubscribeConfig;
-import android.net.wifi.aware.WifiAwareCharacteristics;
-import android.net.wifi.aware.WifiAwareDiscoveryBaseSession;
 import android.os.Binder;
 import android.os.HandlerThread;
 import android.os.IBinder;
@@ -62,7 +62,6 @@ public class WifiAwareServiceImpl extends IWifiAwareManager.Stub {
 
     public WifiAwareServiceImpl(Context context) {
         mContext = context.getApplicationContext();
-        mStateManager = WifiAwareStateManager.getInstance();
     }
 
     /**
@@ -77,14 +76,11 @@ public class WifiAwareServiceImpl extends IWifiAwareManager.Stub {
      * Start the service: allocate a new thread (for now), start the handlers of
      * the components of the service.
      */
-    public void start() {
+    public void start(HandlerThread handlerThread, WifiAwareStateManager awareStateManager) {
         Log.i(TAG, "Starting Wi-Fi Aware service");
 
-        // TODO: share worker thread with other Wi-Fi handlers (b/27924886)
-        HandlerThread wifiAwareThread = new HandlerThread("wifiAwareService");
-        wifiAwareThread.start();
-
-        mStateManager.start(mContext, wifiAwareThread.getLooper());
+        mStateManager = awareStateManager;
+        mStateManager.start(mContext, handlerThread.getLooper());
     }
 
     /**
@@ -130,7 +126,7 @@ public class WifiAwareServiceImpl extends IWifiAwareManager.Stub {
     }
 
     @Override
-    public WifiAwareCharacteristics getCharacteristics() {
+    public Characteristics getCharacteristics() {
         enforceAccessPermission();
 
         return mStateManager.getCapabilities() == null ? null
@@ -351,9 +347,9 @@ public class WifiAwareServiceImpl extends IWifiAwareManager.Stub {
             throw new IllegalArgumentException(
                     "Message length longer than supported by device characteristics");
         }
-        if (retryCount < 0 || retryCount > WifiAwareDiscoveryBaseSession.getMaxSendRetryCount()) {
+        if (retryCount < 0 || retryCount > DiscoverySession.getMaxSendRetryCount()) {
             throw new IllegalArgumentException("Invalid 'retryCount' must be non-negative "
-                    + "and <= WifiAwareDiscoveryBaseSession.MAX_SEND_RETRY_COUNT");
+                    + "and <= DiscoverySession.MAX_SEND_RETRY_COUNT");
         }
 
         int uid = getMockableCallingUid();

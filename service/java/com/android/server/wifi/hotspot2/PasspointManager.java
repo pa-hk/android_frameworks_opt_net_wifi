@@ -31,31 +31,52 @@ import android.content.Context;
 import android.content.Intent;
 import android.net.wifi.hotspot2.PasspointConfiguration;
 import android.os.UserHandle;
-import android.text.TextUtils;
 import android.util.Log;
+import android.util.Pair;
 
+import com.android.server.wifi.Clock;
 import com.android.server.wifi.IMSIParameter;
 import com.android.server.wifi.SIMAccessor;
-import com.android.server.wifi.WifiInjector;
-import com.android.server.wifi.anqp.ANQPElement;
-import com.android.server.wifi.anqp.Constants;
+import com.android.server.wifi.ScanDetail;
+import com.android.server.wifi.WifiKeyStore;
+import com.android.server.wifi.WifiNative;
+import com.android.server.wifi.hotspot2.anqp.ANQPElement;
+import com.android.server.wifi.hotspot2.anqp.Constants;
 
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
 /**
- * Responsible for managing passpoint networks.
+ * This class provides the APIs to manage Passpoint provider configurations.
+ * It deals with the following:
+ * - Maintaining a list of configured Passpoint providers for provider matching.
+ * - Persisting the providers configurations to store when required.
+ * - matching Passpoint providers based on the scan results
+ * - Supporting WifiManager Public API calls:
+ *   > addOrUpdatePasspointConfiguration()
+ *   > removePasspointConfiguration()
+ *   > getPasspointConfigurations()
+ *
+ * The provider matching requires obtaining additional information from the AP (ANQP elements).
+ * The ANQP elements will be cached using {@link AnqpCache} to avoid unnecessary requests.
+ *
+ * NOTE: These API's are not thread safe and should only be used from WifiStateMachine thread.
  */
 public class PasspointManager {
     private static final String TAG = "PasspointManager";
 
     private final PasspointEventHandler mHandler;
     private final SIMAccessor mSimAccessor;
+    private final WifiKeyStore mKeyStore;
+    private final PasspointObjectFactory mObjectFactory;
     private final Map<String, PasspointProvider> mProviders;
+    private final AnqpCache mAnqpCache;
+    private final ANQPRequestManager mAnqpRequestManager;
+
+    // Counter used for assigning unique identifier to a provider.
+    private long mProviderID;
 
     private class CallbackHandler implements PasspointEventHandler.Callbacks {
         private final Context mContext;
@@ -66,7 +87,24 @@ public class PasspointManager {
         @Override
         public void onANQPResponse(long bssid,
                 Map<Constants.ANQPElementType, ANQPElement> anqpElements) {
-            // TO BE IMPLEMENTED.
+            // Notify request manager for the completion of a request.
+            ScanDetail scanDetail =
+                    mAnqpRequestManager.onRequestCompleted(bssid, anqpElements != null);
+            if (anqpElements == null || scanDetail == null) {
+                // Query failed or the request wasn't originated from us (not tracked by the
+                // request manager). Nothing to be done.
+                return;
+            }
+
+            // Add new entry to the cache.
+            NetworkDetail networkDetail = scanDetail.getNetworkDetail();
+            ANQPNetworkKey anqpKey = ANQPNetworkKey.buildKey(networkDetail.getSSID(),
+                    networkDetail.getBSSID(), networkDetail.getHESSID(),
+                    networkDetail.getAnqpDomainID());
+            mAnqpCache.addEntry(anqpKey, anqpElements);
+
+            // Update ANQP elements in the ScanDetail.
+            scanDetail.propagateANQPInfo(anqpElements);
         }
 
         @Override
@@ -104,24 +142,31 @@ public class PasspointManager {
         }
     }
 
-    public PasspointManager(Context context, WifiInjector wifiInjector, SIMAccessor simAccessor) {
-        mHandler = wifiInjector.makePasspointEventHandler(new CallbackHandler(context));
+    public PasspointManager(Context context, WifiNative wifiNative, WifiKeyStore keyStore,
+            Clock clock, SIMAccessor simAccessor, PasspointObjectFactory objectFactory) {
+        mHandler = objectFactory.makePasspointEventHandler(wifiNative,
+                new CallbackHandler(context));
+        mKeyStore = keyStore;
         mSimAccessor = simAccessor;
+        mObjectFactory = objectFactory;
         mProviders = new HashMap<>();
+        mAnqpCache = objectFactory.makeAnqpCache(clock);
+        mAnqpRequestManager = objectFactory.makeANQPRequestManager(mHandler, clock);
+        mProviderID = 0;
         // TODO(zqiu): load providers from the persistent storage.
     }
 
     /**
-     * Add or install a Passpoint provider with the given configuration.
+     * Add or update a Passpoint provider with the given configuration.
      *
      * Each provider is uniquely identified by its FQDN (Fully Qualified Domain Name).
-     * In the case when there is an existing configuration with the same base
-     * domain, a provider with the new configuration will replace the existing provider.
+     * In the case when there is an existing configuration with the same FQDN
+     * a provider with the new configuration will replace the existing provider.
      *
      * @param config Configuration of the Passpoint provider to be added
      * @return true if provider is added, false otherwise
      */
-    public boolean addProvider(PasspointConfiguration config) {
+    public boolean addOrUpdateProvider(PasspointConfiguration config) {
         if (config == null) {
             Log.e(TAG, "Configuration not provided");
             return false;
@@ -133,30 +178,29 @@ public class PasspointManager {
 
         // Verify IMSI against the IMSI of the installed SIM cards for SIM credential.
         if (config.credential.simCredential != null) {
-            try {
-                if (mSimAccessor.getMatchingImsis(
-                        new IMSIParameter(config.credential.simCredential.imsi)) == null) {
-                    Log.e(TAG, "IMSI does not match any SIM card");
-                    return false;
-                }
-            } catch (IOException e) {
+            if (mSimAccessor.getMatchingImsis(
+                    IMSIParameter.build(config.credential.simCredential.imsi)) == null) {
+                Log.e(TAG, "IMSI does not match any SIM card");
                 return false;
             }
         }
 
-        // TODO(b/32619189): install new key and certificates to the keystore.
+        // Create a provider and install the necessary certificates and keys.
+        PasspointProvider newProvider = mObjectFactory.makePasspointProvider(
+                config, mKeyStore, mSimAccessor, mProviderID++);
 
-        // Detect existing configuration in the same base domain.
-        PasspointProvider existingProvider = findProviderInSameBaseDomain(config.homeSp.fqdn);
-        if (existingProvider != null) {
-            Log.d(TAG, "Replacing configuration for " + existingProvider.getConfig().homeSp.fqdn
-                    + " with " + config.homeSp.fqdn);
-            // TODO(b/32619189): Remove existing key and certificates from the keystore.
-
-            mProviders.remove(existingProvider.getConfig().homeSp.fqdn);
+        if (!newProvider.installCertsAndKeys()) {
+            Log.e(TAG, "Failed to install certificates and keys to keystore");
+            return false;
         }
 
-        mProviders.put(config.homeSp.fqdn, new PasspointProvider(config));
+        // Remove existing provider with the same FQDN.
+        if (mProviders.containsKey(config.homeSp.fqdn)) {
+            Log.d(TAG, "Replacing configuration for " + config.homeSp.fqdn);
+            removeProvider(config.homeSp.fqdn);
+        }
+
+        mProviders.put(config.homeSp.fqdn, newProvider);
 
         // TODO(b/31065385): Persist updated providers configuration to the persistent storage.
 
@@ -175,8 +219,7 @@ public class PasspointManager {
             return false;
         }
 
-        // TODO(b/32619189): Remove key and certificates from the keystore.
-
+        mProviders.get(fqdn).uninstallCertsAndKeys();
         mProviders.remove(fqdn);
         return true;
     }
@@ -184,18 +227,64 @@ public class PasspointManager {
     /**
      * Return the installed Passpoint provider configurations.
      *
-     * @return A list of {@link PasspointConfiguration} or null if none is installed
+     * An empty list will be returned when no provider is installed.
+     *
+     * @return A list of {@link PasspointConfiguration}
      */
     public List<PasspointConfiguration> getProviderConfigs() {
-        if (mProviders.size() == 0) {
-            return null;
-        }
-
         List<PasspointConfiguration> configs = new ArrayList<>();
         for (Map.Entry<String, PasspointProvider> entry : mProviders.entrySet()) {
             configs.add(entry.getValue().getConfig());
         }
         return configs;
+    }
+
+    /**
+     * Find the providers that can provide service through the given AP, which means the
+     * providers contained credential to authenticate with the given AP.
+     *
+     * An empty list will returned in the case when no match is found.
+     *
+     * @param scanDetail The detail information of the AP
+     * @return List of {@link PasspointProvider}
+     */
+    public List<Pair<PasspointProvider, PasspointMatch>> matchProvider(ScanDetail scanDetail) {
+        // Nothing to be done if no Passpoint provider is installed.
+        if (mProviders.isEmpty()) {
+            return new ArrayList<Pair<PasspointProvider, PasspointMatch>>();
+        }
+
+        // Lookup ANQP data in the cache.
+        NetworkDetail networkDetail = scanDetail.getNetworkDetail();
+        ANQPNetworkKey anqpKey = ANQPNetworkKey.buildKey(networkDetail.getSSID(),
+                networkDetail.getBSSID(), networkDetail.getHESSID(),
+                networkDetail.getAnqpDomainID());
+        ANQPData anqpEntry = mAnqpCache.getEntry(anqpKey);
+
+        if (anqpEntry == null) {
+            mAnqpRequestManager.requestANQPElements(networkDetail.getBSSID(), scanDetail,
+                    networkDetail.getAnqpOICount() > 0,
+                    networkDetail.getHSRelease() == NetworkDetail.HSRelease.R2);
+            return new ArrayList<Pair<PasspointProvider, PasspointMatch>>();
+        }
+
+        List<Pair<PasspointProvider, PasspointMatch>> results = new ArrayList<>();
+        for (Map.Entry<String, PasspointProvider> entry : mProviders.entrySet()) {
+            PasspointProvider provider = entry.getValue();
+            PasspointMatch matchStatus = provider.match(anqpEntry.getElements());
+            if (matchStatus == PasspointMatch.HomeProvider
+                    || matchStatus == PasspointMatch.RoamingProvider) {
+                results.add(new Pair<PasspointProvider, PasspointMatch>(provider, matchStatus));
+            }
+        }
+        return results;
+    }
+
+    /**
+     * Sweep the ANQP cache to remove expired entries.
+     */
+    public void sweepCache() {
+        mAnqpCache.sweep();
     }
 
     /**
@@ -231,46 +320,5 @@ public class PasspointManager {
      */
     public boolean queryPasspointIcon(long bssid, String fileName) {
         return mHandler.requestIcon(bssid, fileName);
-    }
-
-    /**
-     * Find a provider that have FQDN in the same base domain as the given domain.
-     *
-     * @param domain The domain to be compared
-     * @return {@link PasspointProvider} if a match is found, null otherwise
-     */
-    private PasspointProvider findProviderInSameBaseDomain(String domain) {
-        for (Map.Entry<String, PasspointProvider> entry : mProviders.entrySet()) {
-            if (isSameBaseDomain(entry.getKey(), domain)) {
-                return entry.getValue();
-            }
-        }
-        return null;
-    }
-
-    /**
-     * Check if one domain is the base domain for the other.  For example, "test1.test.com"
-     * and "test.com" should return true.
-     *
-     * @param domain1 First domain to be compared
-     * @param domain2 Second domain to be compared
-     * @return true if one domain is a base domain for the other, false otherwise.
-     */
-    private static boolean isSameBaseDomain(String domain1, String domain2) {
-        if (domain1 == null || domain2 == null) {
-            return false;
-        }
-
-        List<String> labelList1 = Utils.splitDomain(domain1);
-        List<String> labelList2 = Utils.splitDomain(domain2);
-        Iterator<String> l1 = labelList1.iterator();
-        Iterator<String> l2 = labelList2.iterator();
-
-        while (l1.hasNext() && l2.hasNext()) {
-            if (!TextUtils.equals(l1.next(), l2.next())) {
-                return false;
-            }
-        }
-        return true;
     }
 }

@@ -20,6 +20,7 @@ import android.net.IpConfiguration.IpAssignment;
 import android.net.IpConfiguration.ProxySettings;
 import android.net.wifi.WifiConfiguration;
 import android.net.wifi.WifiEnterpriseConfig;
+import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiSsid;
 import android.net.wifi.WpsInfo;
 import android.net.wifi.WpsResult;
@@ -41,7 +42,6 @@ import java.io.FileNotFoundException;
 import java.io.FileReader;
 import java.io.IOException;
 import java.net.URLDecoder;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.BitSet;
 import java.util.HashMap;
@@ -79,6 +79,9 @@ public class WifiSupplicantControl {
 
     private boolean mVerboseLoggingEnabled = false;
 
+    // Indicates whether the system is capable of 802.11r fast BSS transition.
+    private boolean mSystemSupportsFastBssTransition = false;
+
     WifiSupplicantControl(TelephonyManager telephonyManager, WifiNative wifiNative,
             LocalLog localLog) {
         mTelephonyManager = telephonyManager;
@@ -87,15 +90,6 @@ public class WifiSupplicantControl {
         mLocalLog = localLog;
         mFileObserver = new WpaConfigFileObserver();
         mFileObserver.startWatching();
-    }
-
-    private static String removeDoubleQuotes(String string) {
-        int length = string.length();
-        if ((length > 1) && (string.charAt(0) == '"')
-                && (string.charAt(length - 1) == '"')) {
-            return string.substring(1, length - 1);
-        }
-        return string;
     }
 
     /**
@@ -352,13 +346,6 @@ public class WifiSupplicantControl {
                 }
                 config.setIpAssignment(IpAssignment.DHCP);
                 config.setProxySettings(ProxySettings.NONE);
-                if (!WifiServiceImpl.isValid(config)) {
-                    if (mVerboseLoggingEnabled) {
-                        localLog("Ignoring network " + config.networkId + " because configuration "
-                                + "loaded from wpa_supplicant.conf is not valid.");
-                    }
-                    continue;
-                }
                 // The configKey is explicitly stored in wpa_supplicant.conf, because config does
                 // not contain sufficient information to compute it at this point.
                 String configKey = extras.get(ID_STRING_KEY_CONFIG_KEY);
@@ -409,6 +396,21 @@ public class WifiSupplicantControl {
         return true;
     }
 
+    private BitSet addFastTransitionFlags(BitSet keyManagementFlags) {
+        if (!mSystemSupportsFastBssTransition) {
+            return keyManagementFlags;
+        }
+
+        BitSet modifiedFlags = keyManagementFlags;
+        if (keyManagementFlags.get(WifiConfiguration.KeyMgmt.WPA_PSK)) {
+            modifiedFlags.set(WifiConfiguration.KeyMgmt.FT_PSK);
+        }
+        if (keyManagementFlags.get(WifiConfiguration.KeyMgmt.WPA_EAP)) {
+            modifiedFlags.set(WifiConfiguration.KeyMgmt.FT_EAP);
+        }
+        return modifiedFlags;
+    }
+
     /**
      * Save an entire network configuration to wpa_supplicant.
      *
@@ -438,8 +440,9 @@ public class WifiSupplicantControl {
                 return false;
             }
         }
+        BitSet allowedKeyManagement = addFastTransitionFlags(config.allowedKeyManagement);
         String allowedKeyManagementString =
-                makeString(config.allowedKeyManagement, WifiConfiguration.KeyMgmt.strings);
+                makeString(allowedKeyManagement, WifiConfiguration.KeyMgmt.strings);
         if (config.allowedKeyManagement.cardinality() != 0 && !mWifiNative.setNetworkVariable(
                 netId,
                 WifiConfiguration.KeyMgmt.varName,
@@ -892,6 +895,20 @@ public class WifiSupplicantControl {
         mVerboseLoggingEnabled = verbose;
     }
 
+    /**
+     * Get Fast BSS Transition capability.
+     */
+    public boolean getSystemSupportsFastBssTransition() {
+        return mSystemSupportsFastBssTransition;
+    }
+
+    /**
+     * Set Fast BSS Transition capability.
+     */
+    public void setSystemSupportsFastBssTransition(boolean supported) {
+        mSystemSupportsFastBssTransition = supported;
+    }
+
     private class SupplicantSaver implements WifiEnterpriseConfig.SupplicantSaver {
         private final int mNetId;
         private final String mSetterSSID;
@@ -938,7 +955,7 @@ public class WifiSupplicantControl {
             String value = mWifiNative.getNetworkVariable(mNetId, key);
             if (!TextUtils.isEmpty(value)) {
                 if (!enterpriseConfigKeyShouldBeQuoted(key)) {
-                    value = removeDoubleQuotes(value);
+                    value = WifiInfo.removeDoubleQuotes(value);
                 }
                 return value;
             } else {

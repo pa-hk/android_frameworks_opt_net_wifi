@@ -136,8 +136,6 @@ public class WifiServiceImpl extends IWifiManager.Stub {
     // Debug counter tracking scan requests sent by WifiManager
     private int scanRequestCounter = 0;
 
-    /* Tracks the open wi-fi network notification */
-    private WifiNotificationController mNotificationController;
     /* Polls traffic stats and notifies clients */
     private WifiTrafficPoller mTrafficPoller;
     /* Tracks the persisted states for wi-fi & airplane mode */
@@ -272,12 +270,12 @@ public class WifiServiceImpl extends IWifiManager.Stub {
     /**
      * Handles interaction with WifiStateMachine
      */
-    private class WifiStateMachineHandler extends Handler {
+    protected class WifiStateMachineHandler extends Handler {
         private AsyncChannel mWsmChannel;
 
-        WifiStateMachineHandler(Looper looper) {
+        public WifiStateMachineHandler(Looper looper, AsyncChannel asyncChannel) {
             super(looper);
-            mWsmChannel = new AsyncChannel();
+            mWsmChannel = asyncChannel;
             mWsmChannel.connect(mContext, this, mWifiStateMachine.getHandler());
         }
 
@@ -313,9 +311,9 @@ public class WifiServiceImpl extends IWifiManager.Stub {
     private final WifiLockManager mWifiLockManager;
     private final WifiMulticastLockManager mWifiMulticastLockManager;
 
-    public WifiServiceImpl(Context context) {
+    public WifiServiceImpl(Context context, WifiInjector wifiInjector, AsyncChannel asyncChannel) {
         mContext = context;
-        mWifiInjector = new WifiInjector(context);
+        mWifiInjector = wifiInjector;
 
         mFacade = mWifiInjector.getFrameworkFacade();
         mWifiMetrics = mWifiInjector.getWifiMetrics();
@@ -328,15 +326,12 @@ public class WifiServiceImpl extends IWifiManager.Stub {
         mPowerManager = mContext.getSystemService(PowerManager.class);
         mAppOps = (AppOpsManager) mContext.getSystemService(Context.APP_OPS_SERVICE);
         mCertManager = mWifiInjector.getWifiCertManager();
-
-        mNotificationController = mWifiInjector.getWifiNotificationController();
-
         mWifiLockManager = mWifiInjector.getWifiLockManager();
         mWifiMulticastLockManager = mWifiInjector.getWifiMulticastLockManager();
         HandlerThread wifiServiceHandlerThread = mWifiInjector.getWifiServiceHandlerThread();
         mClientHandler = new ClientHandler(wifiServiceHandlerThread.getLooper());
-        mWifiStateMachineHandler =
-                new WifiStateMachineHandler(wifiServiceHandlerThread.getLooper());
+        mWifiStateMachineHandler = new WifiStateMachineHandler(wifiServiceHandlerThread.getLooper(),
+                                                                asyncChannel);
         mWifiController = mWifiInjector.getWifiController();
         mWifiBackupRestore = mWifiInjector.getWifiBackupRestore();
         mPermissionReviewRequired = Build.PERMISSIONS_REVIEW_REQUIRED
@@ -347,7 +342,6 @@ public class WifiServiceImpl extends IWifiManager.Stub {
 
         enableVerboseLoggingInternal(getVerboseLoggingLevel());
     }
-
 
     /**
      * Check if Wi-Fi needs to be enabled and start
@@ -599,14 +593,14 @@ public class WifiServiceImpl extends IWifiManager.Stub {
             if (enable) {
                 if (wiFiEnabledState == WifiManager.WIFI_STATE_DISABLING
                         || wiFiEnabledState == WifiManager.WIFI_STATE_DISABLED) {
-                    if (startConsentUiIfNeeded(packageName, Binder.getCallingUid(),
+                    if (startConsentUi(packageName, Binder.getCallingUid(),
                             WifiManager.ACTION_REQUEST_ENABLE)) {
                         return true;
                     }
                 }
             } else if (wiFiEnabledState == WifiManager.WIFI_STATE_ENABLING
                     || wiFiEnabledState == WifiManager.WIFI_STATE_ENABLED) {
-                if (startConsentUiIfNeeded(packageName, Binder.getCallingUid(),
+                if (startConsentUi(packageName, Binder.getCallingUid(),
                         WifiManager.ACTION_REQUEST_DISABLE)) {
                     return true;
                 }
@@ -1026,15 +1020,15 @@ public class WifiServiceImpl extends IWifiManager.Stub {
     }
 
     /**
-     * Add a Passpoint configuration.
+     * Add or update a Passpoint configuration.
      *
      * @param config The Passpoint configuration to be added
      * @return true on success or false on failure
      */
     @Override
-    public boolean addPasspointConfiguration(PasspointConfiguration config) {
+    public boolean addOrUpdatePasspointConfiguration(PasspointConfiguration config) {
         enforceChangePermission();
-        return mPasspointManager.addProvider(config);
+        return mPasspointManager.addOrUpdateProvider(config);
     }
 
     /**
@@ -1052,7 +1046,9 @@ public class WifiServiceImpl extends IWifiManager.Stub {
     /**
      * Return the list of the installed Passpoint configurations.
      *
-     * @return A list of {@link PasspointConfiguration} or null
+     * An empty list will be returned when no configuration is installed.
+     *
+     * @return A list of {@link PasspointConfiguration}
      */
     @Override
     public List<PasspointConfiguration> getPasspointConfigurations() {
@@ -1343,7 +1339,7 @@ public class WifiServiceImpl extends IWifiManager.Stub {
         }
     };
 
-    private boolean startConsentUiIfNeeded(String packageName,
+    private boolean startConsentUi(String packageName,
             int callingUid, String intentAction) throws RemoteException {
         if (UserHandle.getAppId(callingUid) == Process.SYSTEM_UID) {
             return false;
@@ -1359,19 +1355,16 @@ public class WifiServiceImpl extends IWifiManager.Stub {
                         + " not in uid " + callingUid);
             }
 
-            // Legacy apps in permission review mode trigger a user prompt
-            if (applicationInfo.targetSdkVersion < Build.VERSION_CODES.M) {
-                Intent intent = new Intent(intentAction);
-                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
-                        | Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS);
-                intent.putExtra(Intent.EXTRA_PACKAGE_NAME, packageName);
-                mContext.startActivity(intent);
-                return true;
-            }
+            // Permission review mode, trigger a user prompt
+            Intent intent = new Intent(intentAction);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                    | Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS);
+            intent.putExtra(Intent.EXTRA_PACKAGE_NAME, packageName);
+            mContext.startActivity(intent);
+            return true;
         } catch (PackageManager.NameNotFoundException e) {
             throw new RemoteException(e.getMessage());
         }
-        return false;
     }
 
     /**
@@ -1480,7 +1473,6 @@ public class WifiServiceImpl extends IWifiManager.Stub {
             pw.println("mScanPending " + mScanPending);
             mWifiController.dump(fd, pw, args);
             mSettingsStore.dump(fd, pw, args);
-            mNotificationController.dump(fd, pw, args);
             mTrafficPoller.dump(fd, pw, args);
             pw.println();
             pw.println("Locks held:");
@@ -1550,12 +1542,13 @@ public class WifiServiceImpl extends IWifiManager.Stub {
         enableVerboseLoggingInternal(verbose);
     }
 
-    private void enableVerboseLoggingInternal(int verbose) {
+    void enableVerboseLoggingInternal(int verbose) {
         mWifiStateMachine.enableVerboseLogging(verbose);
         mWifiLockManager.enableVerboseLogging(verbose);
         mWifiMulticastLockManager.enableVerboseLogging(verbose);
         mWifiInjector.getWifiLastResortWatchdog().enableVerboseLogging(verbose);
         mWifiInjector.getWifiBackupRestore().enableVerboseLogging(verbose);
+        LogcatLog.enableVerboseLogging(verbose);
     }
 
     @Override

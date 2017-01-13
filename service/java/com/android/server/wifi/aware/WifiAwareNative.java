@@ -16,11 +16,10 @@
 
 package com.android.server.wifi.aware;
 
+import android.net.wifi.aware.Characteristics;
 import android.net.wifi.aware.ConfigRequest;
 import android.net.wifi.aware.PublishConfig;
 import android.net.wifi.aware.SubscribeConfig;
-import android.net.wifi.aware.WifiAwareCharacteristics;
-import android.net.wifi.aware.WifiAwareDiscoverySessionCallback;
 import android.os.Bundle;
 import android.util.Log;
 
@@ -42,35 +41,10 @@ public class WifiAwareNative {
 
     private static final int WIFI_SUCCESS = 0;
 
-    private static WifiAwareNative sWifiAwareNativeSingleton;
-
+    private static WifiAwareStateManager sWifiAwareStateManager;
     private boolean mNativeHandlersIsInitialized = false;
 
     private static native int registerAwareNatives();
-
-    /**
-     * Returns the singleton WifiAwareNative used to manage the actual Aware HAL
-     * interface.
-     *
-     * @return Singleton object.
-     */
-    public static WifiAwareNative getInstance() {
-        // dummy reference - used to make sure that WifiNative is loaded before
-        // us since it is the one to load the shared library and starts its
-        // initialization.
-        WifiNative dummy = WifiNative.getWlanNativeInterface();
-        if (dummy == null) {
-            Log.w(TAG, "can't get access to WifiNative");
-            return null;
-        }
-
-        if (sWifiAwareNativeSingleton == null) {
-            sWifiAwareNativeSingleton = new WifiAwareNative();
-            registerAwareNatives();
-        }
-
-        return sWifiAwareNativeSingleton;
-    }
 
     /**
      * A container class for Aware (vendor) implementation capabilities (or
@@ -95,13 +69,13 @@ public class WifiAwareNative {
          * Converts the internal capabilities to a parcelable & potentially app-facing
          * characteristics bundle. Only some of the information is exposed.
          */
-        public WifiAwareCharacteristics toPublicCharacteristics() {
+        public Characteristics toPublicCharacteristics() {
             Bundle bundle = new Bundle();
-            bundle.putInt(WifiAwareCharacteristics.KEY_MAX_SERVICE_NAME_LENGTH, maxServiceNameLen);
-            bundle.putInt(WifiAwareCharacteristics.KEY_MAX_SERVICE_SPECIFIC_INFO_LENGTH,
+            bundle.putInt(Characteristics.KEY_MAX_SERVICE_NAME_LENGTH, maxServiceNameLen);
+            bundle.putInt(Characteristics.KEY_MAX_SERVICE_SPECIFIC_INFO_LENGTH,
                     maxServiceSpecificInfoLen);
-            bundle.putInt(WifiAwareCharacteristics.KEY_MAX_MATCH_FILTER_LENGTH, maxMatchFilterLen);
-            return new WifiAwareCharacteristics(bundle);
+            bundle.putInt(Characteristics.KEY_MAX_MATCH_FILTER_LENGTH, maxMatchFilterLen);
+            return new Characteristics(bundle);
         }
 
         @Override
@@ -151,8 +125,14 @@ public class WifiAwareNative {
         mNativeHandlersIsInitialized = false;
     }
 
-    private WifiAwareNative() {
-        // do nothing
+    public WifiAwareNative(boolean doRegistration) {
+        if (doRegistration) {
+            registerAwareNatives();
+        }
+    }
+
+    public void setStateManager(WifiAwareStateManager awareStateManager) {
+        sWifiAwareStateManager = awareStateManager;
     }
 
     private static native int getCapabilitiesNative(short transactionId, Class<WifiNative> cls,
@@ -659,16 +639,15 @@ public class WifiAwareNative {
                     "onAwareNotifyResponse: transactionId=" + transactionId + ", responseType="
                     + responseType + ", status=" + status + ", nanError=" + nanError);
         }
-        WifiAwareStateManager stateMgr = WifiAwareStateManager.getInstance();
 
         switch (responseType) {
             case AWARE_RESPONSE_ENABLED:
                 /* fall through */
             case AWARE_RESPONSE_CONFIG:
                 if (status == AWARE_STATUS_SUCCESS) {
-                    stateMgr.onConfigSuccessResponse(transactionId);
+                    sWifiAwareStateManager.onConfigSuccessResponse(transactionId);
                 } else {
-                    stateMgr.onConfigFailedResponse(transactionId, status);
+                    sWifiAwareStateManager.onConfigFailedResponse(transactionId, status);
                 }
                 break;
             case AWARE_RESPONSE_PUBLISH_CANCEL:
@@ -680,9 +659,9 @@ public class WifiAwareNative {
                 break;
             case AWARE_RESPONSE_TRANSMIT_FOLLOWUP:
                 if (status == AWARE_STATUS_SUCCESS) {
-                    stateMgr.onMessageSendQueuedSuccessResponse(transactionId);
+                    sWifiAwareStateManager.onMessageSendQueuedSuccessResponse(transactionId);
                 } else {
-                    stateMgr.onMessageSendQueuedFailResponse(transactionId, status);
+                    sWifiAwareStateManager.onMessageSendQueuedFailResponse(transactionId, status);
                 }
                 break;
             case AWARE_RESPONSE_SUBSCRIBE_CANCEL:
@@ -699,7 +678,7 @@ public class WifiAwareNative {
                                     + "status="
                                     + status + ", nanError=" + nanError);
                 }
-                stateMgr.onCreateDataPathInterfaceResponse(transactionId,
+                sWifiAwareStateManager.onCreateDataPathInterfaceResponse(transactionId,
                         status == AWARE_STATUS_SUCCESS, status);
                 break;
             case AWARE_RESPONSE_DP_INTERFACE_DELETE:
@@ -709,7 +688,7 @@ public class WifiAwareNative {
                                     + "status="
                                     + status + ", nanError=" + nanError);
                 }
-                stateMgr.onDeleteDataPathInterfaceResponse(transactionId,
+                sWifiAwareStateManager.onDeleteDataPathInterfaceResponse(transactionId,
                         status == AWARE_STATUS_SUCCESS, status);
                 break;
             case AWARE_RESPONSE_DP_RESPONDER_RESPONSE:
@@ -718,7 +697,7 @@ public class WifiAwareNative {
                             "onAwareNotifyResponse: AWARE_RESPONSE_DP_RESPONDER_RESPONSE error - "
                                     + "status=" + status + ", nanError=" + nanError);
                 }
-                stateMgr.onRespondToDataPathSetupRequestResponse(transactionId,
+                sWifiAwareStateManager.onRespondToDataPathSetupRequestResponse(transactionId,
                         status == AWARE_STATUS_SUCCESS, status);
                 break;
             case AWARE_RESPONSE_DP_END:
@@ -726,8 +705,8 @@ public class WifiAwareNative {
                     Log.e(TAG, "onAwareNotifyResponse: AWARE_RESPONSE_DP_END error - status="
                             + status + ", nanError=" + nanError);
                 }
-                stateMgr.onEndDataPathResponse(transactionId, status == AWARE_STATUS_SUCCESS,
-                        status);
+                sWifiAwareStateManager.onEndDataPathResponse(transactionId,
+                        status == AWARE_STATUS_SUCCESS, status);
                 break;
             default:
                 Log.e(TAG, "onAwareNotifyResponse: unclassified responseType=" + responseType);
@@ -747,20 +726,19 @@ public class WifiAwareNative {
         switch (responseType) {
             case AWARE_RESPONSE_PUBLISH:
                 if (status == AWARE_STATUS_SUCCESS) {
-                    WifiAwareStateManager.getInstance().onSessionConfigSuccessResponse(
-                            transactionId, true, pubSubId);
+                    sWifiAwareStateManager.onSessionConfigSuccessResponse(transactionId, true,
+                            pubSubId);
                 } else {
-                    WifiAwareStateManager.getInstance().onSessionConfigFailResponse(transactionId,
-                            true, status);
+                    sWifiAwareStateManager.onSessionConfigFailResponse(transactionId, true, status);
                 }
                 break;
             case AWARE_RESPONSE_SUBSCRIBE:
                 if (status == AWARE_STATUS_SUCCESS) {
-                    WifiAwareStateManager.getInstance().onSessionConfigSuccessResponse(
-                            transactionId, false, pubSubId);
+                    sWifiAwareStateManager.onSessionConfigSuccessResponse(transactionId, false,
+                            pubSubId);
                 } else {
-                    WifiAwareStateManager.getInstance().onSessionConfigFailResponse(transactionId,
-                            false, status);
+                    sWifiAwareStateManager.onSessionConfigFailResponse(transactionId, false,
+                            status);
                 }
                 break;
             default:
@@ -779,8 +757,7 @@ public class WifiAwareNative {
         }
 
         if (status == AWARE_STATUS_SUCCESS) {
-            WifiAwareStateManager.getInstance().onCapabilitiesUpdateResponse(transactionId,
-                    capabilities);
+            sWifiAwareStateManager.onCapabilitiesUpdateResponse(transactionId, capabilities);
         } else {
             Log.e(TAG, "onAwareNotifyResponseCapabilities: error status=" + status
                     + ", nanError=" + nanError);
@@ -795,11 +772,9 @@ public class WifiAwareNative {
                             + ", status=" + status + ", nanError=" + nanError + ", ndpId=" + ndpId);
         }
         if (status == AWARE_STATUS_SUCCESS) {
-            WifiAwareStateManager.getInstance().onInitiateDataPathResponseSuccess(transactionId,
-                    ndpId);
+            sWifiAwareStateManager.onInitiateDataPathResponseSuccess(transactionId, ndpId);
         } else {
-            WifiAwareStateManager.getInstance().onInitiateDataPathResponseFail(transactionId,
-                    status);
+            sWifiAwareStateManager.onInitiateDataPathResponseFail(transactionId, status);
         }
     }
 
@@ -815,12 +790,12 @@ public class WifiAwareNative {
         }
 
         if (eventType == AWARE_EVENT_ID_DISC_MAC_ADDR) {
-            WifiAwareStateManager.getInstance().onInterfaceAddressChangeNotification(mac);
+            sWifiAwareStateManager.onInterfaceAddressChangeNotification(mac);
         } else if (eventType == AWARE_EVENT_ID_STARTED_CLUSTER) {
-            WifiAwareStateManager.getInstance().onClusterChangeNotification(
+            sWifiAwareStateManager.onClusterChangeNotification(
                     WifiAwareClientState.CLUSTER_CHANGE_EVENT_STARTED, mac);
         } else if (eventType == AWARE_EVENT_ID_JOINED_CLUSTER) {
-            WifiAwareStateManager.getInstance().onClusterChangeNotification(
+            sWifiAwareStateManager.onClusterChangeNotification(
                     WifiAwareClientState.CLUSTER_CHANGE_EVENT_JOINED, mac);
         } else {
             Log.w(TAG, "onDiscoveryEngineEvent: invalid eventType=" + eventType);
@@ -837,7 +812,7 @@ public class WifiAwareNative {
                     + ", matchFilter=" + Arrays.toString(matchFilter));
         }
 
-        WifiAwareStateManager.getInstance().onMatchNotification(pubSubId, requestorInstanceId, mac,
+        sWifiAwareStateManager.onMatchNotification(pubSubId, requestorInstanceId, mac,
                 serviceSpecificInfo, matchFilter);
     }
 
@@ -845,10 +820,7 @@ public class WifiAwareNative {
     private static void onPublishTerminated(int publishId, int status) {
         if (VDBG) Log.v(TAG, "onPublishTerminated: publishId=" + publishId + ", status=" + status);
 
-        WifiAwareStateManager.getInstance().onSessionTerminatedNotification(publishId,
-                status == AWARE_STATUS_SUCCESS
-                        ? WifiAwareDiscoverySessionCallback.TERMINATE_REASON_DONE
-                        : WifiAwareDiscoverySessionCallback.TERMINATE_REASON_FAIL, true);
+        sWifiAwareStateManager.onSessionTerminatedNotification(publishId, status, true);
     }
 
     // callback from native
@@ -857,10 +829,7 @@ public class WifiAwareNative {
             Log.v(TAG, "onSubscribeTerminated: subscribeId=" + subscribeId + ", status=" + status);
         }
 
-        WifiAwareStateManager.getInstance().onSessionTerminatedNotification(subscribeId,
-                status == AWARE_STATUS_SUCCESS
-                        ? WifiAwareDiscoverySessionCallback.TERMINATE_REASON_DONE
-                        : WifiAwareDiscoverySessionCallback.TERMINATE_REASON_FAIL, false);
+        sWifiAwareStateManager.onSessionTerminatedNotification(subscribeId, status, false);
     }
 
     // callback from native
@@ -871,15 +840,15 @@ public class WifiAwareNative {
                     + requestorInstanceId + ", mac=" + String.valueOf(HexEncoding.encode(mac)));
         }
 
-        WifiAwareStateManager.getInstance().onMessageReceivedNotification(pubSubId,
-                requestorInstanceId, mac, message);
+        sWifiAwareStateManager.onMessageReceivedNotification(pubSubId, requestorInstanceId, mac,
+                message);
     }
 
     // callback from native
     private static void onDisabledEvent(int status) {
         if (VDBG) Log.v(TAG, "onDisabledEvent: status=" + status);
 
-        WifiAwareStateManager.getInstance().onAwareDownNotification(status);
+        sWifiAwareStateManager.onAwareDownNotification(status);
     }
 
     // callback from native
@@ -890,10 +859,9 @@ public class WifiAwareNative {
         }
 
         if (reason == AWARE_STATUS_SUCCESS) {
-            WifiAwareStateManager.getInstance().onMessageSendSuccessNotification(transactionId);
+            sWifiAwareStateManager.onMessageSendSuccessNotification(transactionId);
         } else {
-            WifiAwareStateManager.getInstance().onMessageSendFailNotification(transactionId,
-                    reason);
+            sWifiAwareStateManager.onMessageSendFailNotification(transactionId, reason);
         }
     }
 
@@ -903,8 +871,7 @@ public class WifiAwareNative {
                     HexEncoding.encode(mac)) + ", ndpId=" + ndpId);
         }
 
-        WifiAwareStateManager.getInstance()
-                .onDataPathRequestNotification(pubSubId, mac, ndpId, message);
+        sWifiAwareStateManager.onDataPathRequestNotification(pubSubId, mac, ndpId, message);
     }
 
     private static void onDataPathConfirm(int ndpId, byte[] mac, boolean accept, int reason,
@@ -914,8 +881,7 @@ public class WifiAwareNative {
                     .encode(mac)) + ", accept=" + accept + ", reason=" + reason);
         }
 
-        WifiAwareStateManager.getInstance()
-                .onDataPathConfirmNotification(ndpId, mac, accept, reason, message);
+        sWifiAwareStateManager.onDataPathConfirmNotification(ndpId, mac, accept, reason, message);
     }
 
     private static void onDataPathEnd(int ndpId) {
@@ -923,6 +889,6 @@ public class WifiAwareNative {
             Log.v(TAG, "onDataPathEndNotification: ndpId=" + ndpId);
         }
 
-        WifiAwareStateManager.getInstance().onDataPathEndNotification(ndpId);
+        sWifiAwareStateManager.onDataPathEndNotification(ndpId);
     }
 }

@@ -48,7 +48,6 @@ import android.net.wifi.aware.IWifiAwareDiscoverySessionCallback;
 import android.net.wifi.aware.IWifiAwareEventCallback;
 import android.net.wifi.aware.PublishConfig;
 import android.net.wifi.aware.SubscribeConfig;
-import android.net.wifi.aware.WifiAwareDiscoverySessionCallback;
 import android.net.wifi.aware.WifiAwareManager;
 import android.os.Message;
 import android.os.UserHandle;
@@ -69,7 +68,6 @@ import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
-import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.util.Arrays;
 import java.util.Map;
@@ -120,7 +118,8 @@ public class WifiAwareStateManagerTest {
 
         mMockLooper = new TestLooper();
 
-        mDut = installNewAwareStateManager();
+        mDut = new WifiAwareStateManager();
+        mDut.setNative(mMockNative);
         mDut.start(mMockContext, mMockLooper.getLooper());
         installMocksInStateManager(mDut, mMockAwareRttStateManager, mMockAwareDataPathStatemanager);
 
@@ -135,8 +134,6 @@ public class WifiAwareStateManagerTest {
         when(mMockNative.stopPublish(anyShort(), anyInt())).thenReturn(true);
         when(mMockNative.stopSubscribe(anyShort(), anyInt())).thenReturn(true);
         when(mMockNative.getCapabilities(anyShort())).thenReturn(true);
-
-        installMockWifiAwareNative(mMockNative);
     }
 
     /**
@@ -492,7 +489,7 @@ public class WifiAwareStateManagerTest {
         final int uid = 1000;
         final int pid = 2000;
         final String callingPackage = "com.google.somePackage";
-        final int reasonTerminate = WifiAwareDiscoverySessionCallback.TERMINATE_REASON_DONE;
+        final int reasonTerminate = WifiAwareNative.AWARE_STATUS_SUCCESS;
         final int publishId = 15;
 
         ConfigRequest configRequest = new ConfigRequest.Builder().build();
@@ -754,7 +751,7 @@ public class WifiAwareStateManagerTest {
         final int uid = 1000;
         final int pid = 2000;
         final String callingPackage = "com.google.somePackage";
-        final int reasonTerminate = WifiAwareDiscoverySessionCallback.TERMINATE_REASON_DONE;
+        final int reasonTerminate = WifiAwareNative.AWARE_STATUS_SUCCESS;
         final int subscribeId = 15;
 
         ConfigRequest configRequest = new ConfigRequest.Builder().build();
@@ -2055,7 +2052,6 @@ public class WifiAwareStateManagerTest {
         final String serviceName = "some-service-name";
         final String ssi = "some much longer and more arbitrary data";
         final int publishCount = 7;
-        final int reason = WifiAwareDiscoverySessionCallback.TERMINATE_REASON_DONE;
         final int publishId = 22;
 
         ConfigRequest configRequest = new ConfigRequest.Builder().setClusterLow(clusterLow)
@@ -2111,7 +2107,7 @@ public class WifiAwareStateManagerTest {
         mMockLooper.dispatchAll();
 
         // (6) got some callback on original publishId - should be ignored
-        mDut.onSessionTerminatedNotification(publishId, reason, true);
+        mDut.onSessionTerminatedNotification(publishId, 0, true);
         mMockLooper.dispatchAll();
 
         verifyNoMoreInteractions(mMockNative, mockCallback, mockSessionCallback);
@@ -2506,20 +2502,6 @@ public class WifiAwareStateManagerTest {
      * Utilities
      */
 
-    private static WifiAwareStateManager installNewAwareStateManager()
-            throws Exception {
-        Constructor<WifiAwareStateManager> ctr =
-                WifiAwareStateManager.class.getDeclaredConstructor();
-        ctr.setAccessible(true);
-        WifiAwareStateManager awareStateManager = ctr.newInstance();
-
-        Field field = WifiAwareStateManager.class.getDeclaredField("sAwareStateManagerSingleton");
-        field.setAccessible(true);
-        field.set(null, awareStateManager);
-
-        return WifiAwareStateManager.getInstance();
-    }
-
     private static void installMocksInStateManager(WifiAwareStateManager awareStateManager,
             WifiAwareRttStateManager mockRtt, WifiAwareDataPathStateManager mockDpMgr)
             throws Exception {
@@ -2530,12 +2512,6 @@ public class WifiAwareStateManagerTest {
         field = WifiAwareStateManager.class.getDeclaredField("mDataPathMgr");
         field.setAccessible(true);
         field.set(awareStateManager, mockDpMgr);
-    }
-
-    private static void installMockWifiAwareNative(WifiAwareNative obj) throws Exception {
-        Field field = WifiAwareNative.class.getDeclaredField("sWifiAwareNativeSingleton");
-        field.setAccessible(true);
-        field.set(null, obj);
     }
 
     private static WifiAwareClientState getInternalClientState(WifiAwareStateManager dut,

@@ -26,11 +26,13 @@ import android.app.test.MockAnswerUtil.AnswerWithArguments;
 import android.app.test.TestAlarmManager;
 import android.content.Context;
 import android.content.res.Resources;
+import android.net.NetworkScoreManager;
 import android.net.wifi.ScanResult;
 import android.net.wifi.ScanResult.InformationElement;
 import android.net.wifi.SupplicantState;
 import android.net.wifi.WifiConfiguration;
 import android.net.wifi.WifiInfo;
+import android.net.wifi.WifiNetworkScoreCache;
 import android.net.wifi.WifiScanner;
 import android.net.wifi.WifiScanner.PnoScanListener;
 import android.net.wifi.WifiScanner.PnoSettings;
@@ -50,6 +52,8 @@ import org.junit.Before;
 import org.junit.Ignore;
 import org.junit.Test;
 import org.mockito.ArgumentCaptor;
+import org.mockito.Mock;
+import org.mockito.MockitoAnnotations;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -60,13 +64,12 @@ import java.util.HashSet;
  */
 @SmallTest
 public class WifiConnectivityManagerTest {
-
     /**
      * Called before each test
      */
     @Before
     public void setUp() throws Exception {
-        mWifiInjector = mockWifiInjector();
+        MockitoAnnotations.initMocks(this);
         mResource = mockResource();
         mAlarmManager = new TestAlarmManager();
         mContext = mockContext();
@@ -90,6 +93,7 @@ public class WifiConnectivityManagerTest {
     }
 
     private Resources mResource;
+
     private Context mContext;
     private TestAlarmManager mAlarmManager;
     private TestLooper mLooper = new TestLooper();
@@ -100,10 +104,12 @@ public class WifiConnectivityManagerTest {
     private ScanData mScanData;
     private WifiConfigManager mWifiConfigManager;
     private WifiInfo mWifiInfo;
-    private Clock mClock = mock(Clock.class);
-    private WifiLastResortWatchdog mWifiLastResortWatchdog;
-    private WifiMetrics mWifiMetrics;
-    private WifiInjector mWifiInjector;
+    @Mock private FrameworkFacade mFrameworkFacade;
+    @Mock private NetworkScoreManager mNetworkScoreManager;
+    @Mock private Clock mClock;
+    @Mock private WifiLastResortWatchdog mWifiLastResortWatchdog;
+    @Mock private WifiMetrics mWifiMetrics;
+    @Mock private WifiNetworkScoreCache mScoreCache;
     private MockResources mResources;
 
     private static final int CANDIDATE_NETWORK_ID = 0;
@@ -249,19 +255,11 @@ public class WifiConnectivityManagerTest {
         return wifiConfigManager;
     }
 
-    WifiInjector mockWifiInjector() {
-        WifiInjector wifiInjector = mock(WifiInjector.class);
-        mWifiLastResortWatchdog = mock(WifiLastResortWatchdog.class);
-        mWifiMetrics = mock(WifiMetrics.class);
-        when(wifiInjector.getWifiLastResortWatchdog()).thenReturn(mWifiLastResortWatchdog);
-        when(wifiInjector.getWifiMetrics()).thenReturn(mWifiMetrics);
-        when(wifiInjector.getClock()).thenReturn(mClock);
-        return wifiInjector;
-    }
-
     WifiConnectivityManager createConnectivityManager() {
         return new WifiConnectivityManager(mContext, mWifiStateMachine, mWifiScanner,
-                mWifiConfigManager, mWifiInfo, mWifiNS, mWifiInjector, mLooper.getLooper(), true);
+                mWifiConfigManager, mWifiInfo, mWifiNS,
+                mWifiLastResortWatchdog, mWifiMetrics, mLooper.getLooper(), mClock, true,
+                mFrameworkFacade, null, null);
     }
 
     /**

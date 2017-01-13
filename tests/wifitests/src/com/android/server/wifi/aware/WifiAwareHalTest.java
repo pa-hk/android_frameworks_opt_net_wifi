@@ -26,7 +26,6 @@ import android.net.wifi.aware.ConfigRequest;
 import android.net.wifi.aware.PublishConfig;
 import android.net.wifi.aware.SubscribeConfig;
 import android.net.wifi.aware.TlvBufferUtils;
-import android.net.wifi.aware.WifiAwareDiscoverySessionCallback;
 import android.os.Bundle;
 import android.test.suitebuilder.annotation.SmallTest;
 
@@ -44,18 +43,15 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
-import java.lang.reflect.Field;
-
 /**
  * Unit test harness for WifiAwareNative + JNI code interfacing to the HAL.
  */
 @SmallTest
 public class WifiAwareHalTest {
-    private WifiAwareNative mDut = WifiAwareNative.getInstance();
+    private WifiAwareNative mDut;
     private ArgumentCaptor<String> mArgs = ArgumentCaptor.forClass(String.class);
 
-    @Mock
-    private WifiAwareHalMock mAwareHalMock;
+    @Mock private WifiAwareHalMock mAwareHalMock;
     @Mock private WifiAwareStateManager mAwareStateManager;
 
     @Rule
@@ -65,13 +61,13 @@ public class WifiAwareHalTest {
     public void setup() throws Exception {
         MockitoAnnotations.initMocks(this);
 
-        resetWifiAwareNative();
+        mDut = new WifiAwareNative(false);
+        mDut.setStateManager(mAwareStateManager);
 
         HalMockUtils.initHalMockLibrary();
         WifiAwareHalMock.initAwareHalMockLibrary(mDut);
         WifiAwareNative.initAwareHandlersNative(WifiNative.class, WifiNative.sWlan0Index);
         HalMockUtils.setHalMockObject(mAwareHalMock);
-        installMockAwareStateManager(mAwareStateManager);
     }
 
     @Test
@@ -666,7 +662,7 @@ public class WifiAwareHalTest {
         WifiAwareHalMock.callPublishTerminated(HalMockUtils.convertBundleToJson(args).toString());
 
         verify(mAwareStateManager).onSessionTerminatedNotification(publishId,
-                WifiAwareDiscoverySessionCallback.TERMINATE_REASON_DONE, true);
+                WifiAwareNative.AWARE_STATUS_SUCCESS, true);
         verifyNoMoreInteractions(mAwareStateManager);
     }
 
@@ -681,7 +677,7 @@ public class WifiAwareHalTest {
         WifiAwareHalMock.callSubscribeTerminated(HalMockUtils.convertBundleToJson(args).toString());
 
         verify(mAwareStateManager).onSessionTerminatedNotification(subscribeId,
-                WifiAwareDiscoverySessionCallback.TERMINATE_REASON_FAIL, false);
+                WifiAwareNative.AWARE_STATUS_INTERNAL_FAILURE, false);
         verifyNoMoreInteractions(mAwareStateManager);
     }
 
@@ -865,7 +861,7 @@ public class WifiAwareHalTest {
 
         Bundle argsData = HalMockUtils.convertJsonToBundle(mArgs.getValue());
 
-        collector.checkThat("service_instance_id", argsData.getInt("service_instance_id"),
+        collector.checkThat("requestor_instance_id", argsData.getInt("requestor_instance_id"),
                 equalTo(pubSubId));
         collector.checkThat("channel_request_type", argsData.getInt("channel_request_type"),
                 equalTo(channelRequestType));
@@ -1098,7 +1094,8 @@ public class WifiAwareHalTest {
             int publishCount, int publishTtl, boolean enableTerminateNotification)
             throws JSONException {
         PublishConfig publishConfig = new PublishConfig.Builder().setServiceName(serviceName)
-                .setServiceSpecificInfo(ssi.getBytes()).setMatchFilter(tlvMatch.getArray())
+                .setServiceSpecificInfo(ssi.getBytes()).setMatchFilter(
+                        new TlvBufferUtils.TlvIterable(0, 1, tlvMatch.getArray()).toList())
                 .setPublishType(publishType)
                 .setPublishCount(publishCount).setTtlSec(publishTtl)
                 .setTerminateNotificationEnabled(enableTerminateNotification).build();
@@ -1146,7 +1143,9 @@ public class WifiAwareHalTest {
             boolean enableTerminateNotification) throws JSONException {
         SubscribeConfig subscribeConfig = new SubscribeConfig.Builder()
                 .setServiceName(serviceName).setServiceSpecificInfo(ssi.getBytes())
-                .setMatchFilter(tlvMatch.getArray()).setSubscribeType(subscribeType)
+                .setMatchFilter(
+                        new TlvBufferUtils.TlvIterable(0, 1, tlvMatch.getArray()).toList())
+                .setSubscribeType(subscribeType)
                 .setSubscribeCount(subscribeCount).setTtlSec(subscribeTtl).setMatchStyle(matchStyle)
                 .setTerminateNotificationEnabled(enableTerminateNotification).build();
 
@@ -1214,18 +1213,5 @@ public class WifiAwareHalTest {
             collector.checkThat("ndp id #" + i, ndpIdsCaptor.getAllValues().get(i),
                     equalTo(ndpIdBase + i));
         }
-    }
-
-    private static void installMockAwareStateManager(WifiAwareStateManager awareStateManager)
-            throws Exception {
-        Field field = WifiAwareStateManager.class.getDeclaredField("sAwareStateManagerSingleton");
-        field.setAccessible(true);
-        field.set(null, awareStateManager);
-    }
-
-    private static void resetWifiAwareNative() throws Exception {
-        Field field = WifiAwareNative.class.getDeclaredField("sWifiAwareNativeSingleton");
-        field.setAccessible(true);
-        field.set(null, null);
     }
 }
