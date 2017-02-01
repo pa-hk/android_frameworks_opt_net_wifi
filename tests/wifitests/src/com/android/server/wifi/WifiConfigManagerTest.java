@@ -173,6 +173,9 @@ public class WifiConfigManagerTest {
                 .thenReturn(true);
 
         when(mWifiConfigStore.areStoresPresent()).thenReturn(true);
+        when(mWifiConfigStore.read())
+                .thenReturn(new WifiConfigStoreData(new ArrayList<WifiConfiguration>(),
+                        new ArrayList<WifiConfiguration>(), new HashSet<String>()));
 
         when(mDevicePolicyManagerInternal.isActiveAdminWithPolicy(anyInt(), anyInt()))
                 .thenReturn(false);
@@ -187,6 +190,18 @@ public class WifiConfigManagerTest {
     @After
     public void cleanup() {
         validateMockitoUsage();
+    }
+
+    /**
+     * Verifies that network retrieval via
+     * {@link WifiConfigManager#getConfiguredNetworks()} and
+     * {@link WifiConfigManager#getConfiguredNetworksWithPasswords()} works even if we have not
+     * yet loaded data from store.
+     */
+    @Test
+    public void testGetConfiguredNetworksBeforeLoadFromStore() {
+        assertTrue(mWifiConfigManager.getConfiguredNetworks().isEmpty());
+        assertTrue(mWifiConfigManager.getConfiguredNetworksWithPasswords().isEmpty());
     }
 
     /**
@@ -2057,6 +2072,9 @@ public class WifiConfigManagerTest {
         int user2 = TEST_DEFAULT_USER + 1;
         setupUserProfiles(user2);
 
+        // Set up the internal data first.
+        assertTrue(mWifiConfigManager.loadFromStore());
+
         when(mWifiConfigStore.switchUserStoreAndRead(any(WifiConfigStore.StoreFile.class)))
                 .thenReturn(new WifiConfigStoreData(
                         new ArrayList<WifiConfiguration>(), new ArrayList<WifiConfiguration>(),
@@ -2079,6 +2097,9 @@ public class WifiConfigManagerTest {
         int user1 = TEST_DEFAULT_USER;
         int user2 = TEST_DEFAULT_USER + 1;
         setupUserProfiles(user2);
+
+        // Set up the internal data first.
+        assertTrue(mWifiConfigManager.loadFromStore());
 
         // user2 is locked and switched to foreground.
         when(mUserManager.isUserUnlockingOrUnlocked(user2)).thenReturn(false);
@@ -2136,6 +2157,14 @@ public class WifiConfigManagerTest {
     public void testHandleUserUnlockAfterBootup() throws Exception {
         int user1 = TEST_DEFAULT_USER;
 
+        // Set up the internal data first.
+        assertTrue(mWifiConfigManager.loadFromStore());
+        mContextConfigStoreMockOrder.verify(mWifiConfigStore).read();
+        mContextConfigStoreMockOrder.verify(mWifiConfigStore, never())
+                .write(anyBoolean(), any(WifiConfigStoreData.class));
+        mContextConfigStoreMockOrder.verify(mWifiConfigStore, never())
+                .switchUserStoreAndRead(any(WifiConfigStore.StoreFile.class));
+
         when(mWifiConfigStore.switchUserStoreAndRead(any(WifiConfigStore.StoreFile.class)))
                 .thenReturn(new WifiConfigStoreData(
                         new ArrayList<WifiConfiguration>(), new ArrayList<WifiConfiguration>(),
@@ -2143,8 +2172,43 @@ public class WifiConfigManagerTest {
 
         // Unlock the user1 (default user) for the first time and ensure that we read the data.
         mWifiConfigManager.handleUserUnlock(user1);
+        mContextConfigStoreMockOrder.verify(mWifiConfigStore, never()).read();
         mContextConfigStoreMockOrder.verify(mWifiConfigStore)
                 .switchUserStoreAndRead(any(WifiConfigStore.StoreFile.class));
+        mContextConfigStoreMockOrder.verify(mWifiConfigStore)
+                .write(anyBoolean(), any(WifiConfigStoreData.class));
+    }
+
+    /**
+     * Verifies that the store read after bootup received after
+     * foreground user unlock via {@link WifiConfigManager#handleUserUnlock(int)}
+     * results in a user store read.
+     */
+    @Test
+    public void testHandleBootupAfterUserUnlock() throws Exception {
+        int user1 = TEST_DEFAULT_USER;
+
+        // Unlock the user1 (default user) for the first time and ensure that we don't read the
+        // data.
+        mWifiConfigManager.handleUserUnlock(user1);
+        mContextConfigStoreMockOrder.verify(mWifiConfigStore, never()).read();
+        mContextConfigStoreMockOrder.verify(mWifiConfigStore, never())
+                .write(anyBoolean(), any(WifiConfigStoreData.class));
+        mContextConfigStoreMockOrder.verify(mWifiConfigStore, never())
+                .switchUserStoreAndRead(any(WifiConfigStore.StoreFile.class));
+
+        when(mWifiConfigStore.switchUserStoreAndRead(any(WifiConfigStore.StoreFile.class)))
+                .thenReturn(new WifiConfigStoreData(
+                        new ArrayList<WifiConfiguration>(), new ArrayList<WifiConfiguration>(),
+                        new HashSet<String>()));
+
+        // Read from store now.
+        assertTrue(mWifiConfigManager.loadFromStore());
+        mContextConfigStoreMockOrder.verify(mWifiConfigStore).read();
+        mContextConfigStoreMockOrder.verify(mWifiConfigStore)
+                .switchUserStoreAndRead(any(WifiConfigStore.StoreFile.class));
+        mContextConfigStoreMockOrder.verify(mWifiConfigStore)
+                .write(anyBoolean(), any(WifiConfigStoreData.class));
     }
 
     /**
@@ -2156,6 +2220,9 @@ public class WifiConfigManagerTest {
         int user1 = TEST_DEFAULT_USER;
         int user2 = TEST_DEFAULT_USER + 1;
         setupUserProfiles(user2);
+
+        // Set up the internal data first.
+        assertTrue(mWifiConfigManager.loadFromStore());
 
         when(mWifiConfigStore.switchUserStoreAndRead(any(WifiConfigStore.StoreFile.class)))
                 .thenReturn(new WifiConfigStoreData(
@@ -2173,6 +2240,41 @@ public class WifiConfigManagerTest {
         mWifiConfigManager.handleUserUnlock(user2);
         mContextConfigStoreMockOrder.verify(mWifiConfigStore, never())
                 .switchUserStoreAndRead(any(WifiConfigStore.StoreFile.class));
+    }
+
+    /**
+     * Verifies the foreground user unlock via {@link WifiConfigManager#handleUserSwitch(int)}
+     * is ignored if the legacy store migration is not complete.
+     */
+    @Test
+    public void testHandleUserSwitchAfterBootupBeforeLegacyStoreMigration() throws Exception {
+        int user2 = TEST_DEFAULT_USER + 1;
+
+        // Switch to user2 for the first time and ensure that we don't read or
+        // write the store files.
+        when(mUserManager.isUserUnlockingOrUnlocked(user2)).thenReturn(false);
+        mWifiConfigManager.handleUserSwitch(user2);
+        mContextConfigStoreMockOrder.verify(mWifiConfigStore, never())
+                .switchUserStoreAndRead(any(WifiConfigStore.StoreFile.class));
+        mContextConfigStoreMockOrder.verify(mWifiConfigStore, never())
+                .write(anyBoolean(), any(WifiConfigStoreData.class));
+    }
+
+    /**
+     * Verifies the foreground user unlock via {@link WifiConfigManager#handleUserUnlock(int)}
+     * is ignored if the legacy store migration is not complete.
+     */
+    @Test
+    public void testHandleUserUnlockAfterBootupBeforeLegacyStoreMigration() throws Exception {
+        int user1 = TEST_DEFAULT_USER;
+
+        // Unlock the user1 (default user) for the first time and ensure that we don't read or
+        // write the store files.
+        mWifiConfigManager.handleUserUnlock(user1);
+        mContextConfigStoreMockOrder.verify(mWifiConfigStore, never())
+                .switchUserStoreAndRead(any(WifiConfigStore.StoreFile.class));
+        mContextConfigStoreMockOrder.verify(mWifiConfigStore, never())
+                .write(anyBoolean(), any(WifiConfigStoreData.class));
     }
 
     /**
@@ -2216,8 +2318,8 @@ public class WifiConfigManagerTest {
     }
 
     /**
-     * Verifies the loading of networks using {@link WifiConfigManager#loadFromStore()} attempts
-     * to migrate data from legacy stores when the new store files are absent.
+     * Verifies the loading of networks using {@link WifiConfigManager#migrateFromLegacyStore()} ()}
+     * attempts to migrate data from legacy stores when the legacy store files are present.
      */
     @Test
     public void testMigrationFromLegacyStore() throws Exception {
@@ -2231,16 +2333,13 @@ public class WifiConfigManagerTest {
         WifiConfigStoreDataLegacy storeData =
                 new WifiConfigStoreDataLegacy(networks, deletedEphermalSSIDs);
 
-        // New store files not present, so migrate from the old store.
-        when(mWifiConfigStore.areStoresPresent()).thenReturn(false);
         when(mWifiConfigStoreLegacy.areStoresPresent()).thenReturn(true);
         when(mWifiConfigStoreLegacy.read()).thenReturn(storeData);
 
-        // Now trigger a load from store. This should populate the in memory list with all the
-        // networks above from the legacy store.
-        mWifiConfigManager.loadFromStore();
+        // Now trigger the migration from legacy store. This should populate the in memory list with
+        // all the networks above from the legacy store.
+        assertTrue(mWifiConfigManager.migrateFromLegacyStore());
 
-        verify(mWifiConfigStore, never()).read();
         verify(mWifiConfigStoreLegacy).read();
         verify(mWifiConfigStoreLegacy).removeStores();
 
@@ -2249,6 +2348,22 @@ public class WifiConfigManagerTest {
         WifiConfigurationTestUtil.assertConfigurationsEqualForConfigManagerAddOrUpdate(
                 networks, retrievedNetworks);
         assertTrue(mWifiConfigManager.wasEphemeralNetworkDeleted(deletedEphemeralSSID));
+    }
+
+    /**
+     * Verifies the loading of networks using {@link WifiConfigManager#migrateFromLegacyStore()} ()}
+     * does not attempt to migrate data from legacy stores when the legacy store files are absent
+     * (i.e migration was already done once).
+     */
+    @Test
+    public void testNoDuplicateMigrationFromLegacyStore() throws Exception {
+        when(mWifiConfigStoreLegacy.areStoresPresent()).thenReturn(false);
+
+        // Now trigger a migration from legacy store.
+        assertTrue(mWifiConfigManager.migrateFromLegacyStore());
+
+        verify(mWifiConfigStoreLegacy, never()).read();
+        verify(mWifiConfigStoreLegacy, never()).removeStores();
     }
 
     /**
@@ -2264,7 +2379,7 @@ public class WifiConfigManagerTest {
 
         // Now trigger a load from store. This should populate the in memory list with all the
         // networks above.
-        mWifiConfigManager.loadFromStore();
+        assertTrue(mWifiConfigManager.loadFromStore());
 
         verify(mWifiConfigStore, never()).read();
         verify(mWifiConfigStoreLegacy, never()).read();

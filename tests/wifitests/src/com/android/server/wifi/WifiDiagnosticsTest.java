@@ -59,6 +59,7 @@ public class WifiDiagnosticsTest {
     @Mock Context mContext;
     @Mock WifiInjector mWifiInjector;
     @Spy FakeWifiLog mLog;
+    @Mock LastMileLogger mLastMileLogger;
     WifiDiagnostics mWifiDiagnostics;
 
     private static final String FAKE_RING_BUFFER_NAME = "fake-ring-buffer";
@@ -107,7 +108,7 @@ public class WifiDiagnosticsTest {
         when(mWifiInjector.makeLog(anyString())).thenReturn(mLog);
 
         mWifiDiagnostics = new WifiDiagnostics(
-                mContext, mWifiInjector, mWsm, mWifiNative, mBuildProperties);
+                mContext, mWifiInjector, mWsm, mWifiNative, mBuildProperties, mLastMileLogger);
         mWifiNative.enableVerboseLogging(0);
     }
 
@@ -279,14 +280,14 @@ public class WifiDiagnosticsTest {
     }
 
     /**
-     * Verifies that, when verbose mode is not enabled, reportConnectionFailure() still
-     * fetches packet fates.
+     * Verifies that, when verbose mode is not enabled,
+     * reportConnectionEvent(WifiDiagnostics.CONNECTION_EVENT_FAILED) still fetches packet fates.
      */
     @Test
     public void reportConnectionFailureIsIgnoredWithoutVerboseMode() {
         final boolean verbosityToggle = false;
         mWifiDiagnostics.startLogging(verbosityToggle);
-        mWifiDiagnostics.reportConnectionFailure();
+        mWifiDiagnostics.reportConnectionEvent(WifiDiagnostics.CONNECTION_EVENT_FAILED);
         verify(mWifiNative).getTxPktFates(anyObject());
         verify(mWifiNative).getRxPktFates(anyObject());
     }
@@ -298,9 +299,33 @@ public class WifiDiagnosticsTest {
     public void reportConnectionFailureFetchesFatesInVerboseMode() {
         final boolean verbosityToggle = true;
         mWifiDiagnostics.startLogging(verbosityToggle);
-        mWifiDiagnostics.reportConnectionFailure();
+        mWifiDiagnostics.reportConnectionEvent(WifiDiagnostics.CONNECTION_EVENT_FAILED);
         verify(mWifiNative).getTxPktFates(anyObject());
         verify(mWifiNative).getRxPktFates(anyObject());
+    }
+
+    @Test
+    public void reportConnectionEventPropagatesStartToLastMileLogger() {
+        final boolean verbosityToggle = false;
+        mWifiDiagnostics.startLogging(verbosityToggle);
+        mWifiDiagnostics.reportConnectionEvent(WifiDiagnostics.CONNECTION_EVENT_STARTED);
+        verify(mLastMileLogger).reportConnectionEvent(WifiDiagnostics.CONNECTION_EVENT_STARTED);
+    }
+
+    @Test
+    public void reportConnectionEventPropagatesSuccessToLastMileLogger() {
+        final boolean verbosityToggle = false;
+        mWifiDiagnostics.startLogging(verbosityToggle);
+        mWifiDiagnostics.reportConnectionEvent(WifiDiagnostics.CONNECTION_EVENT_SUCCEEDED);
+        verify(mLastMileLogger).reportConnectionEvent(WifiDiagnostics.CONNECTION_EVENT_SUCCEEDED);
+    }
+
+    @Test
+    public void reportConnectionEventPropagatesFailureToLastMileLogger() {
+        final boolean verbosityToggle = false;
+        mWifiDiagnostics.startLogging(verbosityToggle);
+        mWifiDiagnostics.reportConnectionEvent(WifiDiagnostics.CONNECTION_EVENT_FAILED);
+        verify(mLastMileLogger).reportConnectionEvent(WifiDiagnostics.CONNECTION_EVENT_FAILED);
     }
 
     /**
@@ -311,7 +336,7 @@ public class WifiDiagnosticsTest {
         final boolean verbosityToggle = true;
         when(mWifiNative.getRxPktFates(anyObject())).thenReturn(false);
         mWifiDiagnostics.startLogging(verbosityToggle);
-        mWifiDiagnostics.reportConnectionFailure();
+        mWifiDiagnostics.reportConnectionEvent(WifiDiagnostics.CONNECTION_EVENT_FAILED);
         verify(mWifiNative).getTxPktFates(anyObject());
         verify(mWifiNative).getRxPktFates(anyObject());
     }
@@ -324,7 +349,7 @@ public class WifiDiagnosticsTest {
         final boolean verbosityToggle = true;
         when(mWifiNative.getTxPktFates(anyObject())).thenReturn(false);
         mWifiDiagnostics.startLogging(verbosityToggle);
-        mWifiDiagnostics.reportConnectionFailure();
+        mWifiDiagnostics.reportConnectionEvent(WifiDiagnostics.CONNECTION_EVENT_FAILED);
         verify(mWifiNative).getTxPktFates(anyObject());
         verify(mWifiNative).getRxPktFates(anyObject());
     }
@@ -366,7 +391,7 @@ public class WifiDiagnosticsTest {
     public void dumpSucceedsWhenFatesHaveBeenFetchedButAreEmpty() {
         final boolean verbosityToggle = true;
         mWifiDiagnostics.startLogging(verbosityToggle);
-        mWifiDiagnostics.reportConnectionFailure();
+        mWifiDiagnostics.reportConnectionEvent(WifiDiagnostics.CONNECTION_EVENT_FAILED);
         verify(mWifiNative).getTxPktFates(anyObject());
         verify(mWifiNative).getRxPktFates(anyObject());
 
@@ -410,7 +435,7 @@ public class WifiDiagnosticsTest {
                 return true;
             }
         });
-        mWifiDiagnostics.reportConnectionFailure();
+        mWifiDiagnostics.reportConnectionEvent(WifiDiagnostics.CONNECTION_EVENT_FAILED);
 
         StringWriter sw = new StringWriter();
         PrintWriter pw = new PrintWriter(sw);
@@ -535,7 +560,7 @@ public class WifiDiagnosticsTest {
                 return true;
             }
         });
-        mWifiDiagnostics.reportConnectionFailure();
+        mWifiDiagnostics.reportConnectionEvent(WifiDiagnostics.CONNECTION_EVENT_FAILED);
         verify(mWifiNative).getTxPktFates(anyObject());
         verify(mWifiNative).getRxPktFates(anyObject());
 
@@ -749,5 +774,12 @@ public class WifiDiagnosticsTest {
         PrintWriter pw = new PrintWriter(sw);
         mWifiDiagnostics.dump(new FileDescriptor(), pw, new String[]{});
         assertTrue(sw.toString().contains(wifiNativeLogMessage));
+    }
+
+    @Test
+    public void dumpRequestsLastMileLoggerDump() {
+        mWifiDiagnostics.dump(
+                new FileDescriptor(), new PrintWriter(new StringWriter()), new String[]{});
+        verify(mLastMileLogger).dump(anyObject());
     }
 }

@@ -59,9 +59,18 @@ LOCAL_SRC_FILES := $(call all-java-files-under, java) \
 	$(call all-logtags-files-under, java)
 
 LOCAL_JAVA_LIBRARIES := bouncycastle conscrypt jsr305 services
+LOCAL_STATIC_JAVA_LIBRARIES := \
+	android.hardware.wifi@1.0-java-static \
+	android.hardware.wifi.supplicant@1.0-java-static \
+	android.hidl.base@1.0-java-static \
+	android.hidl.manager@1.0-java-static
 LOCAL_REQUIRED_MODULES := services
 LOCAL_MODULE_TAGS :=
 LOCAL_MODULE := wifi-service
+
+ifneq (,$(filter userdebug eng, $(TARGET_BUILD_VARIANT)))
+LOCAL_INIT_RC := wifi-events.rc
+endif
 
 ifeq ($(EMMA_INSTRUMENT_FRAMEWORK),true)
 LOCAL_EMMA_INSTRUMENT := true
@@ -71,4 +80,4 @@ LOCAL_JACK_COVERAGE_INCLUDE_FILTER := com.android.server.wifi.*
 
 include $(BUILD_JAVA_LIBRARY)
 
-endif
+endif  # !TARGET_BUILD_PDK

@@ -125,20 +125,34 @@ public class RecommendedNetworkEvaluator implements WifiNetworkSelector.NetworkE
             return mExternalScoreEvaluator.evaluateNetworks(scanDetails, currentNetwork,
                     currentBssid, connected, untrustedNetworkAllowed, connectableNetworks);
         }
+        List<WifiConfiguration> availableConfiguredNetworks = new ArrayList<>();
         List<ScanResult> scanResults = new ArrayList<>();
         for (int i = 0; i < scanDetails.size(); i++) {
             ScanDetail scanDetail = scanDetails.get(i);
             ScanResult scanResult = scanDetail.getScanResult();
+            if (scanResult == null) continue;
             if (mWifiConfigManager.wasEphemeralNetworkDeleted(
                     ScanResultUtil.createQuotedSSID(scanResult.SSID))) {
                 continue;
             }
-            scanResult.untrusted =
-                    mWifiConfigManager.getSavedNetworkForScanDetailAndCache(scanDetail) == null;
+
+            final WifiConfiguration configuredNetwork =
+                    mWifiConfigManager.getSavedNetworkForScanDetailAndCache(scanDetail);
+
+            scanResult.untrusted = configuredNetwork == null || configuredNetwork.ephemeral;
+
             if (!untrustedNetworkAllowed && scanResult.untrusted) {
                 continue;
             }
+
+            if (configuredNetwork != null) {
+                availableConfiguredNetworks.add(configuredNetwork);
+            }
             scanResults.add(scanResult);
+            // Track potential connectable networks for the watchdog.
+            if (connectableNetworks != null) {
+                connectableNetworks.add(Pair.create(scanDetail, configuredNetwork));
+            }
         }
 
         if (scanResults.isEmpty()) {
@@ -146,8 +160,15 @@ public class RecommendedNetworkEvaluator implements WifiNetworkSelector.NetworkE
         }
 
         ScanResult[] scanResultArray = scanResults.toArray(new ScanResult[scanResults.size()]);
+        WifiConfiguration[] availableConfigsArray = availableConfiguredNetworks
+                .toArray(new WifiConfiguration[availableConfiguredNetworks.size()]);
+        int lastSelectedNetworkId = mWifiConfigManager.getLastSelectedNetwork();
+        long lastSelectedNetworkTimestamp = mWifiConfigManager.getLastSelectedTimeStamp();
         RecommendationRequest request = new RecommendationRequest.Builder()
                 .setScanResults(scanResultArray)
+                .setConnectedWifiConfig(currentNetwork)
+                .setConnectableConfigs(availableConfigsArray)
+                .setLastSelectedNetwork(lastSelectedNetworkId, lastSelectedNetworkTimestamp)
                 // TODO: pass in currently recommended network
                 .build();
         RecommendationResult result = mNetworkScoreManager.requestRecommendation(request);

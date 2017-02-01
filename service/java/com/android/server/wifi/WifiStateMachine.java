@@ -54,6 +54,7 @@ import android.net.NetworkRequest;
 import android.net.NetworkUtils;
 import android.net.RouteInfo;
 import android.net.StaticIpConfiguration;
+import android.net.TrafficStats;
 import android.net.dhcp.DhcpClient;
 import android.net.ip.IpManager;
 import android.net.wifi.IApInterface;
@@ -1255,8 +1256,6 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
     /**
      * Initiates connection to a network specified by the user/app. This method checks if the
      * requesting app holds the WIFI_CONFIG_OVERRIDE permission.
-     * a) If yes, we start a new connection attempt to the specified network.
-     * b) if no, then we ask connectivity manager to start a new scan and trigger network selection.
      */
     private boolean connectToUserSelectNetwork(int netId, int uid) {
         if (!mWifiConfigManager.enableNetwork(netId, true, uid)) {
@@ -1265,22 +1264,18 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
             return false;
         }
         if (!mWifiConfigManager.checkAndUpdateLastConnectUid(netId, uid)) {
-            loge("connectToUserSelectNetwork uid " + uid
-                    + " did not have the permissions to connect=" + netId);
-            // App does not have the permission to force a connection. But, we should still
-            // reconsider this newly enabled network for network selection.
-            mWifiConnectivityManager.forceConnectivityScan();
+            logi("connectToUserSelectNetwork Allowing uid " + uid
+                    + " with insufficient permissions to connect=" + netId);
+        }
+        // Trigger an immediate connection to the specified network. We're also noting the user
+        // connect choice here, so that it will be considered in the next network selection.
+        mWifiConnectivityManager.setUserConnectChoice(netId);
+        if (mWifiInfo.getNetworkId() == netId) {
+            // We're already connected to the user specified network, don't trigger a
+            // reconnection.
+            logi("connectToUserSelectNetwork already connecting/connected=" + netId);
         } else {
-            // Trigger an immediate connection to the specified network. We're also noting the user
-            // connect choice here, so that it will be considered in the next network selection.
-            mWifiConnectivityManager.setUserConnectChoice(netId);
-            if (mWifiInfo.getNetworkId() == netId) {
-                // We're already connected to the user specified network, don't trigger a
-                // reconnection.
-                logi("connectToUserSelectNetwork already connecting/connected=" + netId);
-            } else {
-                startConnectToNetwork(netId, SUPPLICANT_BSSID_ANY);
-            }
+            startConnectToNetwork(netId, SUPPLICANT_BSSID_ANY);
         }
         return true;
     }
@@ -1341,16 +1336,16 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
 
     // For debugging, keep track of last message status handling
     // TODO, find an equivalent mechanism as part of parent class
-    private static int MESSAGE_HANDLING_STATUS_PROCESSED = 2;
-    private static int MESSAGE_HANDLING_STATUS_OK = 1;
-    private static int MESSAGE_HANDLING_STATUS_UNKNOWN = 0;
-    private static int MESSAGE_HANDLING_STATUS_REFUSED = -1;
-    private static int MESSAGE_HANDLING_STATUS_FAIL = -2;
-    private static int MESSAGE_HANDLING_STATUS_OBSOLETE = -3;
-    private static int MESSAGE_HANDLING_STATUS_DEFERRED = -4;
-    private static int MESSAGE_HANDLING_STATUS_DISCARD = -5;
-    private static int MESSAGE_HANDLING_STATUS_LOOPED = -6;
-    private static int MESSAGE_HANDLING_STATUS_HANDLING_ERROR = -7;
+    private static final int MESSAGE_HANDLING_STATUS_PROCESSED = 2;
+    private static final int MESSAGE_HANDLING_STATUS_OK = 1;
+    private static final int MESSAGE_HANDLING_STATUS_UNKNOWN = 0;
+    private static final int MESSAGE_HANDLING_STATUS_REFUSED = -1;
+    private static final int MESSAGE_HANDLING_STATUS_FAIL = -2;
+    private static final int MESSAGE_HANDLING_STATUS_OBSOLETE = -3;
+    private static final int MESSAGE_HANDLING_STATUS_DEFERRED = -4;
+    private static final int MESSAGE_HANDLING_STATUS_DISCARD = -5;
+    private static final int MESSAGE_HANDLING_STATUS_LOOPED = -6;
+    private static final int MESSAGE_HANDLING_STATUS_HANDLING_ERROR = -7;
 
     private int messageHandlingStatus = 0;
 
@@ -2091,7 +2086,6 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
         pw.println("mOperationalMode " + mOperationalMode);
         pw.println("mUserWantsSuspendOpt " + mUserWantsSuspendOpt);
         pw.println("mSuspendOptNeedsDisabled " + mSuspendOptNeedsDisabled);
-        pw.println("Supplicant status " + mWifiNative.status(true));
         pw.println("mSystemSupportsFastBssTransition "
                 + mWifiSupplicantControl.getSystemSupportsFastBssTransition());
         if (mCountryCode.getCountryCodeSentToDriver() != null) {
@@ -3002,6 +2996,7 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                     /* The gateway's MAC address is known */
                     if ((address == null) && (timeout > 0)) {
                         boolean reachable = false;
+                        TrafficStats.setThreadStatsTag(TrafficStats.TAG_SYSTEM_PROBE);
                         try {
                             reachable = gateway.isReachable(timeout);
                         } catch (Exception e) {
@@ -3009,6 +3004,7 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                                     + gateway.getHostAddress());
 
                         } finally {
+                            TrafficStats.clearThreadStatsTag();
                             if (reachable == true) {
 
                                 address = macAddressFromRoute(gateway.getHostAddress());
@@ -3314,6 +3310,15 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
     }
 
     /**
+     * Inform other components that a new connection attempt is starting.
+     */
+    private void reportConnectionAttemptStart(
+            WifiConfiguration config, String targetBSSID, int roamType) {
+        mWifiMetrics.startConnectionEvent(config, targetBSSID, roamType);
+        mWifiDiagnostics.reportConnectionEvent(WifiDiagnostics.CONNECTION_EVENT_STARTED);
+    }
+
+    /**
      * Inform other components (WifiMetrics, WifiDiagnostics, etc.) that the current connection attempt
      * has concluded.
      */
@@ -3321,12 +3326,24 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
         mWifiMetrics.endConnectionEvent(level2FailureCode, connectivityFailureCode);
         switch (level2FailureCode) {
             case WifiMetrics.ConnectionEvent.FAILURE_NONE:
+                // Ideally, we'd wait until IP reachability has been confirmed. this code falls
+                // short in two ways:
+                // - at the time of the CMD_IP_CONFIGURATION_SUCCESSFUL event, we don't know if we
+                //   actually have ARP reachability. it might be better to wait until the wifi
+                //   network has been validated by IpManager.
+                // - in the case of a roaming event (intra-SSID), we probably trigger when L2 is
+                //   complete.
+                //
+                // TODO(b/34181219): Fix the above.
+                mWifiDiagnostics.reportConnectionEvent(WifiDiagnostics.CONNECTION_EVENT_SUCCEEDED);
+                break;
             case WifiMetrics.ConnectionEvent.FAILURE_REDUNDANT_CONNECTION_ATTEMPT:
             case WifiMetrics.ConnectionEvent.FAILURE_CONNECT_NETWORK_FAILED:
-                // WifiDiagnostics doesn't care about success, or pre-empted connections.
+                // WifiDiagnostics doesn't care about pre-empted connections, or cases
+                // where we failed to initiate a connection attempt with supplicant.
                 break;
             default:
-                mWifiDiagnostics.reportConnectionFailure();
+                mWifiDiagnostics.reportConnectionEvent(WifiDiagnostics.CONNECTION_EVENT_FAILED);
         }
     }
 
@@ -3647,20 +3664,16 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
      */
     private void getAdditionalWifiServiceInterfaces() {
         // First set up Wifi Direct
-        // TODO: b/34193861 determine if we can avoid starting WIFI_P2P_SERVICE when not supported
-        IBinder s1 = mFacade.getService(Context.WIFI_P2P_SERVICE);
-        WifiP2pServiceImpl wifiP2pServiceImpl =
-                (WifiP2pServiceImpl) IWifiP2pManager.Stub.asInterface(s1);
+        if (mP2pSupported) {
+            IBinder s1 = mFacade.getService(Context.WIFI_P2P_SERVICE);
+            WifiP2pServiceImpl wifiP2pServiceImpl =
+                    (WifiP2pServiceImpl) IWifiP2pManager.Stub.asInterface(s1);
 
-        if (wifiP2pServiceImpl != null) {
-            mWifiP2pChannel = new AsyncChannel();
-            mWifiP2pChannel.connect(mContext, getHandler(),
-                    wifiP2pServiceImpl.getP2pStateMachineMessenger());
-        }
-
-        // Set up Wifi Aware
-        if (mAwareSupported) {
-            mWifiAwareManager = mContext.getSystemService(WifiAwareManager.class);
+            if (wifiP2pServiceImpl != null) {
+                mWifiP2pChannel = new AsyncChannel();
+                mWifiP2pChannel.connect(mContext, getHandler(),
+                        wifiP2pServiceImpl.getP2pStateMachineMessenger());
+            }
         }
     }
 
@@ -3680,7 +3693,18 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                     if (ac == mWifiP2pChannel) {
                         if (message.arg1 == AsyncChannel.STATUS_SUCCESSFUL) {
                             p2pSendMessage(AsyncChannel.CMD_CHANNEL_FULL_CONNECTION);
+                            // since the p2p channel is connected, we should enable p2p if we are in
+                            // connect mode.  We may not be in connect mode yet, we may have just
+                            // set the operational mode and started to set up for connect mode.
+                            if (mOperationalMode == CONNECT_MODE) {
+                                // This message will only be handled if we are in Connect mode.
+                                // If we are not in connect mode yet, this will be dropped and the
+                                // ConnectMode.enter method will call to enable p2p.
+                                sendMessage(CMD_ENABLE_P2P);
+                            }
                         } else {
+                            // TODO: We should probably do some cleanup or attempt a retry
+                            // b/34283611
                             loge("WifiP2pService connection failure, error=" + message.arg1);
                         }
                     } else {
@@ -3692,7 +3716,7 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                     AsyncChannel ac = (AsyncChannel) message.obj;
                     if (ac == mWifiP2pChannel) {
                         loge("WifiP2pService channel lost, message.arg1 =" + message.arg1);
-                        //TODO: Re-establish connection to state machine after a delay
+                        //TODO: Re-establish connection to state machine after a delay (b/34283611)
                         // mWifiP2pChannel.connect(mContext, getHandler(),
                         // mWifiP2pManager.getMessenger());
                     }
@@ -3711,10 +3735,11 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                     replyToMessage(message, message.what, FAILURE);
                     break;
                 case CMD_GET_CONFIGURED_NETWORKS:
-                    replyToMessage(message, message.what, (List<WifiConfiguration>) null);
+                    replyToMessage(message, message.what, mWifiConfigManager.getSavedNetworks());
                     break;
                 case CMD_GET_PRIVILEGED_CONFIGURED_NETWORKS:
-                    replyToMessage(message, message.what, (List<WifiConfiguration>) null);
+                    replyToMessage(message, message.what,
+                            mWifiConfigManager.getConfiguredNetworksWithPasswords());
                     break;
                 case CMD_ENABLE_RSSI_POLL:
                     mEnableRssiPolling = (message.arg1 == 1);
@@ -3729,6 +3754,9 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                 case CMD_BOOT_COMPLETED:
                     // get other services that we need to manage
                     getAdditionalWifiServiceInterfaces();
+                    if (!mWifiConfigManager.loadFromStore()) {
+                        Log.e(TAG, "Failed to load from config store");
+                    }
                     maybeRegisterNetworkFactory();
                     break;
                 case CMD_SCREEN_STATE_CHANGED:
@@ -3766,6 +3794,7 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                 case DhcpClient.CMD_PRE_DHCP_ACTION_COMPLETE:
                 case DhcpClient.CMD_POST_DHCP_ACTION:
                 case CMD_NO_NETWORKS_PERIODIC_SCAN:
+                case CMD_ENABLE_P2P:
                 case CMD_DISABLE_P2P_RSP:
                 case WifiMonitor.SUP_REQUEST_IDENTITY:
                 case CMD_TEST_NETWORK_DISCONNECT:
@@ -4011,6 +4040,11 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                         cleanup();
                         break;
                     }
+                    /**
+                    if (!mWifiNative.initializeSupplicantHal()) {
+                        Log.e(TAG, "Failed to start supplicant Hal");
+                    }
+                    */
                     setSupplicantLogLevel();
                     setWifiState(WIFI_STATE_ENABLING);
                     if (mVerboseLoggingEnabled) log("Supplicant start successful");
@@ -4084,7 +4118,10 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                     mLastSignalLevel = -1;
 
                     mWifiInfo.setMacAddress(mWifiNative.getMacAddress());
-                    mWifiConfigManager.loadFromStore();
+                    // Attempt to migrate data out of legacy store.
+                    if (!mWifiConfigManager.migrateFromLegacyStore()) {
+                        Log.e(TAG, "Failed to migrate from legacy config store");
+                    }
                     initializeWpsDetails();
                     sendSupplicantConnectionChangedBroadcast(true);
                     transitionTo(mSupplicantStartedState);
@@ -4217,14 +4254,21 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                 }
             }
 
-            if (mAwareSupported && mWifiAwareManager != null) {
-                if (mOperationalMode == CONNECT_MODE) {
-                    mWifiAwareManager.enableUsage();
+            if (mAwareSupported) {
+                if (mWifiAwareManager == null) {
+                    mWifiAwareManager = mContext.getSystemService(WifiAwareManager.class);
+                }
+                if (mWifiAwareManager == null) {
+                    Log.e(TAG, "Can't get WifiAwareManager to enable usage!");
                 } else {
+                    if (mOperationalMode == CONNECT_MODE) {
+                        mWifiAwareManager.enableUsage();
+                    } else {
                     /*
                      * Aware state machine starts in disabled state. Nothing
                      * needed to keep it disabled.
                      */
+                    }
                 }
             }
 
@@ -4392,8 +4436,15 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
             mContext.sendStickyBroadcastAsUser(intent, UserHandle.ALL);
             mBufferedScanMsg.clear();
 
-            if (mAwareSupported && mWifiAwareManager != null) {
-                mWifiAwareManager.disableUsage();
+            if (mAwareSupported) {
+                if (mWifiAwareManager == null) {
+                    mWifiAwareManager = mContext.getSystemService(WifiAwareManager.class);
+                }
+                if (mWifiAwareManager == null) {
+                    Log.e(TAG, "Can't get WifiAwareManager (to disable usage)!");
+                } else {
+                    mWifiAwareManager.disableUsage();
+                }
             }
 
             mNetworkInfo.setIsAvailable(false);
@@ -4759,6 +4810,8 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
             mWifiConnectivityManager.setWifiEnabled(true);
             // Inform metrics that Wifi is Enabled (but not yet connected)
             mWifiMetrics.setWifiState(WifiMetricsProto.WifiLog.WIFI_DISCONNECTED);
+            // Inform p2p service that wifi is up and ready when applicable
+            p2pSendMessage(WifiStateMachine.CMD_ENABLE_P2P);
         }
 
         @Override
@@ -4966,10 +5019,6 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                     // Inform the backup manager about a data change
                     mBackupManagerProxy.notifyDataChanged();
                     break;
-                case CMD_GET_CONFIGURED_NETWORKS:
-                    replyToMessage(message, message.what,
-                            mWifiConfigManager.getSavedNetworks());
-                    break;
                 case WifiMonitor.SUP_REQUEST_IDENTITY:
                     int supplicantNetworkId = message.arg2;
                     netId = lookupFrameworkNetworkId(supplicantNetworkId);
@@ -5022,10 +5071,6 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                         loge("Invalid sim auth request");
                     }
                     break;
-                case CMD_GET_PRIVILEGED_CONFIGURED_NETWORKS:
-                    replyToMessage(message, message.what,
-                            mWifiConfigManager.getConfiguredNetworksWithPasswords());
-                    break;
                 case CMD_GET_MATCHING_CONFIG:
                     // TODO(b/31065385)
                     replyToMessage(message, message.what, null);
@@ -5065,7 +5110,7 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                     mTargetNetworkId = netId;
                     setTargetBssid(config, bssid);
 
-                    mWifiMetrics.startConnectionEvent(config, mTargetRoamBSSID,
+                    reportConnectionAttemptStart(config, mTargetRoamBSSID,
                             WifiMetricsProto.ConnectionEvent.ROAM_UNRELATED);
                     boolean shouldDisconnect = (getCurrentState() != mDisconnectedState);
                     if (mWifiSupplicantControl.connectToNetwork(config, shouldDisconnect)) {
@@ -5287,6 +5332,9 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                 case CMD_MATCH_PROVIDER_NETWORK:
                     // TODO(b/31065385): Passpoint config management.
                     replyToMessage(message, message.what, 0);
+                    break;
+                case CMD_ENABLE_P2P:
+                    p2pSendMessage(WifiStateMachine.CMD_ENABLE_P2P);
                     break;
                 default:
                     return NOT_HANDLED;
@@ -6227,7 +6275,7 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                             + " config " + config.configKey()
                             + " targetRoamBSSID " + mTargetRoamBSSID);
 
-                    mWifiMetrics.startConnectionEvent(config, mTargetRoamBSSID,
+                    reportConnectionAttemptStart(config, mTargetRoamBSSID,
                             WifiMetricsProto.ConnectionEvent.ROAM_ENTERPRISE);
                     if (mWifiSupplicantControl.roamToNetwork(config)) {
                         lastConnectAttemptTimestamp = mClock.getWallClockMillis();

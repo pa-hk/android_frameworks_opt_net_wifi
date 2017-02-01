@@ -18,7 +18,6 @@ package com.android.server.wifi;
 
 import android.content.Context;
 import android.net.NetworkScoreManager;
-import android.net.NetworkScorerAppManager;
 import android.net.wifi.IApInterface;
 import android.net.wifi.IWifiScanner;
 import android.net.wifi.IWificond;
@@ -29,6 +28,7 @@ import android.net.wifi.WifiScanner;
 import android.os.HandlerThread;
 import android.os.IBinder;
 import android.os.INetworkManagementService;
+import android.os.Looper;
 import android.os.ServiceManager;
 import android.os.SystemProperties;
 import android.os.UserManager;
@@ -70,6 +70,9 @@ public class WifiInjector {
     private final BackupManagerProxy mBackupManagerProxy = new BackupManagerProxy();
     private final WifiApConfigStore mWifiApConfigStore;
     private final WifiNative mWifiNative;
+    private final WifiNative mWifiP2pNative;
+    private final WifiSupplicantHal mWifiSupplicantHal;
+    private final WifiVendorHal mWifiVendorHal;
     private final WifiStateMachine mWifiStateMachine;
     private final WifiSettingsStore mSettingsStore;
     private final WifiCertManager mCertManager;
@@ -102,6 +105,7 @@ public class WifiInjector {
     private final PasspointManager mPasspointManager;
     private final SIMAccessor mSimAccessor;
     private HandlerThread mWifiAwareHandlerThread;
+    private HalDeviceManager mHalDeviceManager;
 
     private final boolean mUseRealLogger;
 
@@ -123,14 +127,16 @@ public class WifiInjector {
                 R.bool.config_wifi_enable_wifi_firmware_debugging);
         mSettingsStore = new WifiSettingsStore(mContext);
         mWifiPermissionsWrapper = new WifiPermissionsWrapper(mContext);
+        mNetworkScoreManager = mContext.getSystemService(NetworkScoreManager.class);
         mWifiPermissionsUtil = new WifiPermissionsUtil(mWifiPermissionsWrapper, mContext,
-                mSettingsStore, UserManager.get(mContext), new NetworkScorerAppManager(mContext));
+                mSettingsStore, UserManager.get(mContext), mNetworkScoreManager, this);
 
         // Now create and start handler threads
         mWifiServiceHandlerThread = new HandlerThread("WifiService");
         mWifiServiceHandlerThread.start();
         mWifiStateMachineHandlerThread = new HandlerThread("WifiStateMachine");
         mWifiStateMachineHandlerThread.start();
+        Looper wifiStateMachineLooper = mWifiStateMachineHandlerThread.getLooper();
 
         // Now get instances of all the objects that depend on the HandlerThreads
         mTrafficPoller =  new WifiTrafficPoller(mContext, mWifiServiceHandlerThread.getLooper(),
@@ -141,13 +147,24 @@ public class WifiInjector {
                 mContext.getResources()
                         .getBoolean(R.bool.config_wifi_revert_country_code_on_cellular_loss));
         mWifiApConfigStore = new WifiApConfigStore(mContext, mBackupManagerProxy);
+
+        // Modules interacting with Native.
+        mHalDeviceManager = new HalDeviceManager();
+        mWifiVendorHal = new WifiVendorHal(mHalDeviceManager, mWifiStateMachineHandlerThread);
+        mWifiSupplicantHal =
+                new WifiSupplicantHal(mHalDeviceManager, mWifiStateMachineHandlerThread);
         mWifiNative = WifiNative.getWlanNativeInterface();
+        mWifiNative.setWifiSupplicantHal(mWifiSupplicantHal);
+        mWifiNative.setWifiVendorHal(mWifiVendorHal);
+        mWifiP2pNative = WifiNative.getP2pNativeInterface();
+        mWifiP2pNative.setWifiSupplicantHal(mWifiSupplicantHal);
+        mWifiP2pNative.setWifiVendorHal(mWifiVendorHal);
 
         // WifiConfigManager/Store objects and their dependencies.
         // New config store
         mWifiKeyStore = new WifiKeyStore(mKeyStore);
         mWifiConfigStore = new WifiConfigStore(
-                mContext, mWifiStateMachineHandlerThread.getLooper(), mClock,
+                mContext, wifiStateMachineLooper, mClock,
                 WifiConfigStore.createSharedFile());
         // Legacy config store
         DelayedDiskWrite writer = new DelayedDiskWrite();
@@ -161,17 +178,15 @@ public class WifiInjector {
         mWifiConfigManager = new WifiConfigManager(mContext, mFrameworkFacade, mClock,
                 UserManager.get(mContext), TelephonyManager.from(mContext),
                 mWifiKeyStore, mWifiConfigStore, mWifiConfigStoreLegacy, mWifiPermissionsWrapper);
-        mNetworkScoreManager = (NetworkScoreManager)
-                mContext.getSystemService(Context.NETWORK_SCORE_SERVICE);
         mWifiNetworkScoreCache = new WifiNetworkScoreCache(mContext);
         mWifiNetworkSelector = new WifiNetworkSelector(mContext, mWifiConfigManager, mClock);
         LocalLog localLog = mWifiNetworkSelector.getLocalLog();
         mSavedNetworkEvaluator = new SavedNetworkEvaluator(mContext,
-                mWifiConfigManager, mClock, localLog);
+                mWifiConfigManager, mClock, localLog, wifiStateMachineLooper, mFrameworkFacade);
         ExternalScoreEvaluator externalScoreEvaluator = new ExternalScoreEvaluator(
                 mContext, mWifiConfigManager, mWifiNetworkScoreCache, mClock, localLog);
         mRecommendedNetworkEvaluator = new RecommendedNetworkEvaluator(context,
-                context.getContentResolver(), mWifiStateMachineHandlerThread.getLooper(),
+                context.getContentResolver(), wifiStateMachineLooper,
                 mFrameworkFacade, mWifiNetworkScoreCache, mNetworkScoreManager, mWifiConfigManager,
                 localLog, externalScoreEvaluator);
         mSimAccessor = new SIMAccessor(mContext);
@@ -180,7 +195,7 @@ public class WifiInjector {
         mPasspointNetworkEvaluator = new PasspointNetworkEvaluator(
                 mPasspointManager, mWifiConfigManager, localLog);
         mWifiStateMachine = new WifiStateMachine(mContext, mFrameworkFacade,
-                mWifiStateMachineHandlerThread.getLooper(), UserManager.get(mContext),
+                wifiStateMachineLooper, UserManager.get(mContext),
                 this, mBackupManagerProxy, mCountryCode, mWifiNative);
         mCertManager = new WifiCertManager(mContext);
         mLockManager = new WifiLockManager(mContext, BatteryStatsService.getService());
@@ -207,6 +222,10 @@ public class WifiInjector {
 
     public WifiMetrics getWifiMetrics() {
         return mWifiMetrics;
+    }
+
+    public WifiSupplicantHal getWifiSupplicantHal() {
+        return mWifiSupplicantHal;
     }
 
     public BackupManagerProxy getBackupManagerProxy() {
@@ -338,7 +357,8 @@ public class WifiInjector {
     public BaseWifiDiagnostics makeWifiDiagnostics(WifiNative wifiNative) {
         if (mUseRealLogger) {
             return new WifiDiagnostics(
-                    mContext, this, mWifiStateMachine, wifiNative, mBuildProperties);
+                    mContext, this, mWifiStateMachine, wifiNative, mBuildProperties,
+                    new LastMileLogger(this));
         } else {
             return new BaseWifiDiagnostics();
         }
@@ -402,5 +422,12 @@ public class WifiInjector {
             mWifiAwareHandlerThread.start();
         }
         return mWifiAwareHandlerThread;
+    }
+
+    /**
+     * Returns a single instance of HalDeviceManager for injection.
+     */
+    public HalDeviceManager getHalDeviceManager() {
+        return mHalDeviceManager;
     }
 }

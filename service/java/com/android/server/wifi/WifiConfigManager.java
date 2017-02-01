@@ -262,6 +262,16 @@ public class WifiConfigManager {
      */
     private boolean mPendingUnlockStoreRead = true;
     /**
+     * Flag to indicate if we have performed a read from store at all. This is used to gate
+     * any user unlock/switch operations until we read the store (Will happen if wifi is disabled
+     * when user updates from N to O).
+     */
+    private boolean mPendingStoreRead = true;
+    /**
+     * Flag to indicate if the user unlock was deferred until the store load occurs.
+     */
+    private boolean mDeferredUserUnlockRead = false;
+    /**
      * This is keeping track of the next network ID to be assigned. Any new networks will be
      * assigned |mNextNetworkId| as network ID.
      */
@@ -2322,6 +2332,10 @@ public class WifiConfigManager {
             Log.w(TAG, "User already in foreground " + userId);
             return new HashSet<>();
         }
+        if (mPendingStoreRead) {
+            Log.wtf(TAG, "Unexpected user switch before store is read!");
+            return new HashSet<>();
+        }
         if (mUserManager.isUserUnlockingOrUnlocked(mCurrentUserId)) {
             saveToStore(true);
         }
@@ -2351,6 +2365,11 @@ public class WifiConfigManager {
     public void handleUserUnlock(int userId) {
         if (mVerboseLoggingEnabled) {
             Log.v(TAG, "Handling user unlock for " + userId);
+        }
+        if (mPendingStoreRead) {
+            Log.w(TAG, "Ignore user unlock until store is read!");
+            mDeferredUserUnlockRead = true;
+            return;
         }
         if (userId == mCurrentUserId && mPendingUnlockStoreRead) {
             handleUserUnlockOrSwitch(mCurrentUserId);
@@ -2477,6 +2496,7 @@ public class WifiConfigManager {
             Log.w(TAG, "No stored networks found.");
         }
         sendConfiguredNetworksChangedBroadcast();
+        mPendingStoreRead = false;
     }
 
     /**
@@ -2488,35 +2508,38 @@ public class WifiConfigManager {
      *
      * @return true if migration was successful or not needed (fresh install), false if it failed.
      */
-    private boolean migrateFromLegacyStore() {
-        if (mWifiConfigStoreLegacy.areStoresPresent()) {
-            WifiConfigStoreDataLegacy storeData = mWifiConfigStoreLegacy.read();
-            Log.d(TAG, "Reading from legacy store completed");
-            loadInternalData(storeData.getConfigurations(), new ArrayList<WifiConfiguration>(),
-                    storeData.getDeletedEphemeralSSIDs());
-            if (!saveToStore(true)) {
-                return false;
-            }
-            mWifiConfigStoreLegacy.removeStores();
-            Log.d(TAG, "Migration from legacy store completed");
+    public boolean migrateFromLegacyStore() {
+        if (!mWifiConfigStoreLegacy.areStoresPresent()) {
+            Log.d(TAG, "Legacy store files not found. No migration needed!");
+            return true;
         }
+        WifiConfigStoreDataLegacy storeData = mWifiConfigStoreLegacy.read();
+        Log.d(TAG, "Reading from legacy store completed");
+        loadInternalData(storeData.getConfigurations(), new ArrayList<WifiConfiguration>(),
+                storeData.getDeletedEphemeralSSIDs());
+        if (!saveToStore(true)) {
+            return false;
+        }
+        mWifiConfigStoreLegacy.removeStores();
+        Log.d(TAG, "Migration from legacy store completed");
         return true;
     }
 
     /**
      * Read the config store and load the in-memory lists from the store data retrieved and sends
-     * out the networks changed broadcast. This method first checks if there is any data to be
-     * migrated from legacy store files if the new store files aren't present on the device.
+     * out the networks changed broadcast.
      *
      * This reads all the network configurations from:
      * 1. Shared WifiConfigStore.xml
      * 2. User WifiConfigStore.xml
      *
-     * @return true on success, false otherwise.
+     * @return true on success or not needed (fresh install/pending legacy store migration),
+     * false otherwise.
      */
     public boolean loadFromStore() {
         if (!mWifiConfigStore.areStoresPresent()) {
-            return migrateFromLegacyStore();
+            Log.d(TAG, "New store files not found. No saved networks loaded!");
+            return true;
         }
         WifiConfigStoreData storeData;
         try {
@@ -2530,6 +2553,13 @@ public class WifiConfigManager {
         }
         loadInternalData(storeData.getSharedConfigurations(), storeData.getUserConfigurations(),
                 storeData.getDeletedEphemeralSSIDs());
+        // If the user unlock comes in before we load from store, we defer the handling until
+        // the load from store is triggered.
+        if (mDeferredUserUnlockRead) {
+            Log.i(TAG, "Handling user unlock after loading from store.");
+            handleUserUnlockOrSwitch(mCurrentUserId);
+            mDeferredUserUnlockRead = false;
+        }
         return true;
     }
 
