@@ -1021,6 +1021,30 @@ public class WifiConfigManagerTest {
     }
 
     /**
+     * Verifies that ScanDetail added for a network is cached correctly.
+     */
+    @Test
+    public void testUpdateScanDetailForNetwork() {
+        // First add the provided network.
+        WifiConfiguration testNetwork = WifiConfigurationTestUtil.createOpenNetwork();
+        NetworkUpdateResult result = verifyAddNetworkToWifiConfigManager(testNetwork);
+
+        // Now create a dummy scan detail corresponding to the network.
+        ScanDetail scanDetail = createScanDetailForNetwork(testNetwork);
+        ScanResult scanResult = scanDetail.getScanResult();
+
+        mWifiConfigManager.updateScanDetailForNetwork(result.getNetworkId(), scanDetail);
+
+        // Now retrieve the scan detail cache and ensure that the new scan detail is in cache.
+        ScanDetailCache retrievedScanDetailCache =
+                mWifiConfigManager.getScanDetailCacheForNetwork(result.getNetworkId());
+        assertEquals(1, retrievedScanDetailCache.size());
+        ScanResult retrievedScanResult = retrievedScanDetailCache.get(scanResult.BSSID);
+
+        ScanTestUtil.assertScanResultEquals(scanResult, retrievedScanResult);
+    }
+
+    /**
      * Verifies that scan detail cache is trimmed down when the size of the cache for a network
      * exceeds {@link WifiConfigManager#SCAN_CACHE_ENTRIES_MAX_SIZE}.
      */
@@ -2373,18 +2397,41 @@ public class WifiConfigManagerTest {
      */
     @Test
     public void testFreshInstallDoesNotLoadFromStore() throws Exception {
-        // New store files not present, so migrate from the old store.
         when(mWifiConfigStore.areStoresPresent()).thenReturn(false);
         when(mWifiConfigStoreLegacy.areStoresPresent()).thenReturn(false);
 
-        // Now trigger a load from store. This should populate the in memory list with all the
-        // networks above.
         assertTrue(mWifiConfigManager.loadFromStore());
 
         verify(mWifiConfigStore, never()).read();
         verify(mWifiConfigStoreLegacy, never()).read();
 
         assertTrue(mWifiConfigManager.getConfiguredNetworksWithPasswords().isEmpty());
+    }
+
+    /**
+     * Verifies the user switch using {@link WifiConfigManager#handleUserSwitch(int)} is handled
+     * when the store files (new or legacy) are not present.
+     */
+    @Test
+    public void testHandleUserSwitchAfterFreshInstall() throws Exception {
+        int user2 = TEST_DEFAULT_USER + 1;
+        when(mWifiConfigStore.areStoresPresent()).thenReturn(false);
+        when(mWifiConfigStoreLegacy.areStoresPresent()).thenReturn(false);
+
+        assertTrue(mWifiConfigManager.loadFromStore());
+        verify(mWifiConfigStore, never()).read();
+        verify(mWifiConfigStoreLegacy, never()).read();
+
+        when(mWifiConfigStore.switchUserStoreAndRead(any(WifiConfigStore.StoreFile.class)))
+                .thenReturn(new WifiConfigStoreData(
+                        new ArrayList<WifiConfiguration>(), new ArrayList<WifiConfiguration>(),
+                        new HashSet<String>()));
+        // Now switch the user to user 2.
+        when(mUserManager.isUserUnlockingOrUnlocked(user2)).thenReturn(true);
+        mWifiConfigManager.handleUserSwitch(user2);
+        // Ensure that the read was invoked.
+        mContextConfigStoreMockOrder.verify(mWifiConfigStore)
+                .switchUserStoreAndRead(any(WifiConfigStore.StoreFile.class));
     }
 
     /**
