@@ -131,10 +131,12 @@ public class WifiNative {
     }
 
 
+    // TODO(b/34884202): Set this to true to enable HIDL once we're fully ready.
+    private static final boolean HIDL_ENABLE = false;
     private final String mTAG;
     private final String mInterfaceName;
     private final String mInterfacePrefix;
-    private WifiSupplicantHal mWifiSupplicantHal;
+    private SupplicantStaIfaceHal mSupplicantStaIfaceHal;
     private WifiVendorHal mWifiVendorHal;
 
     private Context mContext = null;
@@ -145,12 +147,12 @@ public class WifiNative {
     }
 
     /**
-     * Explicitly sets the WifiSupplicantHal instance
+     * Explicitly sets the SupplicantStaIfaceHal instance
      * TODO(b/34722734): move this into the constructor of WifiNative when I clean up the awful
      * double singleton pattern
      */
-    public void setWifiSupplicantHal(WifiSupplicantHal wifiSupplicantHal) {
-        mWifiSupplicantHal = wifiSupplicantHal;
+    public void setSupplicantStaIfaceHal(SupplicantStaIfaceHal wifiSupplicantHal) {
+        mSupplicantStaIfaceHal = wifiSupplicantHal;
     }
 
     /**
@@ -178,6 +180,9 @@ public class WifiNative {
      * Initializes the vendor HAL. This is just used to initialize the {@link HalDeviceManager}.
      */
     public boolean initializeVendorHal() {
+        if (!HIDL_ENABLE) {
+            return true;
+        }
         return mWifiVendorHal.initialize();
     }
 
@@ -187,7 +192,10 @@ public class WifiNative {
      * @return true if the service notification was successfully registered
      */
     public boolean initializeSupplicantHal() {
-        return mWifiSupplicantHal.initialize();
+        if (!HIDL_ENABLE) {
+            return true;
+        }
+        return mSupplicantStaIfaceHal.initialize();
     }
 
     public String getInterfaceName() {
@@ -1538,7 +1546,12 @@ public class WifiNative {
         }
     }
 
-    public boolean startHal() {
+    /**
+     * Bring up the Vendor HAL and configure for STA mode or AP mode.
+     *
+     * @param isStaMode true to start HAL in STA mode, false to start in AP mode.
+     */
+    public boolean startHal(boolean isStaMode) {
         String debugLog = "startHal stack: ";
         java.lang.StackTraceElement[] elements = Thread.currentThread().getStackTrace();
         for (int i = 2; i < elements.length && i <= 7; i++ ) {

@@ -31,12 +31,14 @@ import android.net.wifi.RttManager;
 import android.net.wifi.RttManager.ResponderConfig;
 import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiLinkLayerStats;
+import android.net.wifi.WifiManager;
 import android.net.wifi.WifiScanner;
 import android.net.wifi.WifiWakeReasonAndCounts;
 import android.os.HandlerThread;
 import android.os.RemoteException;
 import android.util.Log;
 import android.util.MutableBoolean;
+import android.util.MutableInt;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.server.connectivity.KeepalivePacketData;
@@ -90,6 +92,26 @@ public class WifiVendorHal {
     }
 
     /**
+     * Bring up the HIDL Vendor HAL and configure for AP (Access Point) mode
+     * @return true for success
+     */
+    public boolean startVendorHalAp() {
+        return startVendorHal(AP_MODE);
+    }
+
+     /**
+     * Bring up the HIDL Vendor HAL and configure for STA (Station) mode
+     * @return true for success
+     */
+    public boolean startVendorHalSta() {
+        return startVendorHal(STA_MODE);
+    }
+
+
+    public static final boolean STA_MODE = true;
+    public static final boolean AP_MODE = false;
+
+    /**
      * Bring up the HIDL Vendor HAL and configure for STA mode or AP mode.
      *
      * @param isStaMode true to start HAL in STA mode, false to start in AP mode.
@@ -99,25 +121,38 @@ public class WifiVendorHal {
             Log.e(TAG, "Failed to start the vendor HAL");
             return false;
         }
+        IWifiIface iface;
         if (isStaMode) {
             mIWifiStaIface = mHalDeviceManager.createStaIface(null, null);
             if (mIWifiStaIface == null) {
-                Log.e(TAG, "Failed to create STA Iface");
+                Log.e(TAG, "Failed to create STA Iface. Vendor Hal start failed");
+                mHalDeviceManager.stop();
                 return false;
             }
+            iface = (IWifiIface) mIWifiStaIface;
+            mIWifiRttController = mHalDeviceManager.createRttController(iface);
+            if (mIWifiRttController == null) {
+                Log.e(TAG, "Failed to create RTT controller. Vendor Hal start failed");
+                stopVendorHal();
+                return false;
+            }
+            enableLinkLayerStats();
         } else {
             mIWifiApIface = mHalDeviceManager.createApIface(null, null);
             if (mIWifiApIface == null) {
-                Log.e(TAG, "Failed to create AP Iface");
+                Log.e(TAG, "Failed to create AP Iface. Vendor Hal start failed");
+                stopVendorHal();
                 return false;
             }
+            iface = (IWifiIface) mIWifiApIface;
         }
-        IWifiIface iface = (IWifiIface) (mIWifiStaIface != null ? mIWifiStaIface : mIWifiApIface);
         mIWifiChip = mHalDeviceManager.getChip(iface);
-        if (mIWifiStaIface == null) {
-            Log.e(TAG, "Failed to get the chip created for the Iface");
+        if (mIWifiChip == null) {
+            Log.e(TAG, "Failed to get the chip created for the Iface. Vendor Hal start failed");
+            stopVendorHal();
             return false;
         }
+        Log.i(TAG, "Vendor Hal started successfully");
         return true;
     }
 
@@ -126,6 +161,7 @@ public class WifiVendorHal {
      */
     public void stopVendorHal() {
         mHalDeviceManager.stop();
+        Log.i(TAG, "Vendor Hal stopped");
     }
 
     /**
@@ -190,33 +226,180 @@ public class WifiVendorHal {
     /**
      * Get the link layer statistics
      *
-     * @param iface is the name of the wifi interface (checked for null, otherwise ignored)
+     * Note - we always enable link layer stats on a STA interface.
+     *
      * @return the statistics, or null if unable to do so
      */
-    public WifiLinkLayerStats getWifiLinkLayerStats(String iface) {
+    public WifiLinkLayerStats getWifiLinkLayerStats() {
         kilroy();
-        throw new UnsupportedOperationException();
+        synchronized (sLock) {
+            try {
+                if (mIWifiStaIface == null) return null;
+                kilroy();
+                WifiLinkLayerStats out = new WifiLinkLayerStats();
+                MutableBoolean ok = new MutableBoolean(false);
+                kilroy();
+                mIWifiStaIface.getLinkLayerStats((status, stats) -> {
+                            kilroy();
+                            if (status.code != WifiStatusCode.SUCCESS) return;
+                            out.status = 0; // TODO
+                            out.SSID = null; // TODO
+                            out.BSSID = null; // TODO
+                            out.beacon_rx = stats.iface.beaconRx;
+                            out.rssi_mgmt = stats.iface.avgRssiMgmt;
+                        /* WME Best Effort Access Category */
+                            out.rxmpdu_be = stats.iface.wmeBePktStats.rxMpdu;
+                            out.txmpdu_be = stats.iface.wmeBePktStats.txMpdu;
+                            out.lostmpdu_be = stats.iface.wmeBePktStats.lostMpdu;
+                            out.retries_be = stats.iface.wmeBePktStats.retries;
+                        /* WME Background Access Category */
+                            out.rxmpdu_bk = stats.iface.wmeBkPktStats.rxMpdu;
+                            out.txmpdu_bk = stats.iface.wmeBkPktStats.txMpdu;
+                            out.lostmpdu_bk = stats.iface.wmeBkPktStats.lostMpdu;
+                            out.retries_bk = stats.iface.wmeBkPktStats.retries;
+                        /* WME Video Access Category */
+                            out.rxmpdu_vi = stats.iface.wmeViPktStats.rxMpdu;
+                            out.txmpdu_vi = stats.iface.wmeViPktStats.txMpdu;
+                            out.lostmpdu_vi = stats.iface.wmeViPktStats.lostMpdu;
+                            out.retries_vi = stats.iface.wmeViPktStats.retries;
+                        /* WME Voice Access Category */
+                            out.rxmpdu_vo = stats.iface.wmeVoPktStats.rxMpdu;
+                            out.txmpdu_vo = stats.iface.wmeVoPktStats.txMpdu;
+                            out.lostmpdu_vo = stats.iface.wmeVoPktStats.lostMpdu;
+                            out.retries_vo = stats.iface.wmeVoPktStats.retries;
+                            out.on_time = stats.radio.onTimeInMs;
+                            out.tx_time = stats.radio.txTimeInMs;
+                            out.tx_time_per_level = new int[stats.radio.txTimeInMsPerLevel.size()];
+                            for (int i = 0; i < out.tx_time_per_level.length; i++) {
+                                out.tx_time_per_level[i] = stats.radio.txTimeInMsPerLevel.get(i);
+                            }
+                            out.rx_time = stats.radio.rxTimeInMs;
+                            out.on_time_scan = stats.radio.onTimeInMsForScan;
+                            kilroy();
+                            ok.value = true;
+                        }
+                );
+                return ok.value ? out : null;
+            } catch (RemoteException e) {
+                kilroy();
+                handleRemoteException(e);
+                return null;
+            }
+        }
+    }
+
+    @VisibleForTesting
+    boolean mLinkLayerStatsDebug = false;  // Passed to Hal
+
+    /**
+     * Enables the linkLayerStats in the Hal.
+     *
+     * This is called unconditionally whenever we create a STA interface.
+     *
+     */
+    private void enableLinkLayerStats() {
+        synchronized (sLock) {
+            try {
+                kilroy();
+                WifiStatus status;
+                status = mIWifiStaIface.enableLinkLayerStatsCollection(mLinkLayerStatsDebug);
+                if (status.code != WifiStatusCode.SUCCESS) {
+                    kilroy();
+                    Log.e(TAG, "unable to enable link layer stats collection");
+                }
+            } catch (RemoteException e) {
+                kilroy();
+                handleRemoteException(e);
+            }
+        }
     }
 
     /**
-     * Enable link layer stats collection
-     *
-     * @param iface  is the name of the wifi interface (checked for null, otherwise ignored)
-     * @param enable must be 1
+     * Translation table used by getSupportedFeatureSet for translating IWifiStaIface caps
      */
-    public void setWifiLinkLayerStats(String iface, int enable) {
-        kilroy();
-        throw new UnsupportedOperationException();
+    private static final int[][] sFeatureCapabilityTranslation = {
+            {WifiManager.WIFI_FEATURE_INFRA_5G,
+                    IWifiStaIface.StaIfaceCapabilityMask.STA_5G
+            },
+            {WifiManager.WIFI_FEATURE_PASSPOINT,
+                    IWifiStaIface.StaIfaceCapabilityMask.HOTSPOT
+            },
+            {WifiManager.WIFI_FEATURE_SCANNER,
+                    IWifiStaIface.StaIfaceCapabilityMask.BACKGROUND_SCAN,
+            },
+            {WifiManager.WIFI_FEATURE_PNO,
+                    IWifiStaIface.StaIfaceCapabilityMask.PNO
+            },
+            {WifiManager.WIFI_FEATURE_TDLS,
+                    IWifiStaIface.StaIfaceCapabilityMask.TDLS
+            },
+            {WifiManager.WIFI_FEATURE_TDLS_OFFCHANNEL,
+                    IWifiStaIface.StaIfaceCapabilityMask.TDLS_OFFCHANNEL
+            },
+            {WifiManager.WIFI_FEATURE_LINK_LAYER_STATS,
+                    IWifiStaIface.StaIfaceCapabilityMask.LINK_LAYER_STATS
+            },
+            {WifiManager.WIFI_FEATURE_RSSI_MONITOR,
+                    IWifiStaIface.StaIfaceCapabilityMask.RSSI_MONITOR
+            },
+            {WifiManager.WIFI_FEATURE_MKEEP_ALIVE,
+                    IWifiStaIface.StaIfaceCapabilityMask.KEEP_ALIVE
+            },
+            {WifiManager.WIFI_FEATURE_CONFIG_NDO,
+                    IWifiStaIface.StaIfaceCapabilityMask.ND_OFFLOAD
+            },
+            {WifiManager.WIFI_FEATURE_CONTROL_ROAMING,
+                    IWifiStaIface.StaIfaceCapabilityMask.CONTROL_ROAMING
+            },
+            {WifiManager.WIFI_FEATURE_IE_WHITELIST,
+                    IWifiStaIface.StaIfaceCapabilityMask.PROBE_IE_WHITELIST
+            },
+            {WifiManager.WIFI_FEATURE_SCAN_RAND,
+                    IWifiStaIface.StaIfaceCapabilityMask.SCAN_RAND
+            },
+    };
+
+    /**
+     * Feature bit mask translation for STAs
+     *
+     * @param capabilities bitmask defined IWifiStaIface.StaIfaceCapabilityMask
+     * @return bitmask defined by WifiManager.WIFI_FEATURE_*
+     */
+    @VisibleForTesting
+    int wifiFeatureMaskFromStaCapabilities(int capabilities) {
+        int features = WifiManager.WIFI_FEATURE_INFRA; // Always set this if we have a STA interface
+        for (int i = 0; i < sFeatureCapabilityTranslation.length; i++) {
+            if ((capabilities & sFeatureCapabilityTranslation[i][1]) != 0) {
+                features |= sFeatureCapabilityTranslation[i][0];
+            }
+        }
+        return features;
     }
 
     /**
      * Get the supported features
+     * <p>
+     * Note that not all the WifiManager.WIFI_FEATURE_* bits are supplied through
+     * this call. //TODO(b/34900537) fix this
      *
      * @return bitmask defined by WifiManager.WIFI_FEATURE_*
      */
     public int getSupportedFeatureSet() {
-        kilroy();
-        throw new UnsupportedOperationException();
+        try {
+            final MutableInt feat = new MutableInt(0);
+            synchronized (sLock) {
+                if (mIWifiStaIface != null) {
+                    mIWifiStaIface.getCapabilities((status, capabilities) -> {
+                        if (status.code != WifiStatusCode.SUCCESS) return;
+                        feat.value = wifiFeatureMaskFromStaCapabilities(capabilities);
+                    });
+                }
+            }
+            return feat.value;
+        } catch (RemoteException e) {
+            handleRemoteException(e);
+            return 0;
+        }
     }
 
     /* RTT related commands/events */
@@ -737,10 +920,14 @@ public class WifiVendorHal {
     public class HalDeviceManagerStatusListener implements HalDeviceManager.ManagerStatusListener {
         @Override
         public void onStatusChanged() {
-            Log.i(TAG, "Device Manager onStatusChanged. isReady(): " + mHalDeviceManager.isReady()
-                    + "isStarted(): " + mHalDeviceManager.isStarted());
+            boolean isReady = mHalDeviceManager.isReady();
+            boolean isStarted = mHalDeviceManager.isStarted();
+
+            Log.i(TAG, "Device Manager onStatusChanged. isReady(): " + isReady
+                    + ", isStarted(): " + isStarted);
             // Reset all our cached handles.
-            if (!mHalDeviceManager.isReady() || !mHalDeviceManager.isStarted())  {
+            if (!isReady || !isStarted)  {
+                kilroy();
                 mIWifiChip = null;
                 mIWifiStaIface = null;
                 mIWifiApIface = null;

@@ -76,7 +76,6 @@ import android.net.wifi.WifiSsid;
 import android.net.wifi.WpsInfo;
 import android.net.wifi.WpsResult;
 import android.net.wifi.WpsResult.Status;
-import android.net.wifi.aware.WifiAwareManager;
 import android.net.wifi.p2p.IWifiP2pManager;
 import android.os.BatteryStats;
 import android.os.Binder;
@@ -210,7 +209,6 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
     private WifiApConfigStore mWifiApConfigStore;
     private final boolean mP2pSupported;
     private final AtomicBoolean mP2pConnected = new AtomicBoolean(false);
-    private final boolean mAwareSupported;
     private boolean mTemporarilyDisconnectWifi = false;
     private final String mPrimaryDeviceType;
     private final Clock mClock;
@@ -432,8 +430,6 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
     // Channel for sending replies.
     private AsyncChannel mReplyChannel = new AsyncChannel();
 
-    private WifiAwareManager mWifiAwareManager;
-
     // Used to initiate a connection with WifiP2pService
     private AsyncChannel mWifiP2pChannel;
 
@@ -602,7 +598,16 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
     public static final int CMD_DISABLE_P2P_REQ                         = BASE + 132;
     public static final int CMD_DISABLE_P2P_RSP                         = BASE + 133;
 
-    public static final int CMD_BOOT_COMPLETED                          = BASE + 134;
+    /**
+     * Indicates the end of boot process, should be used to trigger load from config store,
+     * initiate connection attempt, etc.
+     * */
+    static final int CMD_BOOT_COMPLETED                                 = BASE + 134;
+    /**
+     * Initialize the WifiStateMachine. This is currently used to initialize the
+     * {@link HalDeviceManager} module.
+     */
+    static final int CMD_INITIALIZE                                     = BASE + 135;
 
     /* We now have a valid IP configuration. */
     static final int CMD_IP_CONFIGURATION_SUCCESSFUL                    = BASE + 138;
@@ -874,8 +879,6 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
 
         mP2pSupported = mContext.getPackageManager().hasSystemFeature(
                 PackageManager.FEATURE_WIFI_DIRECT);
-        mAwareSupported = mContext.getPackageManager()
-                .hasSystemFeature(PackageManager.FEATURE_WIFI_AWARE);
 
         mWifiConfigManager = mWifiInjector.getWifiConfigManager();
         mWifiApConfigStore = mWifiInjector.getWifiApConfigStore();
@@ -3502,8 +3505,8 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
             Binder.allowBlocking(apInterface.asBinder());
         }
 
-        if (!mWifiNative.startHal()) {
-            //  starting HAL is optional
+        if (!mWifiNative.startHal(false)) {
+            // TODO(b/34859006): Handle failures.
             Log.e(TAG, "Failed to start HAL for AP mode");
         }
         return apInterface;
@@ -3766,6 +3769,10 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                     } else {
                         setSuspendOptimizations(SUSPEND_DUE_TO_HIGH_PERF, true);
                     }
+                    break;
+                case CMD_INITIALIZE:
+                    boolean ok = mWifiNative.initializeVendorHal();
+                    replyToMessage(message, message.what, ok ? SUCCESS : FAILURE);
                     break;
                 case CMD_BOOT_COMPLETED:
                     // get other services that we need to manage
@@ -4040,8 +4047,8 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                         loge("Unable to change interface settings: " + ie);
                     }
 
-                    if (!mWifiNative.startHal()) {
-                        // starting HAL is optional
+                    if (!mWifiNative.startHal(true)) {
+                        // TODO(b/34859006): Handle failures.
                         Log.e(TAG, "Failed to start HAL for client mode");
                     }
 
@@ -4056,11 +4063,9 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                         cleanup();
                         break;
                     }
-                    /**
                     if (!mWifiNative.initializeSupplicantHal()) {
                         Log.e(TAG, "Failed to start supplicant Hal");
                     }
-                    */
                     setSupplicantLogLevel();
                     setWifiState(WIFI_STATE_ENABLING);
                     if (mVerboseLoggingEnabled) log("Supplicant start successful");
@@ -4270,24 +4275,6 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                 }
             }
 
-            if (mAwareSupported) {
-                if (mWifiAwareManager == null) {
-                    mWifiAwareManager = mContext.getSystemService(WifiAwareManager.class);
-                }
-                if (mWifiAwareManager == null) {
-                    Log.e(TAG, "Can't get WifiAwareManager to enable usage!");
-                } else {
-                    if (mOperationalMode == CONNECT_MODE) {
-                        mWifiAwareManager.enableUsage();
-                    } else {
-                    /*
-                     * Aware state machine starts in disabled state. Nothing
-                     * needed to keep it disabled.
-                     */
-                    }
-                }
-            }
-
             final Intent intent = new Intent(WifiManager.WIFI_SCAN_AVAILABLE);
             intent.addFlags(Intent.FLAG_RECEIVER_REGISTERED_ONLY_BEFORE_BOOT);
             intent.putExtra(WifiManager.EXTRA_SCAN_AVAILABLE, WIFI_STATE_ENABLED);
@@ -4451,17 +4438,6 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
             intent.putExtra(WifiManager.EXTRA_SCAN_AVAILABLE, WIFI_STATE_DISABLED);
             mContext.sendStickyBroadcastAsUser(intent, UserHandle.ALL);
             mBufferedScanMsg.clear();
-
-            if (mAwareSupported) {
-                if (mWifiAwareManager == null) {
-                    mWifiAwareManager = mContext.getSystemService(WifiAwareManager.class);
-                }
-                if (mWifiAwareManager == null) {
-                    Log.e(TAG, "Can't get WifiAwareManager (to disable usage)!");
-                } else {
-                    mWifiAwareManager.disableUsage();
-                }
-            }
 
             mNetworkInfo.setIsAvailable(false);
             if (mNetworkAgent != null) mNetworkAgent.sendNetworkInfo(mNetworkInfo);
@@ -4887,7 +4863,10 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                     mWifiDiagnostics.captureBugReportData(
                             WifiDiagnostics.REPORT_REASON_AUTH_FAILURE);
                     mSupplicantStateTracker.sendMessage(WifiMonitor.AUTHENTICATION_FAILURE_EVENT);
-                    if (mTargetNetworkId != WifiConfiguration.INVALID_NETWORK_ID) {
+                    // In case of wrong password, rely on SSID_TEMP_DISABLE event to update
+                    // the WifiConfigManager
+                    if ((message.arg2 != WifiMonitor.AUTHENTICATION_FAILURE_REASON_WRONG_PSWD)
+                            && (mTargetNetworkId != WifiConfiguration.INVALID_NETWORK_ID)) {
                         mWifiConfigManager.updateNetworkSelectionStatus(mTargetNetworkId,
                                 WifiConfiguration.NetworkSelectionStatus
                                         .DISABLED_AUTHENTICATION_FAILURE);
@@ -6989,5 +6968,17 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
      */
     public void setIpReachabilityDisconnectEnabled(boolean enabled) {
         mIpReachabilityDisconnectEnabled = enabled;
+    }
+
+    /**
+     * Sends a message to initialize the WifiStateMachine.
+     *
+     * @return true if succeeded, false otherwise.
+     */
+    public boolean syncInitialize(AsyncChannel channel) {
+        Message resultMsg = channel.sendMessageSynchronously(CMD_INITIALIZE);
+        boolean result = (resultMsg.arg1 != FAILURE);
+        resultMsg.recycle();
+        return result;
     }
 }
