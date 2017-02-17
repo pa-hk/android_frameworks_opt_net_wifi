@@ -129,7 +129,16 @@ public class WifiAwareDiscoverySessionState {
             return false;
         }
 
-        return mWifiAwareNativeApi.publish(transactionId, mPubSubId, config);
+        boolean success = mWifiAwareNativeApi.publish(transactionId, mPubSubId, config);
+        if (!success) {
+            try {
+                mCallback.onSessionConfigFail(NanStatusType.INTERNAL_FAILURE);
+            } catch (RemoteException e) {
+                Log.w(TAG, "updatePublish onSessionConfigFail(): RemoteException (FYI): " + e);
+            }
+        }
+
+        return success;
     }
 
     /**
@@ -150,7 +159,16 @@ public class WifiAwareDiscoverySessionState {
             return false;
         }
 
-        return mWifiAwareNativeApi.subscribe(transactionId, mPubSubId, config);
+        boolean success = mWifiAwareNativeApi.subscribe(transactionId, mPubSubId, config);
+        if (!success) {
+            try {
+                mCallback.onSessionConfigFail(NanStatusType.INTERNAL_FAILURE);
+            } catch (RemoteException e) {
+                Log.w(TAG, "updateSubscribe onSessionConfigFail(): RemoteException (FYI): " + e);
+            }
+        }
+
+        return success;
     }
 
     /**
@@ -178,8 +196,18 @@ public class WifiAwareDiscoverySessionState {
         }
         byte[] peerMac = HexEncoding.decode(peerMacStr.toCharArray(), false);
 
-        return mWifiAwareNativeApi.sendMessage(transactionId, mPubSubId, peerId, peerMac, message,
-            messageId);
+        boolean success = mWifiAwareNativeApi.sendMessage(transactionId, mPubSubId, peerId, peerMac,
+                message, messageId);
+        if (!success) {
+            try {
+                mCallback.onMessageSendFail(messageId, NanStatusType.INTERNAL_FAILURE);
+            } catch (RemoteException e) {
+                Log.e(TAG, "sendMessage: RemoteException=" + e);
+            }
+            return false;
+        }
+
+        return success;
     }
 
     /**

@@ -72,12 +72,14 @@ public class WifiInjector {
     private final WifiNative mWifiNative;
     private final WifiNative mWifiP2pNative;
     private final SupplicantStaIfaceHal mSupplicantStaIfaceHal;
+    private final SupplicantP2pIfaceHal mSupplicantP2pIfaceHal;
     private final WifiVendorHal mWifiVendorHal;
     private final WifiStateMachine mWifiStateMachine;
     private final WifiSettingsStore mSettingsStore;
     private final WifiCertManager mCertManager;
     private final WifiLockManager mLockManager;
     private final WifiController mWifiController;
+    private final WificondControl mWificondControl;
     private final Clock mClock = new Clock();
     private final WifiMetrics mWifiMetrics = new WifiMetrics(mClock);
     private final WifiLastResortWatchdog mWifiLastResortWatchdog;
@@ -152,12 +154,18 @@ public class WifiInjector {
         mHalDeviceManager = new HalDeviceManager();
         mWifiVendorHal = new WifiVendorHal(mHalDeviceManager, mWifiStateMachineHandlerThread);
         mSupplicantStaIfaceHal = new SupplicantStaIfaceHal(mWifiStateMachineHandlerThread);
+        mWificondControl = new WificondControl(this);
+        mSupplicantP2pIfaceHal = new SupplicantP2pIfaceHal();
         mWifiNative = WifiNative.getWlanNativeInterface();
         mWifiNative.setSupplicantStaIfaceHal(mSupplicantStaIfaceHal);
+        mWifiNative.setSupplicantP2pIfaceHal(mSupplicantP2pIfaceHal);
         mWifiNative.setWifiVendorHal(mWifiVendorHal);
+        mWifiNative.setWificondControl(mWificondControl);
         mWifiP2pNative = WifiNative.getP2pNativeInterface();
         mWifiP2pNative.setSupplicantStaIfaceHal(mSupplicantStaIfaceHal);
+        mWifiP2pNative.setSupplicantP2pIfaceHal(mSupplicantP2pIfaceHal);
         mWifiP2pNative.setWifiVendorHal(mWifiVendorHal);
+        mWifiP2pNative.setWificondControl(mWificondControl);
 
         // WifiConfigManager/Store objects and their dependencies.
         // New config store
@@ -176,7 +184,8 @@ public class WifiInjector {
         // Config Manager
         mWifiConfigManager = new WifiConfigManager(mContext, mFrameworkFacade, mClock,
                 UserManager.get(mContext), TelephonyManager.from(mContext),
-                mWifiKeyStore, mWifiConfigStore, mWifiConfigStoreLegacy, mWifiPermissionsWrapper);
+                mWifiKeyStore, mWifiConfigStore, mWifiConfigStoreLegacy, mWifiPermissionsWrapper,
+                new NetworkListStoreData(), new DeletedEphemeralSsidsStoreData());
         mWifiNetworkScoreCache = new WifiNetworkScoreCache(mContext);
         mWifiNetworkSelector = new WifiNetworkSelector(mContext, mWifiConfigManager, mClock);
         LocalLog localLog = mWifiNetworkSelector.getLocalLog();

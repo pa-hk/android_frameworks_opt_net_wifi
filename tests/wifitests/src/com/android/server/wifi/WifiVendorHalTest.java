@@ -22,16 +22,20 @@ import android.hardware.wifi.V1_0.IWifiChip;
 import android.hardware.wifi.V1_0.IWifiIface;
 import android.hardware.wifi.V1_0.IWifiRttController;
 import android.hardware.wifi.V1_0.IWifiStaIface;
+import android.hardware.wifi.V1_0.StaApfPacketFilterCapabilities;
 import android.hardware.wifi.V1_0.WifiStatus;
 import android.hardware.wifi.V1_0.WifiStatusCode;
+import android.net.apf.ApfCapabilities;
 import android.net.wifi.WifiManager;
 
+import com.android.server.wifi.util.NativeUtil;
 
 import static org.junit.Assert.*;
 import static org.mockito.Mockito.*;
 
 import android.os.HandlerThread;
 import android.os.Looper;
+import android.os.RemoteException;
 
 import org.junit.Assert;
 import org.junit.Before;
@@ -40,6 +44,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
+import java.util.ArrayList;
 
 /**
  * Unit tests for {@link com.android.server.wifi.WifiVendorHal}.
@@ -324,8 +329,7 @@ public class WifiVendorHalTest {
                 | IWifiStaIface.StaIfaceCapabilityMask.LINK_LAYER_STATS
             );
         int expected = (
-                WifiManager.WIFI_FEATURE_INFRA
-                | WifiManager.WIFI_FEATURE_SCANNER
+                WifiManager.WIFI_FEATURE_SCANNER
                 | WifiManager.WIFI_FEATURE_LINK_LAYER_STATS);
         assertEquals(expected, mWifiVendorHal.wifiFeatureMaskFromStaCapabilities(caps));
     }
@@ -379,4 +383,129 @@ public class WifiVendorHalTest {
 
     // TODO(b/34900534) add test for correct MOVE CORRESPONDING of fields
 
+    /**
+     * Test that getFirmwareVersion() and getDriverVersion() work
+     *
+     * Calls before the STA is started are expected to return null.
+     */
+    @Test
+    public void testVersionGetters() throws Exception {
+        String firmwareVersion = "fuzzy";
+        String driverVersion = "dizzy";
+        IWifiChip.ChipDebugInfo chipDebugInfo = new IWifiChip.ChipDebugInfo();
+        chipDebugInfo.firmwareDescription = firmwareVersion;
+        chipDebugInfo.driverDescription = driverVersion;
+
+        doAnswer(new AnswerWithArguments() {
+            public void answer(IWifiChip.requestChipDebugInfoCallback cb) throws RemoteException {
+                cb.onValues(mWifiStatusSuccess, chipDebugInfo);
+            }
+        }).when(mIWifiChip).requestChipDebugInfo(any(IWifiChip.requestChipDebugInfoCallback.class));
+
+        assertNull(mWifiVendorHal.getFirmwareVersion());
+        assertNull(mWifiVendorHal.getDriverVersion());
+
+        assertTrue(mWifiVendorHal.startVendorHalSta());
+
+        assertEquals(firmwareVersion, mWifiVendorHal.getFirmwareVersion());
+        assertEquals(driverVersion, mWifiVendorHal.getDriverVersion());
+    }
+
+    /**
+     * Test that setScanningMacOui is hooked up to the HAL correctly
+     */
+    @Test
+    public void testSetScanningMacOui() throws Exception {
+        byte[] oui = NativeUtil.macAddressOuiToByteArray("DA:A1:19");
+        byte[] zzz = NativeUtil.macAddressOuiToByteArray("00:00:00");
+
+        when(mIWifiStaIface.setScanningMacOui(any())).thenReturn(mWifiStatusSuccess);
+
+        assertFalse(mWifiVendorHal.setScanningMacOui(oui)); // expect fail - STA not started
+        assertTrue(mWifiVendorHal.startVendorHalSta());
+        assertFalse(mWifiVendorHal.setScanningMacOui(null));  // expect fail - null
+        assertFalse(mWifiVendorHal.setScanningMacOui(new byte[]{(byte) 1})); // expect fail - len
+        assertTrue(mWifiVendorHal.setScanningMacOui(oui));
+        assertTrue(mWifiVendorHal.setScanningMacOui(zzz));
+
+        verify(mIWifiStaIface).setScanningMacOui(eq(oui));
+        verify(mIWifiStaIface).setScanningMacOui(eq(zzz));
+    }
+
+    /**
+     * Test that getApfCapabilities is hooked up to the HAL correctly
+     *
+     * A call before the vendor HAL is started should return a non-null result with version 0
+     *
+     * A call after the HAL is started should return the mocked values.
+     */
+    @Test
+    public void testApfCapabilities() throws Exception {
+        int myVersion = 33;
+        int myMaxSize = 1234;
+
+        StaApfPacketFilterCapabilities capabilities = new StaApfPacketFilterCapabilities();
+        capabilities.version = myVersion;
+        capabilities.maxLength = myMaxSize;
+
+        doAnswer(new AnswerWithArguments() {
+            public void answer(IWifiStaIface.getApfPacketFilterCapabilitiesCallback cb)
+                    throws RemoteException {
+                cb.onValues(mWifiStatusSuccess, capabilities);
+            }
+        }).when(mIWifiStaIface).getApfPacketFilterCapabilities(any(
+                IWifiStaIface.getApfPacketFilterCapabilitiesCallback.class));
+
+
+        assertEquals(0, mWifiVendorHal.getApfCapabilities().apfVersionSupported);
+
+        assertTrue(mWifiVendorHal.startVendorHalSta());
+
+        ApfCapabilities actual = mWifiVendorHal.getApfCapabilities();
+
+        assertEquals(myVersion, actual.apfVersionSupported);
+        assertEquals(myMaxSize, actual.maximumApfProgramSize);
+        assertEquals(android.system.OsConstants.ARPHRD_ETHER, actual.apfPacketFormat);
+        assertNotEquals(0, actual.apfPacketFormat);
+    }
+
+    /**
+     * Test that an APF program can be installed/
+     */
+    @Test
+    public void testInstallApf() throws Exception {
+        byte[] filter = new byte[] {19, 53, 10};
+
+        ArrayList<Byte> expected = new ArrayList<>(3);
+        for (byte b : filter) expected.add(b);
+
+        when(mIWifiStaIface.installApfPacketFilter(anyInt(), any(ArrayList.class)))
+                .thenReturn(mWifiStatusSuccess);
+
+        assertTrue(mWifiVendorHal.startVendorHalSta());
+        assertTrue(mWifiVendorHal.installPacketFilter(filter));
+
+        verify(mIWifiStaIface).installApfPacketFilter(eq(0), eq(expected));
+    }
+
+    /**
+     * Test that the country code is set in AP mode (when it should be).
+     */
+    @Test
+    public void testSetCountryCodeHal() throws Exception {
+        byte[] expected = new byte[]{(byte) 'C', (byte) 'A'};
+
+        when(mIWifiApIface.setCountryCode(any()))
+                .thenReturn(mWifiStatusSuccess);
+
+        assertTrue(mWifiVendorHal.startVendorHalAp());
+
+        assertFalse(mWifiVendorHal.setCountryCodeHal(null));
+        assertFalse(mWifiVendorHal.setCountryCodeHal(""));
+        assertFalse(mWifiVendorHal.setCountryCodeHal("A"));
+        assertTrue(mWifiVendorHal.setCountryCodeHal("CA")); // Only one expected to succeed
+        assertFalse(mWifiVendorHal.setCountryCodeHal("ZZZ"));
+
+        verify(mIWifiApIface).setCountryCode(eq(expected));
+    }
 }

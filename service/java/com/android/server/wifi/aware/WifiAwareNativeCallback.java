@@ -17,7 +17,6 @@
 package com.android.server.wifi.aware;
 
 import android.hardware.wifi.V1_0.IWifiNanIfaceEventCallback;
-import android.hardware.wifi.V1_0.NanBeaconSdfPayloadInd;
 import android.hardware.wifi.V1_0.NanCapabilities;
 import android.hardware.wifi.V1_0.NanClusterEventInd;
 import android.hardware.wifi.V1_0.NanClusterEventType;
@@ -66,7 +65,8 @@ public class WifiAwareNativeCallback extends IWifiNanIfaceEventCallback.Stub {
             frameworkCapabilities.maxTotalMatchFilterLen = capabilities.maxTotalMatchFilterLen;
             frameworkCapabilities.maxServiceSpecificInfoLen =
                     capabilities.maxServiceSpecificInfoLen;
-            frameworkCapabilities.maxVsaDataLen = capabilities.maxVsaDataLen;
+            frameworkCapabilities.maxExtendedServiceSpecificInfoLen =
+                    capabilities.maxExtendedServiceSpecificInfoLen;
             frameworkCapabilities.maxNdiInterfaces = capabilities.maxNdiInterfaces;
             frameworkCapabilities.maxNdpSessions = capabilities.maxNdpSessions;
             frameworkCapabilities.maxAppInfoLen = capabilities.maxAppInfoLen;
@@ -120,7 +120,7 @@ public class WifiAwareNativeCallback extends IWifiNanIfaceEventCallback.Stub {
     }
 
     @Override
-    public void notifyStartPublishResponse(short id, WifiNanStatus status, short publishId) {
+    public void notifyStartPublishResponse(short id, WifiNanStatus status, byte publishId) {
         if (VDBG) {
             Log.v(TAG, "notifyStartPublishResponse: id=" + id + ", status=" + statusString(status)
                     + ", publishId=" + publishId);
@@ -148,7 +148,7 @@ public class WifiAwareNativeCallback extends IWifiNanIfaceEventCallback.Stub {
     }
 
     @Override
-    public void notifyStartSubscribeResponse(short id, WifiNanStatus status, short subscribeId) {
+    public void notifyStartSubscribeResponse(short id, WifiNanStatus status, byte subscribeId) {
         if (VDBG) {
             Log.v(TAG, "notifyStartSubscribeResponse: id=" + id + ", status=" + statusString(status)
                     + ", subscribeId=" + subscribeId);
@@ -250,16 +250,6 @@ public class WifiAwareNativeCallback extends IWifiNanIfaceEventCallback.Stub {
     }
 
     @Override
-    public void notifyBeaconSdfPayloadResponse(short id, WifiNanStatus status) {
-        if (VDBG) {
-            Log.v(TAG, "notifyBeaconSdfPayloadResponse: id=" + id + ", status="
-                    + statusString(status));
-        }
-
-        // NOP
-    }
-
-    @Override
     public void eventClusterEvent(NanClusterEventInd event) {
         if (VDBG) {
             Log.v(TAG, "eventClusterEvent: eventType=" + event.eventType + ", addr="
@@ -287,7 +277,7 @@ public class WifiAwareNativeCallback extends IWifiNanIfaceEventCallback.Stub {
     }
 
     @Override
-    public void eventPublishTerminated(short sessionId, WifiNanStatus status) {
+    public void eventPublishTerminated(byte sessionId, WifiNanStatus status) {
         if (VDBG) {
             Log.v(TAG, "eventPublishTerminated: sessionId=" + sessionId + ", status="
                     + statusString(status));
@@ -297,7 +287,7 @@ public class WifiAwareNativeCallback extends IWifiNanIfaceEventCallback.Stub {
     }
 
     @Override
-    public void eventSubscribeTerminated(short sessionId, WifiNanStatus status) {
+    public void eventSubscribeTerminated(byte sessionId, WifiNanStatus status) {
         if (VDBG) {
             Log.v(TAG, "eventSubscribeTerminated: sessionId=" + sessionId + ", status="
                     + statusString(status));
@@ -322,7 +312,7 @@ public class WifiAwareNativeCallback extends IWifiNanIfaceEventCallback.Stub {
     }
 
     @Override
-    public void eventMatchExpired(short discoverySessionId, int peerId) {
+    public void eventMatchExpired(byte discoverySessionId, int peerId) {
         if (VDBG) {
             Log.v(TAG, "eventMatchExpired: discoverySessionId=" + discoverySessionId
                     + ", peerId=" + peerId);
@@ -340,7 +330,7 @@ public class WifiAwareNativeCallback extends IWifiNanIfaceEventCallback.Stub {
         }
 
         mWifiAwareStateManager.onMessageReceivedNotification(event.discoverySessionId, event.peerId,
-                event.addr, convertUcByteToLcByteArray(event.message));
+                event.addr, convertUcByteToLcByteArray(event.serviceSpecificInfo));
     }
 
     @Override
@@ -387,14 +377,6 @@ public class WifiAwareNativeCallback extends IWifiNanIfaceEventCallback.Stub {
         if (VDBG) Log.v(TAG, "eventDataPathTerminated: ndpInstanceId=" + ndpInstanceId);
 
         mWifiAwareStateManager.onDataPathEndNotification(ndpInstanceId);
-    }
-
-    @Override
-    public void eventBeaconSdfPayload(NanBeaconSdfPayloadInd event) {
-        if (VDBG) Log.v(TAG, "eventBeaconSdfPayload");
-
-        // NOP
-        Log.e(TAG, "eventBeaconSdfPayload: not configured - should not happen!");
     }
 
     // utilities

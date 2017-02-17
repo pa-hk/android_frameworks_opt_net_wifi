@@ -419,6 +419,7 @@ public class WifiConfigurationTestUtil {
     public static void assertConfigurationEqualForConfigStore(
             WifiConfiguration expected, WifiConfiguration actual) {
         assertCommonConfigurationElementsEqual(expected, actual);
+        assertEquals(expected.status, actual.status);
         assertEquals(expected.FQDN, actual.FQDN);
         assertEquals(expected.providerFriendlyName, actual.providerFriendlyName);
         assertEquals(expected.linkedConfigurations, actual.linkedConfigurations);
@@ -463,6 +464,31 @@ public class WifiConfigurationTestUtil {
         assertEquals(expected.updateTime, actual.updateTime);
         assertNetworkSelectionStatusEqualForConfigStore(
                 expected.getNetworkSelectionStatus(), actual.getNetworkSelectionStatus());
+        assertWifiEnterpriseConfigEqualForConfigStore(
+                expected.enterpriseConfig, actual.enterpriseConfig);
+    }
+
+    /**
+     * Asserts that the 2 WifiConfigurations are equal. This compares all the elements that are
+     * saved into wpa_supplicant by SupplicantStaNetwork.
+     */
+    public static void assertConfigurationEqualForSupplicant(
+            WifiConfiguration expected, WifiConfiguration actual) {
+        assertNotNull(expected);
+        assertNotNull(actual);
+        assertEquals(expected.SSID, actual.SSID);
+        assertEquals(expected.getNetworkSelectionStatus().getNetworkSelectionBSSID(),
+                actual.getNetworkSelectionStatus().getNetworkSelectionBSSID());
+        assertEquals(expected.preSharedKey, actual.preSharedKey);
+        assertEquals(expected.wepKeys, actual.wepKeys);
+        assertEquals(expected.wepTxKeyIndex, actual.wepTxKeyIndex);
+        assertEquals(expected.hiddenSSID, actual.hiddenSSID);
+        assertEquals(expected.requirePMF, actual.requirePMF);
+        assertEquals(expected.allowedKeyManagement, actual.allowedKeyManagement);
+        assertEquals(expected.allowedProtocols, actual.allowedProtocols);
+        assertEquals(expected.allowedAuthAlgorithms, actual.allowedAuthAlgorithms);
+        assertEquals(expected.allowedGroupCiphers, actual.allowedGroupCiphers);
+        assertEquals(expected.allowedPairwiseCiphers, actual.allowedPairwiseCiphers);
         assertWifiEnterpriseConfigEqualForConfigStore(
                 expected.enterpriseConfig, actual.enterpriseConfig);
     }

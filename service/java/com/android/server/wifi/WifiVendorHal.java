@@ -21,6 +21,7 @@ import android.hardware.wifi.V1_0.IWifiChip;
 import android.hardware.wifi.V1_0.IWifiIface;
 import android.hardware.wifi.V1_0.IWifiRttController;
 import android.hardware.wifi.V1_0.IWifiStaIface;
+import android.hardware.wifi.V1_0.IfaceType;
 import android.hardware.wifi.V1_0.StaRoamingConfig;
 import android.hardware.wifi.V1_0.StaRoamingState;
 import android.hardware.wifi.V1_0.WifiDebugHostWakeReasonStats;
@@ -42,6 +43,10 @@ import android.util.MutableInt;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.server.connectivity.KeepalivePacketData;
+import com.android.server.wifi.util.NativeUtil;
+
+import java.util.ArrayList;
+import java.util.Set;
 
 /**
  * Vendor HAL via HIDL
@@ -367,7 +372,7 @@ public class WifiVendorHal {
      */
     @VisibleForTesting
     int wifiFeatureMaskFromStaCapabilities(int capabilities) {
-        int features = WifiManager.WIFI_FEATURE_INFRA; // Always set this if we have a STA interface
+        int features = 0;
         for (int i = 0; i < sFeatureCapabilityTranslation.length; i++) {
             if ((capabilities & sFeatureCapabilityTranslation[i][1]) != 0) {
                 features |= sFeatureCapabilityTranslation[i][0];
@@ -385,6 +390,7 @@ public class WifiVendorHal {
      * @return bitmask defined by WifiManager.WIFI_FEATURE_*
      */
     public int getSupportedFeatureSet() {
+        int featureSet = 0;
         try {
             final MutableInt feat = new MutableInt(0);
             synchronized (sLock) {
@@ -395,11 +401,27 @@ public class WifiVendorHal {
                     });
                 }
             }
-            return feat.value;
+            featureSet = feat.value;
         } catch (RemoteException e) {
             handleRemoteException(e);
             return 0;
         }
+
+        Set<Integer> supportedIfaceTypes = mHalDeviceManager.getSupportedIfaceTypes();
+        if (supportedIfaceTypes.contains(IfaceType.STA)) {
+            featureSet |= WifiManager.WIFI_FEATURE_INFRA;
+        }
+        if (supportedIfaceTypes.contains(IfaceType.AP)) {
+            featureSet |= WifiManager.WIFI_FEATURE_MOBILE_HOTSPOT;
+        }
+        if (supportedIfaceTypes.contains(IfaceType.P2P)) {
+            featureSet |= WifiManager.WIFI_FEATURE_P2P;
+        }
+        if (supportedIfaceTypes.contains(IfaceType.NAN)) {
+            featureSet |= WifiManager.WIFI_FEATURE_AWARE;
+        }
+
+        return featureSet;
     }
 
     /* RTT related commands/events */
@@ -451,11 +473,32 @@ public class WifiVendorHal {
     }
 
     /**
-     * not supported
+     * Set the MAC OUI during scanning.
+     *
+     * An OUI {Organizationally Unique Identifier} is a 24-bit number that
+     * uniquely identifies a vendor or manufacturer.
+     *
+     * @param oui
+     * @return true for success
      */
     public boolean setScanningMacOui(byte[] oui) {
         kilroy();
-        throw new UnsupportedOperationException();
+        if (oui == null) return false;
+        kilroy();
+        if (oui.length != 3) return false;
+        kilroy();
+        synchronized (sLock) {
+            try {
+                if (mIWifiStaIface == null) return false;
+                WifiStatus status = mIWifiStaIface.setScanningMacOui(oui);
+                if (status.code != WifiStatusCode.SUCCESS) return false;
+                kilroy();
+                return true;
+            } catch (RemoteException e) {
+                handleRemoteException(e);
+                return false;
+            }
+        }
     }
 
     /**
@@ -497,28 +540,89 @@ public class WifiVendorHal {
      * Get the APF (Android Packet Filter) capabilities of the device
      */
     public ApfCapabilities getApfCapabilities() {
-        kilroy();
-        throw new UnsupportedOperationException();
+        class AnswerBox {
+            public ApfCapabilities value = sNoApfCapabilities;
+        }
+        synchronized (sLock) {
+            try {
+                if (mIWifiStaIface == null) return sNoApfCapabilities;
+                AnswerBox box = new AnswerBox();
+                mIWifiStaIface.getApfPacketFilterCapabilities((status, capabilities) -> {
+                    if (status.code != WifiStatusCode.SUCCESS) return;
+                    box.value = new ApfCapabilities(
+                        /* apfVersionSupported */   capabilities.version,
+                        /* maximumApfProgramSize */ capabilities.maxLength,
+                        /* apfPacketFormat */       android.system.OsConstants.ARPHRD_ETHER);
+                });
+                return box.value;
+            } catch (RemoteException e) {
+                handleRemoteException(e);
+                return sNoApfCapabilities;
+            }
+        }
     }
 
     private static final ApfCapabilities sNoApfCapabilities = new ApfCapabilities(0, 0, 0);
 
     /**
-     * Installs an APF program on this iface, replacing an existing
-     * program if present.
+     * Installs an APF program on this iface, replacing any existing program.
+     *
+     * @param filter is the android packet filter program
+     * @return true for success
      */
     public boolean installPacketFilter(byte[] filter) {
         kilroy();
-        throw new UnsupportedOperationException();
+        int cmdId = 0; //TODO(b/34901818) We only aspire to support one program at a time
+        if (filter == null) return false;
+        // Copy the program before taking the lock.
+        ArrayList<Byte> program = new ArrayList<>(filter.length);
+        for (byte b : filter) {
+            program.add(b);
+        }
+        synchronized (sLock) {
+            try {
+                if (mIWifiStaIface == null) return false;
+                WifiStatus status = mIWifiStaIface.installApfPacketFilter(cmdId, program);
+                if (status.code != WifiStatusCode.SUCCESS) return false;
+                kilroy();
+                return true;
+            } catch (RemoteException e) {
+                handleRemoteException(e);
+                return false;
+            }
+        }
     }
 
-
     /**
-     * to be implemented
+     * Set country code for this AP iface.
+     *
+     * @param countryCode - two-letter country code (as ISO 3166)
+     * @return true for success
      */
     public boolean setCountryCodeHal(String countryCode) {
         kilroy();
-        throw new UnsupportedOperationException();
+        if (countryCode == null) return false;
+        if (countryCode.length() != 2) return false;
+        byte[] code;
+        try {
+            code = NativeUtil.stringToByteArray(countryCode);
+        } catch (IllegalArgumentException e) {
+            kilroy();
+            return false;
+        }
+        synchronized (sLock) {
+            try {
+                if (mIWifiApIface == null) return false;
+                kilroy();
+                WifiStatus status = mIWifiApIface.setCountryCode(code);
+                if (status.code != WifiStatusCode.SUCCESS) return false;
+                kilroy();
+                return true;
+            } catch (RemoteException e) {
+                handleRemoteException(e);
+                return false;
+            }
+        }
     }
 
     /**
@@ -587,24 +691,48 @@ public class WifiVendorHal {
         throw new UnsupportedOperationException();
     }
 
-    private String mDriverDescription;
+    private String mDriverDescription; // Cached value filled by requestChipDebugInfo()
 
     /**
      * Vendor-provided wifi driver version string
      */
     public String getDriverVersion() {
-        kilroy();
-        throw new UnsupportedOperationException();
+        synchronized (sLock) {
+            if (mDriverDescription == null) requestChipDebugInfo();
+            return mDriverDescription;
+        }
     }
 
-    private String mFirmwareDescription;
+    private String mFirmwareDescription; // Cached value filled by requestChipDebugInfo()
 
     /**
      * Vendor-provided wifi firmware version string
      */
     public String getFirmwareVersion() {
-        kilroy();
-        throw new UnsupportedOperationException();
+        synchronized (sLock) {
+            if (mFirmwareDescription == null) requestChipDebugInfo();
+            return mFirmwareDescription;
+        }
+    }
+
+    /**
+     * Refreshes our idea of the driver and firmware versions
+     */
+    private void requestChipDebugInfo() {
+        mDriverDescription = null;
+        mFirmwareDescription = null;
+        try {
+            if (mIWifiChip == null) return;
+            mIWifiChip.requestChipDebugInfo((status, chipDebugInfo) -> {
+                if (status.code != WifiStatusCode.SUCCESS) return;
+                mDriverDescription = chipDebugInfo.driverDescription;
+                mFirmwareDescription = chipDebugInfo.firmwareDescription;
+            });
+        } catch (RemoteException e) {
+            handleRemoteException(e);
+            return;
+        }
+        Log.e(TAG, "Driver: " + mDriverDescription + " Firmware: " + mFirmwareDescription);
     }
 
     /**

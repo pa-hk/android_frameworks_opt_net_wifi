@@ -20,6 +20,8 @@ import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.content.Context;
 import android.net.apf.ApfCapabilities;
+import android.net.wifi.IApInterface;
+import android.net.wifi.IClientInterface;
 import android.net.wifi.RttManager;
 import android.net.wifi.RttManager.ResponderConfig;
 import android.net.wifi.ScanResult;
@@ -43,8 +45,6 @@ import com.android.internal.annotations.Immutable;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.HexDump;
 import com.android.server.connectivity.KeepalivePacketData;
-import com.android.server.wifi.hotspot2.NetworkDetail;
-import com.android.server.wifi.hotspot2.PasspointEventHandler;
 import com.android.server.wifi.hotspot2.Utils;
 import com.android.server.wifi.util.FrameParser;
 import com.android.server.wifi.util.InformationElementUtil;
@@ -137,7 +137,9 @@ public class WifiNative {
     private final String mInterfaceName;
     private final String mInterfacePrefix;
     private SupplicantStaIfaceHal mSupplicantStaIfaceHal;
+    private SupplicantP2pIfaceHal mSupplicantP2pIfaceHal;
     private WifiVendorHal mWifiVendorHal;
+    private WificondControl mWificondControl;
 
     private Context mContext = null;
     public void initContext(Context context) {
@@ -154,6 +156,24 @@ public class WifiNative {
     public void setSupplicantStaIfaceHal(SupplicantStaIfaceHal wifiSupplicantHal) {
         mSupplicantStaIfaceHal = wifiSupplicantHal;
     }
+
+    /**
+     * Explicitly sets the WificondControl instance
+     * TODO(b/34722734): move this into the constructor of WifiNative when I clean up the awful
+     * double singleton pattern
+     */
+    public void setWificondControl(WificondControl wificondControl) {
+        mWificondControl = wificondControl;
+    }
+
+    /** Explicitly sets the SupplicantP2pIfaceHal instance
+     * TODO(b/34722734): move this into the constructor of WifiNative when I clean up the awful
+     * double singleton pattern
+     */
+    public void setSupplicantP2pIfaceHal(SupplicantP2pIfaceHal wifiSupplicantHal) {
+        mSupplicantP2pIfaceHal = wifiSupplicantHal;
+    }
+
 
     /**
      * Explicitly sets the WifiVendorHal instance
@@ -195,6 +215,11 @@ public class WifiNative {
         if (!HIDL_ENABLE) {
             return true;
         }
+
+        if (!mSupplicantP2pIfaceHal.initialize()) {
+            return false;
+        }
+
         return mSupplicantStaIfaceHal.initialize();
     }
 
@@ -215,7 +240,76 @@ public class WifiNative {
         if (sLocalLog != null) sLocalLog.log(mInterfaceName + ": " + s);
     }
 
+   /**
+    * Setup driver for client mode via wificond.
+    * @return An IClientInterface as wificond client interface binder handler.
+    * Returns null on failure.
+    */
+    public IClientInterface setupDriverForClientMode() {
+        IClientInterface clientInterface = mWificondControl.setupDriverForClientMode();
+        if (!startHal(true)) {
+            // TODO(b/34859006): Handle failures.
+            Log.e(TAG, "Failed to start HAL for client mode");
+        }
+        return clientInterface;
+    }
 
+    /**
+    * Setup driver for softAp mode via wificond.
+    * @return An IApInterface as wificond Ap interface binder handler.
+    * Returns null on failure.
+    */
+    public IApInterface setupDriverForSoftApMode() {
+        IApInterface apInterface = mWificondControl.setupDriverForSoftApMode();
+
+        if (!startHal(false)) {
+            // TODO(b/34859006): Handle failures.
+            Log.e(TAG, "Failed to start HAL for AP mode");
+        }
+        return apInterface;
+    }
+
+    /**
+    * Teardown all interfaces configured in wificond.
+    * @return Returns true on success.
+    */
+    public boolean tearDownInterfaces() {
+        return mWificondControl.tearDownInterfaces();
+    }
+
+    /**
+    * Disable wpa_supplicant via wificond.
+    * @return Returns true on success.
+    */
+    public boolean disableSupplicant() {
+        return mWificondControl.disableSupplicant();
+    }
+
+    /**
+    * Enable wpa_supplicant via wificond.
+    * @return Returns true on success.
+    */
+    public boolean enableSupplicant() {
+        return mWificondControl.enableSupplicant();
+    }
+
+    /**
+    * Request signal polling to wificond.
+    * Returns an SignalPollResult object.
+    * Returns null on failure.
+    */
+    public SignalPollResult signalPoll() {
+        return mWificondControl.signalPoll();
+    }
+
+    /**
+     * Fetch TX packet counters on current connection from wificond.
+    * Returns an TxPacketCounters object.
+    * Returns null on failure.
+    */
+    public TxPacketCounters getTxPacketCounters() {
+        return mWificondControl.getTxPacketCounters();
+    }
 
     /*
      * Supplicant management
@@ -412,7 +506,7 @@ public class WifiNative {
         if (encoded == null) {
             return false;
         }
-        return setNetworkVariable(netId, name, "\"" + encoded + "\"");
+        return setNetworkVariable(netId, name, encoded);
     }
 
     @VisibleForTesting
@@ -427,7 +521,7 @@ public class WifiNative {
             Log.e(TAG, "Unable to serialize networkExtra: " + e.toString());
             return null;
         }
-        return encoded;
+        return "\"" + encoded + "\"";
     }
 
     public boolean setNetworkVariable(int netId, String name, String value) {
@@ -586,195 +680,13 @@ public class WifiNative {
         return null;
     }
 
-
-
     /**
-     * Format of results:
-     * =================
-     * id=1
-     * bssid=68:7f:76:d7:1a:6e
-     * freq=2412
-     * level=-44
-     * tsf=1344626243700342
-     * flags=[WPA2-PSK-CCMP][WPS][ESS]
-     * ssid=zfdy
-     * ====
-     * id=2
-     * bssid=68:5f:74:d7:1a:6f
-     * freq=5180
-     * level=-73
-     * tsf=1344626243700373
-     * flags=[WPA2-PSK-CCMP][WPS][ESS]
-     * ssid=zuby
-     * ====
-     *
-     * RANGE=ALL gets all scan results
-     * RANGE=ID- gets results from ID
-     * MASK=<N> BSS command information mask.
-     *
-     * The mask used in this method, 0x21d97, gets the following fields:
-     *
-     *     WPA_BSS_MASK_ID            (Bit 0)
-     *     WPA_BSS_MASK_BSSID         (Bit 1)
-     *     WPA_BSS_MASK_FREQ          (Bit 2)
-     *     WPA_BSS_MASK_CAPABILITIES  (Bit 4)
-     *     WPA_BSS_MASK_LEVEL         (Bit 7)
-     *     WPA_BSS_MASK_TSF           (Bit 8)
-     *     WPA_BSS_MASK_IE            (Bit 10)
-     *     WPA_BSS_MASK_SSID          (Bit 12)
-     *     WPA_BSS_MASK_INTERNETW     (Bit 15) (adds ANQP info)
-     *     WPA_BSS_MASK_DELIM         (Bit 17)
-     *
-     * See wpa_supplicant/src/common/wpa_ctrl.h for details.
-     */
-    private String getRawScanResults(String range) {
-        return doStringCommandWithoutLogging("BSS RANGE=" + range + " MASK=0x21d97");
-    }
-
-    private static final String BSS_IE_STR = "ie=";
-    private static final String BSS_ID_STR = "id=";
-    private static final String BSS_CAPABILITIES_STR = "capabilities=";
-    private static final String BSS_BSSID_STR = "bssid=";
-    private static final String BSS_FREQ_STR = "freq=";
-    private static final String BSS_LEVEL_STR = "level=";
-    private static final String BSS_TSF_STR = "tsf=";
-    private static final String BSS_SSID_STR = "ssid=";
-    private static final String BSS_DELIMITER_STR = "====";
-    private static final String BSS_END_STR = "####";
-
+    * Fetch the latest scan result from kernel via wificond.
+    * @return Returns an ArrayList of ScanDetail.
+    * Returns an empty ArrayList on failure.
+    */
     public ArrayList<ScanDetail> getScanResults() {
-        int next_sid = 0;
-        ArrayList<ScanDetail> results = new ArrayList<>();
-        while(next_sid >= 0) {
-            String rawResult = getRawScanResults(next_sid+"-");
-            next_sid = -1;
-
-            if (TextUtils.isEmpty(rawResult))
-                break;
-
-            String[] lines = rawResult.split("\n");
-
-
-            // note that all these splits and substrings keep references to the original
-            // huge string buffer while the amount we really want is generally pretty small
-            // so make copies instead (one example b/11087956 wasted 400k of heap here).
-            final int bssidStrLen = BSS_BSSID_STR.length();
-
-            String bssid = "";
-            int level = 0;
-            int freq = 0;
-            long tsf = 0;
-            int cap = 0;
-            String flags = "";
-            WifiSsid wifiSsid = null;
-            String infoElementsStr = null;
-            List<String> anqpLines = null;
-
-            for (String line : lines) {
-                if (line.startsWith(BSS_ID_STR)) { // Will find the last id line
-                    try {
-                        next_sid = Integer.parseInt(line.substring(BSS_ID_STR.length())) + 1;
-                    } catch (NumberFormatException e) {
-                        // Nothing to do
-                    }
-                } else if (line.startsWith(BSS_BSSID_STR)) {
-                    bssid = new String(line.getBytes(), bssidStrLen, line.length() - bssidStrLen);
-                } else if (line.startsWith(BSS_FREQ_STR)) {
-                    try {
-                        freq = Integer.parseInt(line.substring(BSS_FREQ_STR.length()));
-                    } catch (NumberFormatException e) {
-                        freq = 0;
-                    }
-                } else if (line.startsWith(BSS_LEVEL_STR)) {
-                    try {
-                        level = Integer.parseInt(line.substring(BSS_LEVEL_STR.length()));
-                        /* some implementations avoid negative values by adding 256
-                         * so we need to adjust for that here.
-                         */
-                        if (level > 0) level -= 256;
-                    } catch (NumberFormatException e) {
-                        level = 0;
-                    }
-                } else if (line.startsWith(BSS_TSF_STR)) {
-                    try {
-                        tsf = Long.parseLong(line.substring(BSS_TSF_STR.length()));
-                    } catch (NumberFormatException e) {
-                        tsf = 0;
-                    }
-                } else if (line.startsWith(BSS_CAPABILITIES_STR)) {
-                    try {
-                        cap = Integer.decode(line.substring(BSS_CAPABILITIES_STR.length()));
-                    } catch (NumberFormatException e) {
-                        cap = 0;
-                    }
-                } else if (line.startsWith(BSS_SSID_STR)) {
-                    wifiSsid = WifiSsid.createFromAsciiEncoded(
-                            line.substring(BSS_SSID_STR.length()));
-                } else if (line.startsWith(BSS_IE_STR)) {
-                    infoElementsStr = line;
-                } else if (PasspointEventHandler.isAnqpAttribute(line)) {
-                    if (anqpLines == null) {
-                        anqpLines = new ArrayList<>();
-                    }
-                    anqpLines.add(line);
-                } else if (line.startsWith(BSS_DELIMITER_STR) || line.startsWith(BSS_END_STR)) {
-                    if (bssid != null) {
-                        try {
-                            if (infoElementsStr == null) {
-                                throw new IllegalArgumentException("Null information element data");
-                            }
-                            int seperator = infoElementsStr.indexOf('=');
-                            if (seperator < 0) {
-                                throw new IllegalArgumentException("No element separator");
-                            }
-
-                            ScanResult.InformationElement[] infoElements =
-                                        InformationElementUtil.parseInformationElements(
-                                        Utils.hexToBytes(infoElementsStr.substring(seperator + 1)));
-
-                            NetworkDetail networkDetail = new NetworkDetail(bssid,
-                                    infoElements, anqpLines, freq);
-                            String xssid = (wifiSsid != null) ? wifiSsid.toString() : WifiSsid.NONE;
-                            if (!xssid.equals(networkDetail.getTrimmedSSID())) {
-                                Log.d(TAG, String.format(
-                                        "Inconsistent SSID on BSSID '%s': '%s' vs '%s': %s",
-                                        bssid, xssid, networkDetail.getSSID(), infoElementsStr));
-                            }
-
-                            if (networkDetail.hasInterworking()) {
-                                if (DBG) Log.d(TAG, "HSNwk: '" + networkDetail);
-                            }
-                            BitSet beaconCapBits = new BitSet(16);
-                            for (int i = 0; i < 16; i++) {
-                                if ((cap & (1 << i)) != 0) {
-                                    beaconCapBits.set(i);
-                                }
-                            }
-
-                            InformationElementUtil.Capabilities capabilities =
-                                    new InformationElementUtil.Capabilities();
-                            capabilities.from(infoElements, beaconCapBits);
-                            flags = capabilities.generateCapabilitiesString();
-                            ScanDetail scan = new ScanDetail(networkDetail, wifiSsid, bssid, flags,
-                                    level, freq, tsf, infoElements, anqpLines);
-                            results.add(scan);
-                        } catch (IllegalArgumentException iae) {
-                            Log.d(TAG, "Failed to parse information elements: " + iae);
-                        }
-                    }
-                    bssid = null;
-                    level = 0;
-                    freq = 0;
-                    tsf = 0;
-                    cap = 0;
-                    flags = "";
-                    wifiSsid = null;
-                    infoElementsStr = null;
-                    anqpLines = null;
-                }
-            }
-        }
-        return results;
+        return mWificondControl.getScanResults();
     }
 
     /**
@@ -1746,6 +1658,28 @@ public class WifiNative {
         int mCenterFrequency1;
         int mChannelWidth;
         // TODO: add preamble once available in HAL.
+    }
+
+    /**
+     * Result of a signal poll.
+     */
+    public static class SignalPollResult {
+        // RSSI value in dBM.
+        public int currentRssi;
+        //Transmission bit rate in Mbps.
+        public int txBitrate;
+        // Association frequency in MHz.
+        public int associationFrequency;
+    }
+
+    /**
+     * WiFi interface transimission counters.
+     */
+    public static class TxPacketCounters {
+        // Number of successfully transmitted packets.
+        public int txSucceeded;
+        // Number of tramsmission failures.
+        public int txFailed;
     }
 
     public static interface ScanEventHandler {
