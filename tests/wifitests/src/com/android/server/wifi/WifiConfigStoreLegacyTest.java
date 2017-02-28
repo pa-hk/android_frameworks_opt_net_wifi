@@ -48,7 +48,7 @@ public class WifiConfigStoreLegacyTest {
     private static final String MASKED_FIELD_VALUE = "*";
 
     // Test mocks
-    @Mock private WifiSupplicantControl mWifiSupplicantControl;
+    @Mock private WifiNative mWifiNative;
     @Mock private WifiNetworkHistory mWifiNetworkHistory;
     @Mock private IpConfigStore mIpconfigStore;
 
@@ -67,7 +67,7 @@ public class WifiConfigStoreLegacyTest {
 
         mWifiConfigStore =
                 new WifiConfigStoreLegacy(
-                        mWifiNetworkHistory, mWifiSupplicantControl, mIpconfigStore);
+                        mWifiNetworkHistory, mWifiNative, mIpconfigStore);
     }
 
     /**
@@ -96,15 +96,15 @@ public class WifiConfigStoreLegacyTest {
 
         // Return the config data with passwords masked from wpa_supplicant control interface.
         doAnswer(new AnswerWithArguments() {
-            public int answer(Map<String, WifiConfiguration> configs,
+            public boolean answer(Map<String, WifiConfiguration> configs,
                     SparseArray<Map<String, String>> networkExtras) {
                 for (Map.Entry<String, WifiConfiguration> entry:
                         createWpaSupplicantLoadData(networks).entrySet()) {
                     configs.put(entry.getKey(), entry.getValue());
                 }
-                return 0;
+                return true;
             }
-        }).when(mWifiSupplicantControl).loadNetworks(any(Map.class), any(SparseArray.class));
+        }).when(mWifiNative).migrateNetworksFromSupplicant(any(Map.class), any(SparseArray.class));
 
         // Return the unmasked values during file parsing.
         doAnswer(new AnswerWithArguments() {
@@ -124,7 +124,7 @@ public class WifiConfigStoreLegacyTest {
                 }
                 return new HashMap<>();
             }
-        }).when(mWifiSupplicantControl).readNetworkVariablesFromSupplicantFile(anyString());
+        }).when(mWifiNative).readNetworkVariablesFromSupplicantFile(anyString());
 
         WifiConfigStoreLegacy.WifiConfigStoreDataLegacy storeData = mWifiConfigStore.read();
 
@@ -205,7 +205,14 @@ public class WifiConfigStoreLegacyTest {
 
     private Map<String, WifiConfiguration> createWpaSupplicantLoadData(
             List<WifiConfiguration> configurations) {
-        List<WifiConfiguration> newConfigurations = createMaskedWifiConfigurations(configurations);
+        List<WifiConfiguration> newConfigurations;
+        // When HIDL is enabled, all the config params are directly read from the HIDL interface,
+        // no need to read masked variables from wpa_supplicant.conf file.
+        if (WifiNative.HIDL_SUP_ENABLE) {
+            newConfigurations = configurations;
+        } else {
+            newConfigurations = createMaskedWifiConfigurations(configurations);
+        }
         Map<String, WifiConfiguration> configurationMap = new HashMap<>();
         for (WifiConfiguration config : newConfigurations) {
             configurationMap.put(config.configKey(true), config);

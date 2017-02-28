@@ -136,7 +136,7 @@ public class NativeUtil {
             if (i != 0) sb.append(":");
             sb.append(new String(HexEncoding.encode(macArray, i, 1)));
         }
-        return sb.toString();
+        return sb.toString().toLowerCase();
     }
 
     /**
@@ -154,6 +154,21 @@ public class NativeUtil {
             throw new IllegalArgumentException("invalid mac oui string length: " + cleanMac);
         }
         return HexEncoding.decode(cleanMac.toCharArray(), false);
+    }
+
+    /**
+     * Remove enclosed quotes of the provided string.
+     *
+     * @param quotedStr String to be unquoted.
+     * @return String without the enclosing quotes.
+     */
+    public static String removeEnclosingQuotes(String quotedStr) {
+        int length = quotedStr.length();
+        if ((length >= 2)
+                && (quotedStr.charAt(0) == '"') && (quotedStr.charAt(length - 1) == '"')) {
+            return quotedStr.substring(1, length - 1);
+        }
+        return quotedStr;
     }
 
     /**
@@ -208,7 +223,7 @@ public class NativeUtil {
     /**
      * Convert from an array of primitive bytes to an array list of Byte.
      */
-    private static ArrayList<Byte> byteArrayToArrayList(byte[] bytes) {
+    public static ArrayList<Byte> byteArrayToArrayList(byte[] bytes) {
         ArrayList<Byte> byteList = new ArrayList<>();
         for (Byte b : bytes) {
             byteList.add(b);
@@ -219,7 +234,7 @@ public class NativeUtil {
     /**
      * Convert from an array list of Byte to an array of primitive bytes.
      */
-    private static byte[] byteArrayFromArrayList(ArrayList<Byte> bytes) {
+    public static byte[] byteArrayFromArrayList(ArrayList<Byte> bytes) {
         byte[] byteArray = new byte[bytes.size()];
         int i = 0;
         for (Byte b : bytes) {
@@ -251,6 +266,6 @@ public class NativeUtil {
         if (bytes == null) {
             throw new IllegalArgumentException("null hex bytes");
         }
-        return new String(HexEncoding.encode(bytes));
+        return new String(HexEncoding.encode(bytes)).toLowerCase();
     }
 }

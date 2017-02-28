@@ -23,28 +23,40 @@ import android.hardware.wifi.V1_0.IWifiIface;
 import android.hardware.wifi.V1_0.IWifiRttController;
 import android.hardware.wifi.V1_0.IWifiStaIface;
 import android.hardware.wifi.V1_0.StaApfPacketFilterCapabilities;
+import android.hardware.wifi.V1_0.WifiDebugHostWakeReasonStats;
+import android.hardware.wifi.V1_0.WifiDebugPacketFateFrameType;
+import android.hardware.wifi.V1_0.WifiDebugRingBufferFlags;
+import android.hardware.wifi.V1_0.WifiDebugRingBufferStatus;
+import android.hardware.wifi.V1_0.WifiDebugRingBufferVerboseLevel;
+import android.hardware.wifi.V1_0.WifiDebugRxPacketFate;
+import android.hardware.wifi.V1_0.WifiDebugRxPacketFateReport;
+import android.hardware.wifi.V1_0.WifiDebugTxPacketFate;
+import android.hardware.wifi.V1_0.WifiDebugTxPacketFateReport;
 import android.hardware.wifi.V1_0.WifiStatus;
 import android.hardware.wifi.V1_0.WifiStatusCode;
 import android.net.apf.ApfCapabilities;
 import android.net.wifi.WifiManager;
+import android.net.wifi.WifiWakeReasonAndCounts;
+import android.os.HandlerThread;
+import android.os.Looper;
+import android.os.RemoteException;
 
+import com.android.server.connectivity.KeepalivePacketData;
 import com.android.server.wifi.util.NativeUtil;
 
 import static org.junit.Assert.*;
 import static org.mockito.Mockito.*;
 
-import android.os.HandlerThread;
-import android.os.Looper;
-import android.os.RemoteException;
-
-import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
+import java.net.InetAddress;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Random;
 
 /**
  * Unit tests for {@link com.android.server.wifi.WifiVendorHal}.
@@ -120,16 +132,6 @@ public class WifiVendorHalTest {
         verify(mHalDeviceManager).registerStatusListener(
                 callbackCaptor.capture(), any(Looper.class));
         mHalDeviceManagerStatusCallbacks = callbackCaptor.getValue();
-    }
-
-    /**
-     * Test that parsing a typical colon-delimited MAC adddress works
-     */
-    @Test
-    public void testTypicalHexParse() throws Exception {
-        byte[] sixBytes = new byte[6];
-        mWifiVendorHal.parseUnquotedMacStrToByteArray("61:52:43:34:25:16", sixBytes);
-        Assert.assertArrayEquals(new byte[]{0x61, 0x52, 0x43, 0x34, 0x25, 0x16}, sixBytes);
     }
 
     /**
@@ -432,6 +434,39 @@ public class WifiVendorHalTest {
         verify(mIWifiStaIface).setScanningMacOui(eq(zzz));
     }
 
+    @Test
+    public void testStartSendingOffloadedPacket() throws Exception {
+        byte[] srcMac = NativeUtil.macAddressToByteArray("4007b2088c81");
+        InetAddress src = InetAddress.parseNumericAddress("192.168.13.13");
+        InetAddress dst = InetAddress.parseNumericAddress("93.184.216.34");
+        int slot = 13;
+        int millis = 16000;
+
+        KeepalivePacketData kap = KeepalivePacketData.nattKeepalivePacket(src, 63000, dst, 4500);
+
+        when(mIWifiStaIface.startSendingKeepAlivePackets(
+                anyInt(), any(), anyShort(), any(), any(), anyInt()
+        )).thenReturn(mWifiStatusSuccess);
+
+        assertTrue(mWifiVendorHal.startVendorHalSta());
+        assertTrue(0 == mWifiVendorHal.startSendingOffloadedPacket(slot, srcMac, kap, millis));
+
+        verify(mIWifiStaIface).startSendingKeepAlivePackets(
+                eq(slot), any(), anyShort(), any(), any(), eq(millis));
+    }
+
+    @Test
+    public void testStopSendingOffloadedPacket() throws Exception {
+        int slot = 13;
+
+        when(mIWifiStaIface.stopSendingKeepAlivePackets(anyInt())).thenReturn(mWifiStatusSuccess);
+
+        assertTrue(mWifiVendorHal.startVendorHalSta());
+        assertTrue(0 == mWifiVendorHal.stopSendingOffloadedPacket(slot));
+
+        verify(mIWifiStaIface).stopSendingKeepAlivePackets(eq(slot));
+    }
+
     /**
      * Test that getApfCapabilities is hooked up to the HAL correctly
      *
@@ -470,7 +505,7 @@ public class WifiVendorHalTest {
     }
 
     /**
-     * Test that an APF program can be installed/
+     * Test that an APF program can be installed.
      */
     @Test
     public void testInstallApf() throws Exception {
@@ -507,5 +542,414 @@ public class WifiVendorHalTest {
         assertFalse(mWifiVendorHal.setCountryCodeHal("ZZZ"));
 
         verify(mIWifiApIface).setCountryCode(eq(expected));
+    }
+
+    /**
+     * Test that startLoggingToDebugRingBuffer is plumbed to chip
+     *
+     * A call before the vendor hal is started should just return false.
+     * After starting in STA mode, the call should succeed, and pass ther right things down.
+     */
+    @Test
+    public void testStartLoggingRingBuffer() throws Exception {
+        when(mIWifiChip.startLoggingToDebugRingBuffer(
+                any(String.class), anyInt(), anyInt(), anyInt()
+        )).thenReturn(mWifiStatusSuccess);
+
+        assertFalse(mWifiVendorHal.startLoggingRingBuffer(1, 0x42, 0, 0, "One"));
+        assertTrue(mWifiVendorHal.startVendorHalSta());
+        assertTrue(mWifiVendorHal.startLoggingRingBuffer(1, 0x42, 11, 3000, "One"));
+
+        verify(mIWifiChip).startLoggingToDebugRingBuffer("One", 1, 11, 3000);
+    }
+
+    /**
+     * Same test as testStartLoggingRingBuffer, but in AP mode rather than STA.
+     */
+    @Test
+    public void testStartLoggingRingBufferOnAp() throws Exception {
+        when(mIWifiChip.startLoggingToDebugRingBuffer(
+                any(String.class), anyInt(), anyInt(), anyInt()
+        )).thenReturn(mWifiStatusSuccess);
+
+        assertFalse(mWifiVendorHal.startLoggingRingBuffer(1, 0x42, 0, 0, "One"));
+        assertTrue(mWifiVendorHal.startVendorHalAp());
+        assertTrue(mWifiVendorHal.startLoggingRingBuffer(1, 0x42, 11, 3000, "One"));
+
+        verify(mIWifiChip).startLoggingToDebugRingBuffer("One", 1, 11, 3000);
+    }
+
+    /**
+     * Test that getRingBufferStatus gets and translates its stuff correctly
+     */
+    @Test
+    public void testRingBufferStatus() throws Exception {
+        WifiDebugRingBufferStatus one = new WifiDebugRingBufferStatus();
+        one.ringName = "One";
+        one.flags = WifiDebugRingBufferFlags.HAS_BINARY_ENTRIES;
+        one.ringId = 5607371;
+        one.sizeInBytes = 54321;
+        one.freeSizeInBytes = 42;
+        one.verboseLevel = WifiDebugRingBufferVerboseLevel.VERBOSE;
+        String oneExpect = "name: One flag: 1 ringBufferId: 5607371 ringBufferByteSize: 54321"
+                + " verboseLevel: 2 writtenBytes: 0 readBytes: 0 writtenRecords: 0";
+
+        WifiDebugRingBufferStatus two = new WifiDebugRingBufferStatus();
+        two.ringName = "Two";
+        two.flags = WifiDebugRingBufferFlags.HAS_ASCII_ENTRIES
+                | WifiDebugRingBufferFlags.HAS_PER_PACKET_ENTRIES;
+        two.ringId = 4512470;
+        two.sizeInBytes = 300;
+        two.freeSizeInBytes = 42;
+        two.verboseLevel = WifiDebugRingBufferVerboseLevel.DEFAULT;
+
+        ArrayList<WifiDebugRingBufferStatus> halBufferStatus = new ArrayList<>(2);
+        halBufferStatus.add(one);
+        halBufferStatus.add(two);
+
+        WifiNative.RingBufferStatus[] actual;
+
+        doAnswer(new AnswerWithArguments() {
+            public void answer(IWifiChip.getDebugRingBuffersStatusCallback cb)
+                    throws RemoteException {
+                cb.onValues(mWifiStatusSuccess, halBufferStatus);
+            }
+        }).when(mIWifiChip).getDebugRingBuffersStatus(any(
+                IWifiChip.getDebugRingBuffersStatusCallback.class));
+
+        assertTrue(mWifiVendorHal.startVendorHalSta());
+        actual = mWifiVendorHal.getRingBufferStatus();
+
+        assertEquals(halBufferStatus.size(), actual.length);
+        assertEquals(oneExpect, actual[0].toString());
+        assertEquals(two.ringId, actual[1].ringBufferId);
+
+    }
+
+    /**
+     * Test that getRingBufferData calls forceDumpToDebugRingBuffer
+     *
+     * Try once before hal start, and twice after (one success, one failure).
+     */
+    @Test
+    public void testForceRingBufferDump() throws Exception {
+        when(mIWifiChip.forceDumpToDebugRingBuffer(eq("Gunk"))).thenReturn(mWifiStatusSuccess);
+        when(mIWifiChip.forceDumpToDebugRingBuffer(eq("Glop"))).thenReturn(mWifiStatusFailure);
+
+        assertFalse(mWifiVendorHal.getRingBufferData("Gunk")); // hal not started
+
+        assertTrue(mWifiVendorHal.startVendorHalSta());
+
+        assertTrue(mWifiVendorHal.getRingBufferData("Gunk")); // mocked call succeeds
+        assertFalse(mWifiVendorHal.getRingBufferData("Glop")); // mocked call fails
+
+        verify(mIWifiChip).forceDumpToDebugRingBuffer("Gunk");
+        verify(mIWifiChip).forceDumpToDebugRingBuffer("Glop");
+    }
+
+    /**
+     * Tests the start of packet fate monitoring.
+     *
+     * Try once before hal start, and once after (one success, one failure).
+     */
+    @Test
+    public void testStartPktFateMonitoring() throws Exception {
+        when(mIWifiStaIface.startDebugPacketFateMonitoring()).thenReturn(mWifiStatusSuccess);
+
+        assertFalse(mWifiVendorHal.startPktFateMonitoring());
+        verify(mIWifiStaIface, never()).startDebugPacketFateMonitoring();
+
+        assertTrue(mWifiVendorHal.startVendorHalSta());
+        assertTrue(mWifiVendorHal.startPktFateMonitoring());
+        verify(mIWifiStaIface).startDebugPacketFateMonitoring();
+    }
+
+    /**
+     * Tests the retrieval of tx packet fates.
+     *
+     * Try once before hal start, and once after.
+     */
+    @Test
+    public void testGetTxPktFates() throws Exception {
+        byte[] frameContentBytes = new byte[30];
+        new Random().nextBytes(frameContentBytes);
+        WifiDebugTxPacketFateReport fateReport = new WifiDebugTxPacketFateReport();
+        fateReport.fate = WifiDebugTxPacketFate.DRV_QUEUED;
+        fateReport.frameInfo.driverTimestampUsec = new Random().nextLong();
+        fateReport.frameInfo.frameType = WifiDebugPacketFateFrameType.ETHERNET_II;
+        fateReport.frameInfo.frameContent.addAll(
+                NativeUtil.byteArrayToArrayList(frameContentBytes));
+
+        doAnswer(new AnswerWithArguments() {
+            public void answer(IWifiStaIface.getDebugTxPacketFatesCallback cb) {
+                cb.onValues(mWifiStatusSuccess,
+                        new ArrayList<WifiDebugTxPacketFateReport>(Arrays.asList(fateReport)));
+            }
+        }).when(mIWifiStaIface)
+                .getDebugTxPacketFates(any(IWifiStaIface.getDebugTxPacketFatesCallback.class));
+
+        WifiNative.TxFateReport[] retrievedFates = new WifiNative.TxFateReport[1];
+        assertFalse(mWifiVendorHal.getTxPktFates(retrievedFates));
+        verify(mIWifiStaIface, never())
+                .getDebugTxPacketFates(any(IWifiStaIface.getDebugTxPacketFatesCallback.class));
+
+        assertTrue(mWifiVendorHal.startVendorHalSta());
+
+        assertTrue(mWifiVendorHal.getTxPktFates(retrievedFates));
+        verify(mIWifiStaIface)
+                .getDebugTxPacketFates(any(IWifiStaIface.getDebugTxPacketFatesCallback.class));
+        assertEquals(WifiLoggerHal.TX_PKT_FATE_DRV_QUEUED, retrievedFates[0].mFate);
+        assertEquals(fateReport.frameInfo.driverTimestampUsec,
+                retrievedFates[0].mDriverTimestampUSec);
+        assertEquals(WifiLoggerHal.FRAME_TYPE_ETHERNET_II, retrievedFates[0].mFrameType);
+        assertArrayEquals(frameContentBytes, retrievedFates[0].mFrameBytes);
+    }
+
+    /**
+     * Tests the retrieval of tx packet fates when the number of fates retrieved exceeds the
+     * input array.
+     *
+     * Try once before hal start, and once after.
+     */
+    @Test
+    public void testGetTxPktFatesExceedsInputArrayLength() throws Exception {
+        byte[] frameContentBytes = new byte[30];
+        new Random().nextBytes(frameContentBytes);
+        WifiDebugTxPacketFateReport fateReport = new WifiDebugTxPacketFateReport();
+        fateReport.fate = WifiDebugTxPacketFate.FW_DROP_OTHER;
+        fateReport.frameInfo.driverTimestampUsec = new Random().nextLong();
+        fateReport.frameInfo.frameType = WifiDebugPacketFateFrameType.MGMT_80211;
+        fateReport.frameInfo.frameContent.addAll(
+                NativeUtil.byteArrayToArrayList(frameContentBytes));
+
+        doAnswer(new AnswerWithArguments() {
+            public void answer(IWifiStaIface.getDebugTxPacketFatesCallback cb) {
+                cb.onValues(mWifiStatusSuccess,
+                        new ArrayList<WifiDebugTxPacketFateReport>(Arrays.asList(
+                                fateReport, fateReport)));
+            }
+        }).when(mIWifiStaIface)
+                .getDebugTxPacketFates(any(IWifiStaIface.getDebugTxPacketFatesCallback.class));
+
+        WifiNative.TxFateReport[] retrievedFates = new WifiNative.TxFateReport[1];
+        assertFalse(mWifiVendorHal.getTxPktFates(retrievedFates));
+        verify(mIWifiStaIface, never())
+                .getDebugTxPacketFates(any(IWifiStaIface.getDebugTxPacketFatesCallback.class));
+
+        assertTrue(mWifiVendorHal.startVendorHalSta());
+
+        assertTrue(mWifiVendorHal.getTxPktFates(retrievedFates));
+        verify(mIWifiStaIface)
+                .getDebugTxPacketFates(any(IWifiStaIface.getDebugTxPacketFatesCallback.class));
+        assertEquals(WifiLoggerHal.TX_PKT_FATE_FW_DROP_OTHER, retrievedFates[0].mFate);
+        assertEquals(fateReport.frameInfo.driverTimestampUsec,
+                retrievedFates[0].mDriverTimestampUSec);
+        assertEquals(WifiLoggerHal.FRAME_TYPE_80211_MGMT, retrievedFates[0].mFrameType);
+        assertArrayEquals(frameContentBytes, retrievedFates[0].mFrameBytes);
+    }
+
+    /**
+     * Tests the retrieval of rx packet fates.
+     *
+     * Try once before hal start, and once after.
+     */
+    @Test
+    public void testGetRxPktFates() throws Exception {
+        byte[] frameContentBytes = new byte[30];
+        new Random().nextBytes(frameContentBytes);
+        WifiDebugRxPacketFateReport fateReport = new WifiDebugRxPacketFateReport();
+        fateReport.fate = WifiDebugRxPacketFate.SUCCESS;
+        fateReport.frameInfo.driverTimestampUsec = new Random().nextLong();
+        fateReport.frameInfo.frameType = WifiDebugPacketFateFrameType.ETHERNET_II;
+        fateReport.frameInfo.frameContent.addAll(
+                NativeUtil.byteArrayToArrayList(frameContentBytes));
+
+        doAnswer(new AnswerWithArguments() {
+            public void answer(IWifiStaIface.getDebugRxPacketFatesCallback cb) {
+                cb.onValues(mWifiStatusSuccess,
+                        new ArrayList<WifiDebugRxPacketFateReport>(Arrays.asList(fateReport)));
+            }
+        }).when(mIWifiStaIface)
+                .getDebugRxPacketFates(any(IWifiStaIface.getDebugRxPacketFatesCallback.class));
+
+        WifiNative.RxFateReport[] retrievedFates = new WifiNative.RxFateReport[1];
+        assertFalse(mWifiVendorHal.getRxPktFates(retrievedFates));
+        verify(mIWifiStaIface, never())
+                .getDebugRxPacketFates(any(IWifiStaIface.getDebugRxPacketFatesCallback.class));
+
+        assertTrue(mWifiVendorHal.startVendorHalSta());
+
+        assertTrue(mWifiVendorHal.getRxPktFates(retrievedFates));
+        verify(mIWifiStaIface)
+                .getDebugRxPacketFates(any(IWifiStaIface.getDebugRxPacketFatesCallback.class));
+        assertEquals(WifiLoggerHal.RX_PKT_FATE_SUCCESS, retrievedFates[0].mFate);
+        assertEquals(fateReport.frameInfo.driverTimestampUsec,
+                retrievedFates[0].mDriverTimestampUSec);
+        assertEquals(WifiLoggerHal.FRAME_TYPE_ETHERNET_II, retrievedFates[0].mFrameType);
+        assertArrayEquals(frameContentBytes, retrievedFates[0].mFrameBytes);
+    }
+
+    /**
+     * Tests the retrieval of rx packet fates when the number of fates retrieved exceeds the
+     * input array.
+     *
+     * Try once before hal start, and once after.
+     */
+    @Test
+    public void testGetRxPktFatesExceedsInputArrayLength() throws Exception {
+        byte[] frameContentBytes = new byte[30];
+        new Random().nextBytes(frameContentBytes);
+        WifiDebugRxPacketFateReport fateReport = new WifiDebugRxPacketFateReport();
+        fateReport.fate = WifiDebugRxPacketFate.FW_DROP_FILTER;
+        fateReport.frameInfo.driverTimestampUsec = new Random().nextLong();
+        fateReport.frameInfo.frameType = WifiDebugPacketFateFrameType.MGMT_80211;
+        fateReport.frameInfo.frameContent.addAll(
+                NativeUtil.byteArrayToArrayList(frameContentBytes));
+
+        doAnswer(new AnswerWithArguments() {
+            public void answer(IWifiStaIface.getDebugRxPacketFatesCallback cb) {
+                cb.onValues(mWifiStatusSuccess,
+                        new ArrayList<WifiDebugRxPacketFateReport>(Arrays.asList(
+                                fateReport, fateReport)));
+            }
+        }).when(mIWifiStaIface)
+                .getDebugRxPacketFates(any(IWifiStaIface.getDebugRxPacketFatesCallback.class));
+
+        WifiNative.RxFateReport[] retrievedFates = new WifiNative.RxFateReport[1];
+        assertFalse(mWifiVendorHal.getRxPktFates(retrievedFates));
+        verify(mIWifiStaIface, never())
+                .getDebugRxPacketFates(any(IWifiStaIface.getDebugRxPacketFatesCallback.class));
+
+        assertTrue(mWifiVendorHal.startVendorHalSta());
+
+        assertTrue(mWifiVendorHal.getRxPktFates(retrievedFates));
+        verify(mIWifiStaIface)
+                .getDebugRxPacketFates(any(IWifiStaIface.getDebugRxPacketFatesCallback.class));
+        assertEquals(WifiLoggerHal.RX_PKT_FATE_FW_DROP_FILTER, retrievedFates[0].mFate);
+        assertEquals(fateReport.frameInfo.driverTimestampUsec,
+                retrievedFates[0].mDriverTimestampUSec);
+        assertEquals(WifiLoggerHal.FRAME_TYPE_80211_MGMT, retrievedFates[0].mFrameType);
+        assertArrayEquals(frameContentBytes, retrievedFates[0].mFrameBytes);
+    }
+
+    /**
+     * Tests the failure to retrieve tx packet fates when the input array is empty.
+     */
+    @Test
+    public void testGetTxPktFatesEmptyInputArray() throws Exception {
+        assertTrue(mWifiVendorHal.startVendorHalSta());
+        assertFalse(mWifiVendorHal.getTxPktFates(new WifiNative.TxFateReport[0]));
+        verify(mIWifiStaIface, never())
+                .getDebugTxPacketFates(any(IWifiStaIface.getDebugTxPacketFatesCallback.class));
+    }
+
+    /**
+     * Tests the failure to retrieve rx packet fates when the input array is empty.
+     */
+    @Test
+    public void testGetRxPktFatesEmptyInputArray() throws Exception {
+        assertTrue(mWifiVendorHal.startVendorHalSta());
+        assertFalse(mWifiVendorHal.getRxPktFates(new WifiNative.RxFateReport[0]));
+        verify(mIWifiStaIface, never())
+                .getDebugRxPacketFates(any(IWifiStaIface.getDebugRxPacketFatesCallback.class));
+    }
+
+    /**
+     * Tests the nd offload enable/disable.
+     */
+    @Test
+    public void testEnableDisableNdOffload() throws Exception {
+        when(mIWifiStaIface.enableNdOffload(anyBoolean())).thenReturn(mWifiStatusSuccess);
+
+        assertFalse(mWifiVendorHal.configureNeighborDiscoveryOffload(true));
+        verify(mIWifiStaIface, never()).enableNdOffload(anyBoolean());
+
+        assertTrue(mWifiVendorHal.startVendorHalSta());
+
+        assertTrue(mWifiVendorHal.configureNeighborDiscoveryOffload(true));
+        verify(mIWifiStaIface).enableNdOffload(eq(true));
+        assertTrue(mWifiVendorHal.configureNeighborDiscoveryOffload(false));
+        verify(mIWifiStaIface).enableNdOffload(eq(false));
+    }
+
+    /**
+     * Tests the nd offload enable failure.
+     */
+    @Test
+    public void testEnableNdOffloadFailure() throws Exception {
+        when(mIWifiStaIface.enableNdOffload(eq(true))).thenReturn(mWifiStatusFailure);
+
+        assertTrue(mWifiVendorHal.startVendorHalSta());
+
+        assertFalse(mWifiVendorHal.configureNeighborDiscoveryOffload(true));
+        verify(mIWifiStaIface).enableNdOffload(eq(true));
+    }
+
+    /**
+     * Tests the retrieval of wlan wake reason stats.
+     */
+    @Test
+    public void testGetWlanWakeReasonCount() throws Exception {
+        WifiDebugHostWakeReasonStats stats = new WifiDebugHostWakeReasonStats();
+        Random rand = new Random();
+        stats.totalCmdEventWakeCnt = rand.nextInt();
+        stats.totalDriverFwLocalWakeCnt = rand.nextInt();
+        stats.totalRxPacketWakeCnt = rand.nextInt();
+        stats.rxPktWakeDetails.rxUnicastCnt = rand.nextInt();
+        stats.rxPktWakeDetails.rxMulticastCnt = rand.nextInt();
+        stats.rxIcmpPkWakeDetails.icmpPkt = rand.nextInt();
+        stats.rxIcmpPkWakeDetails.icmp6Pkt = rand.nextInt();
+        stats.rxMulticastPkWakeDetails.ipv4RxMulticastAddrCnt = rand.nextInt();
+        stats.rxMulticastPkWakeDetails.ipv6RxMulticastAddrCnt = rand.nextInt();
+
+        doAnswer(new AnswerWithArguments() {
+            public void answer(IWifiChip.getDebugHostWakeReasonStatsCallback cb) {
+                cb.onValues(mWifiStatusSuccess, stats);
+            }
+        }).when(mIWifiChip).getDebugHostWakeReasonStats(
+                any(IWifiChip.getDebugHostWakeReasonStatsCallback.class));
+
+        assertNull(mWifiVendorHal.getWlanWakeReasonCount());
+        verify(mIWifiChip, never())
+                .getDebugHostWakeReasonStats(
+                        any(IWifiChip.getDebugHostWakeReasonStatsCallback.class));
+
+        assertTrue(mWifiVendorHal.startVendorHalSta());
+
+        WifiWakeReasonAndCounts retrievedStats = mWifiVendorHal.getWlanWakeReasonCount();
+        verify(mIWifiChip).getDebugHostWakeReasonStats(
+                any(IWifiChip.getDebugHostWakeReasonStatsCallback.class));
+        assertNotNull(retrievedStats);
+        assertEquals(stats.totalCmdEventWakeCnt, retrievedStats.totalCmdEventWake);
+        assertEquals(stats.totalDriverFwLocalWakeCnt, retrievedStats.totalDriverFwLocalWake);
+        assertEquals(stats.totalRxPacketWakeCnt, retrievedStats.totalRxDataWake);
+        assertEquals(stats.rxPktWakeDetails.rxUnicastCnt, retrievedStats.rxUnicast);
+        assertEquals(stats.rxPktWakeDetails.rxMulticastCnt, retrievedStats.rxMulticast);
+        assertEquals(stats.rxIcmpPkWakeDetails.icmpPkt, retrievedStats.icmp);
+        assertEquals(stats.rxIcmpPkWakeDetails.icmp6Pkt, retrievedStats.icmp6);
+        assertEquals(stats.rxMulticastPkWakeDetails.ipv4RxMulticastAddrCnt,
+                retrievedStats.ipv4RxMulticast);
+        assertEquals(stats.rxMulticastPkWakeDetails.ipv6RxMulticastAddrCnt,
+                retrievedStats.ipv6Multicast);
+    }
+
+    /**
+     * Tests the failure in retrieval of wlan wake reason stats.
+     */
+    @Test
+    public void testGetWlanWakeReasonCountFailure() throws Exception {
+        doAnswer(new AnswerWithArguments() {
+            public void answer(IWifiChip.getDebugHostWakeReasonStatsCallback cb) {
+                cb.onValues(mWifiStatusFailure, new WifiDebugHostWakeReasonStats());
+            }
+        }).when(mIWifiChip).getDebugHostWakeReasonStats(
+                any(IWifiChip.getDebugHostWakeReasonStatsCallback.class));
+
+        // This should work in both AP & STA mode.
+        assertTrue(mWifiVendorHal.startVendorHalAp());
+
+        assertNull(mWifiVendorHal.getWlanWakeReasonCount());
+        verify(mIWifiChip).getDebugHostWakeReasonStats(
+                any(IWifiChip.getDebugHostWakeReasonStatsCallback.class));
     }
 }

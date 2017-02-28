@@ -61,6 +61,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Random;
 import java.util.Set;
 
 /**
@@ -623,6 +624,38 @@ public class WifiConfigManagerTest {
     }
 
     /**
+     * Verifies that {@link WifiConfigManager#updateNetworkNotRecommended(int, boolean)} correctly
+     * updates the {@link NetworkSelectionStatus#mNotRecommended} bit.
+     */
+    @Test
+    public void testUpdateNetworkNotRecommended() {
+        WifiConfiguration openNetwork = WifiConfigurationTestUtil.createOpenNetwork();
+
+        NetworkUpdateResult result = verifyAddNetworkToWifiConfigManager(openNetwork);
+
+        // First retrieve the configuration and check this it does not have this bit set
+        WifiConfiguration retrievedNetwork = mWifiConfigManager.getConfiguredNetwork(result.netId);
+
+        assertFalse(retrievedNetwork.getNetworkSelectionStatus().isNotRecommended());
+
+        // Update the network to be not recommended;
+        assertTrue(mWifiConfigManager.updateNetworkNotRecommended(
+                result.netId, true /* notRecommended*/));
+
+        retrievedNetwork = mWifiConfigManager.getConfiguredNetwork(result.netId);
+
+        assertTrue(retrievedNetwork.getNetworkSelectionStatus().isNotRecommended());
+
+        // Update the network to no longer be not recommended
+        assertTrue(mWifiConfigManager.updateNetworkNotRecommended(
+                result.netId, false/* notRecommended*/));
+
+        retrievedNetwork = mWifiConfigManager.getConfiguredNetwork(result.netId);
+
+        assertFalse(retrievedNetwork.getNetworkSelectionStatus().isNotRecommended());
+    }
+
+    /**
      * Verifies the enabling of temporarily disabled network using
      * {@link WifiConfigManager#tryEnableNetwork(int)}.
      */
@@ -778,6 +811,18 @@ public class WifiConfigManagerTest {
     public void testAddOrUpdateNetworkWithNullConfig() {
         NetworkUpdateResult result = mWifiConfigManager.addOrUpdateNetwork(null, TEST_CREATOR_UID);
         assertFalse(result.isSuccess());
+    }
+
+    /**
+     * Verifies that attempting to remove a network without any configs stored will return false.
+     * This tests the case where we have not loaded any configs, potentially due to a pending store
+     * read.
+     * This invokes {@link WifiConfigManager#removeNetwork(int)}.
+     */
+    @Test
+    public void testRemoveNetworkWithEmptyConfigStore() {
+        int networkId = new Random().nextInt();
+        assertFalse(mWifiConfigManager.removeNetwork(networkId, TEST_CREATOR_UID));
     }
 
     /**

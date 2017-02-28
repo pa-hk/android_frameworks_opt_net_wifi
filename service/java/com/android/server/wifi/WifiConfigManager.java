@@ -548,7 +548,7 @@ public class WifiConfigManager {
      */
     private WifiConfiguration getInternalConfiguredNetwork(int networkId) {
         if (networkId == WifiConfiguration.INVALID_NETWORK_ID) {
-            Log.e(TAG, "Looking up network with invalid networkId -1");
+            Log.w(TAG, "Looking up network with invalid networkId -1");
             return null;
         }
         WifiConfiguration internalConfig = mConfiguredNetworks.getForCurrentUser(networkId);
@@ -1272,6 +1272,26 @@ public class WifiConfigManager {
             return false;
         }
         return updateNetworkSelectionStatus(config, reason);
+    }
+
+    /**
+     * Update whether a network is currently not recommended by {@link RecommendedNetworkEvaluator}.
+     *
+     * @param networkId network ID of the network to be updated
+     * @param notRecommended whether this network is not recommended
+     * @return true if the network is updated, false otherwise
+     */
+    public boolean updateNetworkNotRecommended(int networkId, boolean notRecommended) {
+        WifiConfiguration config = getInternalConfiguredNetwork(networkId);
+        if (config == null) {
+            return false;
+        }
+
+        config.getNetworkSelectionStatus().setNotRecommended(notRecommended);
+        localLog("updateNetworkRecommendation: configKey=" + config.configKey()
+                + " recommended=" + notRecommended);
+        saveToStore(false);
+        return true;
     }
 
     /**

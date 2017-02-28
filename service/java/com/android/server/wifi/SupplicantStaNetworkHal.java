@@ -15,18 +15,19 @@
  */
 package com.android.server.wifi;
 
+import android.content.Context;
 import android.hardware.wifi.supplicant.V1_0.ISupplicantStaNetwork;
 import android.hardware.wifi.supplicant.V1_0.ISupplicantStaNetworkCallback;
 import android.hardware.wifi.supplicant.V1_0.SupplicantStatus;
 import android.hardware.wifi.supplicant.V1_0.SupplicantStatusCode;
 import android.net.wifi.WifiConfiguration;
 import android.net.wifi.WifiEnterpriseConfig;
-import android.os.HandlerThread;
 import android.os.RemoteException;
 import android.text.TextUtils;
 import android.util.Log;
 import android.util.MutableBoolean;
 
+import com.android.internal.R;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.ArrayUtils;
 import com.android.server.wifi.util.NativeUtil;
@@ -38,6 +39,7 @@ import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+
 /**
  * Wrapper class for ISupplicantStaNetwork HAL calls. Gets and sets supplicant sta network variables
  * and interacts with networks.
@@ -46,7 +48,6 @@ import java.util.regex.Pattern;
  */
 public class SupplicantStaNetworkHal {
     private static final String TAG = "SupplicantStaNetworkHal";
-    private static final boolean DBG = false;
     @VisibleForTesting
     public static final String ID_STRING_KEY_FQDN = "fqdn";
     @VisibleForTesting
@@ -59,24 +60,32 @@ public class SupplicantStaNetworkHal {
      * Matches a strings like the following: "[:kc:<kc_value>:sres:<sres_value>]";
      */
     private static final Pattern GSM_AUTH_RESPONSE_PARAMS_PATTERN =
-            Pattern.compile(":kc:([0-9a-f]+):sres:([0-9a-f]+)");
+            Pattern.compile(":kc:([0-9a-fA-F]+):sres:([0-9a-fA-F]+)");
     /**
      * Regex pattern for extracting the UMTS sim authentication response params from a string.
      * Matches a strings like the following: ":ik:<ik_value>:ck:<ck_value>:res:<res_value>";
      */
     private static final Pattern UMTS_AUTH_RESPONSE_PARAMS_PATTERN =
-            Pattern.compile(":ik:([0-9a-f]+):ck:([0-9a-f]+):res:([0-9a-f]+)");
+            Pattern.compile("^:ik:([0-9a-fA-F]+):ck:([0-9a-fA-F]+):res:([0-9a-fA-F]+)$");
     /**
      * Regex pattern for extracting the UMTS sim auts response params from a string.
      * Matches a strings like the following: ":<auts_value>";
      */
-    private static final Pattern UMTS_AUTS_RESPONSE_PARAMS_PATTERN = Pattern.compile("([0-9a-f]+)");
+    private static final Pattern UMTS_AUTS_RESPONSE_PARAMS_PATTERN =
+            Pattern.compile("^:([0-9a-fA-F]+)$");
 
     private final Object mLock = new Object();
-    private ISupplicantStaNetwork mISupplicantStaNetwork = null;
-    private final HandlerThread mHandlerThread;
+    private final String mIfaceName;
+    private final WifiMonitor mWifiMonitor;
+    private ISupplicantStaNetwork mISupplicantStaNetwork;
+    private ISupplicantStaNetworkCallback mISupplicantStaNetworkCallback;
+
+    private boolean mVerboseLoggingEnabled = false;
+    // Indicates whether the system is capable of 802.11r fast BSS transition.
+    private boolean mSystemSupportsFastBssTransition = false;
+
+    // Network variables read from wpa_supplicant.
     private int mNetworkId;
-    private String mIfaceName;
     private ArrayList<Byte> mSsid;
     private byte[/* 6 */] mBssid;
     private boolean mScanSsid;
@@ -98,17 +107,29 @@ public class SupplicantStaNetworkHal {
     private String mEapCACert;
     private String mEapCAPath;
     private String mEapClientCert;
-    private String mEapPrivateKey;
+    private String mEapPrivateKeyId;
     private String mEapSubjectMatch;
     private String mEapAltSubjectMatch;
     private boolean mEapEngine;
     private String mEapEngineID;
     private String mEapDomainSuffixMatch;
 
-    SupplicantStaNetworkHal(ISupplicantStaNetwork iSupplicantStaNetwork,
-                            HandlerThread handlerThread) {
+    SupplicantStaNetworkHal(ISupplicantStaNetwork iSupplicantStaNetwork, String ifaceName,
+                            Context context, WifiMonitor monitor) {
         mISupplicantStaNetwork = iSupplicantStaNetwork;
-        mHandlerThread = handlerThread;
+        mIfaceName = ifaceName;
+        mWifiMonitor = monitor;
+        mSystemSupportsFastBssTransition =
+                context.getResources().getBoolean(R.bool.config_wifi_fast_bss_transition_enabled);
+    }
+
+    /**
+     * Enable/Disable verbose logging.
+     *
+     * @param enable true to enable, false to disable.
+     */
+    void enableVerboseLogging(boolean enable) {
+        mVerboseLoggingEnabled = enable;
     }
 
     /**
@@ -171,8 +192,8 @@ public class SupplicantStaNetworkHal {
         }
         /** allowedKeyManagement */
         if (getKeyMgmt()) {
-            config.allowedKeyManagement =
-                    supplicantToWifiConfigurationKeyMgmtMask(mKeyMgmtMask);
+            BitSet keyMgmtMask = supplicantToWifiConfigurationKeyMgmtMask(mKeyMgmtMask);
+            config.allowedKeyManagement = removeFastTransitionFlags(keyMgmtMask);
         }
         /** allowedProtocols */
         if (getProto()) {
@@ -230,7 +251,8 @@ public class SupplicantStaNetworkHal {
             }
         }
         /** Pre Shared Key */
-        if (config.preSharedKey != null && !setPskPassphrase(config.preSharedKey)) {
+        if (config.preSharedKey != null
+                && !setPskPassphrase(NativeUtil.removeEnclosingQuotes(config.preSharedKey))) {
             Log.e(TAG, "failed to set psk");
             return false;
         }
@@ -267,11 +289,13 @@ public class SupplicantStaNetworkHal {
             return false;
         }
         /** Key Management Scheme */
-        if (config.allowedKeyManagement.cardinality() != 0
-                && !setKeyMgmt(wifiConfigurationToSupplicantKeyMgmtMask(
-                config.allowedKeyManagement))) {
-            Log.e(TAG, "failed to set Key Management");
-            return false;
+        if (config.allowedKeyManagement.cardinality() != 0) {
+            // Add FT flags if supported.
+            BitSet keyMgmtMask = addFastTransitionFlags(config.allowedKeyManagement);
+            if (!setKeyMgmt(wifiConfigurationToSupplicantKeyMgmtMask(keyMgmtMask))) {
+                Log.e(TAG, "failed to set Key Management");
+                return false;
+            }
         }
         /** Security Protocol */
         if (config.allowedProtocols.cardinality() != 0
@@ -318,12 +342,21 @@ public class SupplicantStaNetworkHal {
             return false;
         }
         // Finish here if no EAP config to set
-        if (config.enterpriseConfig == null
-                || config.enterpriseConfig.getEapMethod() == WifiEnterpriseConfig.Eap.NONE) {
-            return true;
-        } else {
-            return saveWifiEnterpriseConfig(config.SSID, config.enterpriseConfig);
+        if (config.enterpriseConfig != null
+                && config.enterpriseConfig.getEapMethod() != WifiEnterpriseConfig.Eap.NONE) {
+            if (!saveWifiEnterpriseConfig(config.SSID, config.enterpriseConfig)) {
+                return false;
+            }
         }
+
+        // Now that the network is configured fully, start listening for callback events.
+        mISupplicantStaNetworkCallback =
+                new SupplicantStaNetworkHalCallback(config.networkId, config.SSID);
+        if (!registerCallback(mISupplicantStaNetworkCallback)) {
+            Log.e(TAG, "Failed to register callback");
+            return false;
+        }
+        return true;
     }
 
     /**
@@ -395,8 +428,8 @@ public class SupplicantStaNetworkHal {
                             : WifiEnterpriseConfig.ENGINE_DISABLE);
         }
         /** EAP Private Key */
-        if (getEapPrivateKey() && !TextUtils.isEmpty(mEapPrivateKey)) {
-            eapConfig.setFieldValue(WifiEnterpriseConfig.PRIVATE_KEY_ID_KEY, mEapPrivateKey);
+        if (getEapPrivateKeyId() && !TextUtils.isEmpty(mEapPrivateKeyId)) {
+            eapConfig.setFieldValue(WifiEnterpriseConfig.PRIVATE_KEY_ID_KEY, mEapPrivateKeyId);
         }
         /** EAP Alt Subject Match */
         if (getEapAltSubjectMatch() && !TextUtils.isEmpty(mEapAltSubjectMatch)) {
@@ -489,7 +522,7 @@ public class SupplicantStaNetworkHal {
         }
         /** EAP Private Key */
         eapParam = eapConfig.getFieldValue(WifiEnterpriseConfig.PRIVATE_KEY_ID_KEY);
-        if (!TextUtils.isEmpty(eapParam) && !setEapPrivateKey(eapParam)) {
+        if (!TextUtils.isEmpty(eapParam) && !setEapPrivateKeyId(eapParam)) {
             Log.e(TAG, ssid + ": failed to set eap private key: " + eapParam);
             return false;
         }
@@ -692,6 +725,12 @@ public class SupplicantStaNetworkHal {
                 return WifiEnterpriseConfig.Phase2.MSCHAPV2;
             case ISupplicantStaNetwork.EapPhase2Method.GTC:
                 return WifiEnterpriseConfig.Phase2.GTC;
+            case ISupplicantStaNetwork.EapPhase2Method.SIM:
+                return WifiEnterpriseConfig.Phase2.SIM;
+            case ISupplicantStaNetwork.EapPhase2Method.AKA:
+                return WifiEnterpriseConfig.Phase2.AKA;
+            case ISupplicantStaNetwork.EapPhase2Method.AKA_PRIME:
+                return WifiEnterpriseConfig.Phase2.AKA_PRIME;
             default:
                 Log.e(TAG, "invalid eap phase2 method value from supplicant: " + value);
                 return -1;
@@ -851,6 +890,12 @@ public class SupplicantStaNetworkHal {
                 return ISupplicantStaNetwork.EapPhase2Method.MSPAPV2;
             case WifiEnterpriseConfig.Phase2.GTC:
                 return ISupplicantStaNetwork.EapPhase2Method.GTC;
+            case WifiEnterpriseConfig.Phase2.SIM:
+                return ISupplicantStaNetwork.EapPhase2Method.SIM;
+            case WifiEnterpriseConfig.Phase2.AKA:
+                return ISupplicantStaNetwork.EapPhase2Method.AKA;
+            case WifiEnterpriseConfig.Phase2.AKA_PRIME:
+                return ISupplicantStaNetwork.EapPhase2Method.AKA_PRIME;
             default:
                 Log.e(TAG, "invalid eap phase2 method value from WifiConfiguration: " + value);
                 return -1;
@@ -861,7 +906,6 @@ public class SupplicantStaNetworkHal {
     private boolean getId() {
         synchronized (mLock) {
             final String methodStr = "getId";
-            if (DBG) Log.i(TAG, methodStr);
             if (!checkISupplicantStaNetworkAndLogFailure(methodStr)) return false;
             try {
                 MutableBoolean statusOk = new MutableBoolean(false);
@@ -870,31 +914,7 @@ public class SupplicantStaNetworkHal {
                     if (statusOk.value) {
                         this.mNetworkId = idValue;
                     } else {
-                        logFailureStatus(status, methodStr);
-                    }
-                });
-                return statusOk.value;
-            } catch (RemoteException e) {
-                handleRemoteException(e, methodStr);
-                return false;
-            }
-        }
-    }
-
-    /** See ISupplicantNetwork.hal for documentation */
-    private boolean getInterfaceName() {
-        synchronized (mLock) {
-            final String methodStr = "getInterfaceName";
-            if (!checkISupplicantStaNetworkAndLogFailure(methodStr)) return false;
-            try {
-                MutableBoolean statusOk = new MutableBoolean(false);
-                mISupplicantStaNetwork.getInterfaceName((SupplicantStatus status,
-                        String nameValue) -> {
-                    statusOk.value = status.code == SupplicantStatusCode.SUCCESS;
-                    if (statusOk.value) {
-                        this.mIfaceName = nameValue;
-                    } else {
-                        logFailureStatus(status, methodStr);
+                        checkStatusAndLogFailure(status, methodStr);
                     }
                 });
                 return statusOk.value;
@@ -934,6 +954,17 @@ public class SupplicantStaNetworkHal {
             }
         }
     }
+
+    /**
+     * Set the BSSID for this network.
+     *
+     * @param bssidStr MAC address in "XX:XX:XX:XX:XX:XX" form or "any" to reset the mac address.
+     * @return true if it succeeds, false otherwise.
+     */
+    public boolean setBssid(String bssidStr) {
+        return setBssid(NativeUtil.macAddressToByteArray(bssidStr));
+    }
+
     /** See ISupplicantStaNetwork.hal for documentation */
     private boolean setBssid(byte[/* 6 */] bssid) {
         synchronized (mLock) {
@@ -1216,12 +1247,12 @@ public class SupplicantStaNetworkHal {
         }
     }
     /** See ISupplicantStaNetwork.hal for documentation */
-    private boolean setEapPrivateKey(String path) {
+    private boolean setEapPrivateKeyId(String id) {
         synchronized (mLock) {
-            final String methodStr = "setEapPrivateKey";
+            final String methodStr = "setEapPrivateKeyId";
             if (!checkISupplicantStaNetworkAndLogFailure(methodStr)) return false;
             try {
-                SupplicantStatus status =  mISupplicantStaNetwork.setEapPrivateKey(path);
+                SupplicantStatus status =  mISupplicantStaNetwork.setEapPrivateKeyId(id);
                 return checkStatusAndLogFailure(status, methodStr);
             } catch (RemoteException e) {
                 handleRemoteException(e, methodStr);
@@ -1340,7 +1371,7 @@ public class SupplicantStaNetworkHal {
                     if (statusOk.value) {
                         this.mSsid = ssidValue;
                     } else {
-                        logFailureStatus(status, methodStr);
+                        checkStatusAndLogFailure(status, methodStr);
                     }
                 });
                 return statusOk.value;
@@ -1363,7 +1394,7 @@ public class SupplicantStaNetworkHal {
                     if (statusOk.value) {
                         this.mBssid = bssidValue;
                     } else {
-                        logFailureStatus(status, methodStr);
+                        checkStatusAndLogFailure(status, methodStr);
                     }
                 });
                 return statusOk.value;
@@ -1386,7 +1417,7 @@ public class SupplicantStaNetworkHal {
                     if (statusOk.value) {
                         this.mScanSsid = enabledValue;
                     } else {
-                        logFailureStatus(status, methodStr);
+                        checkStatusAndLogFailure(status, methodStr);
                     }
                 });
                 return statusOk.value;
@@ -1409,7 +1440,7 @@ public class SupplicantStaNetworkHal {
                     if (statusOk.value) {
                         this.mKeyMgmtMask = keyMgmtMaskValue;
                     } else {
-                        logFailureStatus(status, methodStr);
+                        checkStatusAndLogFailure(status, methodStr);
                     }
                 });
                 return statusOk.value;
@@ -1431,7 +1462,7 @@ public class SupplicantStaNetworkHal {
                     if (statusOk.value) {
                         this.mProtoMask = protoMaskValue;
                     } else {
-                        logFailureStatus(status, methodStr);
+                        checkStatusAndLogFailure(status, methodStr);
                     }
                 });
                 return statusOk.value;
@@ -1454,7 +1485,7 @@ public class SupplicantStaNetworkHal {
                     if (statusOk.value) {
                         this.mAuthAlgMask = authAlgMaskValue;
                     } else {
-                        logFailureStatus(status, methodStr);
+                        checkStatusAndLogFailure(status, methodStr);
                     }
                 });
                 return statusOk.value;
@@ -1477,7 +1508,7 @@ public class SupplicantStaNetworkHal {
                     if (statusOk.value) {
                         this.mGroupCipherMask = groupCipherMaskValue;
                     } else {
-                        logFailureStatus(status, methodStr);
+                        checkStatusAndLogFailure(status, methodStr);
                     }
                 });
                 return statusOk.value;
@@ -1500,7 +1531,7 @@ public class SupplicantStaNetworkHal {
                     if (statusOk.value) {
                         this.mPairwiseCipherMask = pairwiseCipherMaskValue;
                     } else {
-                        logFailureStatus(status, methodStr);
+                        checkStatusAndLogFailure(status, methodStr);
                     }
                 });
                 return statusOk.value;
@@ -1523,7 +1554,7 @@ public class SupplicantStaNetworkHal {
                     if (statusOk.value) {
                         this.mPskPassphrase = pskValue;
                     } else {
-                        logFailureStatus(status, methodStr);
+                        checkStatusAndLogFailure(status, methodStr);
                     }
                 });
                 return statusOk.value;
@@ -1569,7 +1600,7 @@ public class SupplicantStaNetworkHal {
                     if (statusOk.value) {
                         this.mWepTxKeyIdx = keyIdxValue;
                     } else {
-                        logFailureStatus(status, methodStr);
+                        checkStatusAndLogFailure(status, methodStr);
                     }
                 });
                 return statusOk.value;
@@ -1592,7 +1623,7 @@ public class SupplicantStaNetworkHal {
                     if (statusOk.value) {
                         this.mRequirePmf = enabledValue;
                     } else {
-                        logFailureStatus(status, methodStr);
+                        checkStatusAndLogFailure(status, methodStr);
                     }
                 });
                 return statusOk.value;
@@ -1615,7 +1646,7 @@ public class SupplicantStaNetworkHal {
                     if (statusOk.value) {
                         this.mEapMethod = methodValue;
                     } else {
-                        logFailureStatus(status, methodStr);
+                        checkStatusAndLogFailure(status, methodStr);
                     }
                 });
                 return statusOk.value;
@@ -1638,7 +1669,7 @@ public class SupplicantStaNetworkHal {
                     if (statusOk.value) {
                         this.mEapPhase2Method = methodValue;
                     } else {
-                        logFailureStatus(status, methodStr);
+                        checkStatusAndLogFailure(status, methodStr);
                     }
                 });
                 return statusOk.value;
@@ -1661,7 +1692,7 @@ public class SupplicantStaNetworkHal {
                     if (statusOk.value) {
                         this.mEapIdentity = identityValue;
                     } else {
-                        logFailureStatus(status, methodStr);
+                        checkStatusAndLogFailure(status, methodStr);
                     }
                 });
                 return statusOk.value;
@@ -1684,7 +1715,7 @@ public class SupplicantStaNetworkHal {
                     if (statusOk.value) {
                         this.mEapAnonymousIdentity = identityValue;
                     } else {
-                        logFailureStatus(status, methodStr);
+                        checkStatusAndLogFailure(status, methodStr);
                     }
                 });
                 return statusOk.value;
@@ -1707,7 +1738,7 @@ public class SupplicantStaNetworkHal {
                     if (statusOk.value) {
                         this.mEapPassword = passwordValue;
                     } else {
-                        logFailureStatus(status, methodStr);
+                        checkStatusAndLogFailure(status, methodStr);
                     }
                 });
                 return statusOk.value;
@@ -1729,7 +1760,7 @@ public class SupplicantStaNetworkHal {
                     if (statusOk.value) {
                         this.mEapCACert = pathValue;
                     } else {
-                        logFailureStatus(status, methodStr);
+                        checkStatusAndLogFailure(status, methodStr);
                     }
                 });
                 return statusOk.value;
@@ -1751,7 +1782,7 @@ public class SupplicantStaNetworkHal {
                     if (statusOk.value) {
                         this.mEapCAPath = pathValue;
                     } else {
-                        logFailureStatus(status, methodStr);
+                        checkStatusAndLogFailure(status, methodStr);
                     }
                 });
                 return statusOk.value;
@@ -1774,7 +1805,7 @@ public class SupplicantStaNetworkHal {
                     if (statusOk.value) {
                         this.mEapClientCert = pathValue;
                     } else {
-                        logFailureStatus(status, methodStr);
+                        checkStatusAndLogFailure(status, methodStr);
                     }
                 });
                 return statusOk.value;
@@ -1785,19 +1816,19 @@ public class SupplicantStaNetworkHal {
         }
     }
     /** See ISupplicantStaNetwork.hal for documentation */
-    private boolean getEapPrivateKey() {
+    private boolean getEapPrivateKeyId() {
         synchronized (mLock) {
-            final String methodStr = "getEapPrivateKey";
+            final String methodStr = "getEapPrivateKeyId";
             if (!checkISupplicantStaNetworkAndLogFailure(methodStr)) return false;
             try {
                 MutableBoolean statusOk = new MutableBoolean(false);
-                mISupplicantStaNetwork.getEapPrivateKey((SupplicantStatus status,
-                        String pathValue) -> {
+                mISupplicantStaNetwork.getEapPrivateKeyId((SupplicantStatus status,
+                        String idValue) -> {
                     statusOk.value = status.code == SupplicantStatusCode.SUCCESS;
                     if (statusOk.value) {
-                        this.mEapPrivateKey = pathValue;
+                        this.mEapPrivateKeyId = idValue;
                     } else {
-                        logFailureStatus(status, methodStr);
+                        checkStatusAndLogFailure(status, methodStr);
                     }
                 });
                 return statusOk.value;
@@ -1820,7 +1851,7 @@ public class SupplicantStaNetworkHal {
                     if (statusOk.value) {
                         this.mEapSubjectMatch = matchValue;
                     } else {
-                        logFailureStatus(status, methodStr);
+                        checkStatusAndLogFailure(status, methodStr);
                     }
                 });
                 return statusOk.value;
@@ -1843,7 +1874,7 @@ public class SupplicantStaNetworkHal {
                     if (statusOk.value) {
                         this.mEapAltSubjectMatch = matchValue;
                     } else {
-                        logFailureStatus(status, methodStr);
+                        checkStatusAndLogFailure(status, methodStr);
                     }
                 });
                 return statusOk.value;
@@ -1866,7 +1897,7 @@ public class SupplicantStaNetworkHal {
                     if (statusOk.value) {
                         this.mEapEngine = enabledValue;
                     } else {
-                        logFailureStatus(status, methodStr);
+                        checkStatusAndLogFailure(status, methodStr);
                     }
                 });
                 return statusOk.value;
@@ -1888,7 +1919,7 @@ public class SupplicantStaNetworkHal {
                     if (statusOk.value) {
                         this.mEapEngineID = idValue;
                     } else {
-                        logFailureStatus(status, methodStr);
+                        checkStatusAndLogFailure(status, methodStr);
                     }
                 });
                 return statusOk.value;
@@ -1911,7 +1942,7 @@ public class SupplicantStaNetworkHal {
                     if (statusOk.value) {
                         this.mEapDomainSuffixMatch = matchValue;
                     } else {
-                        logFailureStatus(status, methodStr);
+                        checkStatusAndLogFailure(status, methodStr);
                     }
                 });
                 return statusOk.value;
@@ -1933,7 +1964,7 @@ public class SupplicantStaNetworkHal {
                     if (statusOk.value) {
                         this.mIdStr = idString;
                     } else {
-                        logFailureStatus(status, methodStr);
+                        checkStatusAndLogFailure(status, methodStr);
                     }
                 });
                 return statusOk.value;
@@ -2187,18 +2218,63 @@ public class SupplicantStaNetworkHal {
     }
 
     /**
+     * Retrieve the NFC token for this network.
+     *
+     * @return Hex string corresponding to the NFC token or null for failure.
+     */
+    public String getWpsNfcConfigurationToken() {
+        ArrayList<Byte> token = getWpsNfcConfigurationTokenInternal();
+        if (token == null) {
+            return null;
+        }
+        return NativeUtil.hexStringFromByteArray(NativeUtil.byteArrayFromArrayList(token));
+    }
+
+    /** See ISupplicantStaNetwork.hal for documentation */
+    private ArrayList<Byte> getWpsNfcConfigurationTokenInternal() {
+        synchronized (mLock) {
+            final String methodStr = "getWpsNfcConfigurationToken";
+            if (!checkISupplicantStaNetworkAndLogFailure(methodStr)) return null;
+            final Mutable<ArrayList<Byte>> gotToken = new Mutable<>();
+            try {
+                mISupplicantStaNetwork.getWpsNfcConfigurationToken(
+                        (SupplicantStatus status, ArrayList<Byte> token) -> {
+                            if (checkStatusAndLogFailure(status, methodStr)) {
+                                gotToken.value = token;
+                            }
+                        });
+            } catch (RemoteException e) {
+                handleRemoteException(e, methodStr);
+            }
+            return gotToken.value;
+        }
+    }
+
+    /**
      * Returns true if provided status code is SUCCESS, logs debug message and returns false
      * otherwise
      */
     private boolean checkStatusAndLogFailure(SupplicantStatus status, final String methodStr) {
-        if (DBG) Log.i(TAG, methodStr);
         if (status.code != SupplicantStatusCode.SUCCESS) {
-            Log.e(TAG, methodStr + " failed: "
+            Log.e(TAG, "ISupplicantStaNetwork." + methodStr + " failed: "
                     + SupplicantStaIfaceHal.supplicantStatusCodeToString(status.code) + ", "
                     + status.debugMessage);
             return false;
+        } else {
+            if (mVerboseLoggingEnabled) {
+                Log.d(TAG, "ISupplicantStaNetwork." + methodStr + " succeeded");
+            }
+            return true;
         }
-        return true;
+    }
+
+    /**
+     * Helper function to log callbacks.
+     */
+    private void logCallback(final String methodStr) {
+        if (mVerboseLoggingEnabled) {
+            Log.d(TAG, "ISupplicantStaNetworkCallback." + methodStr + " received");
+        }
     }
 
     /**
@@ -2214,10 +2290,98 @@ public class SupplicantStaNetworkHal {
 
     private void handleRemoteException(RemoteException e, String methodStr) {
         mISupplicantStaNetwork = null;
-        Log.e(TAG, "ISupplicantStaNetwork." + methodStr + ":exception: " + e);
+        Log.e(TAG, "ISupplicantStaNetwork." + methodStr + " failed with exception", e);
     }
 
-    private void logFailureStatus(SupplicantStatus status, String methodStr) {
-        Log.e(TAG, methodStr + " failed: " + status.debugMessage);
+    /**
+     * Adds FT flags for networks if the device supports it.
+     */
+    private BitSet addFastTransitionFlags(BitSet keyManagementFlags) {
+        if (!mSystemSupportsFastBssTransition) {
+            return keyManagementFlags;
+        }
+        BitSet modifiedFlags = (BitSet) keyManagementFlags.clone();
+        if (keyManagementFlags.get(WifiConfiguration.KeyMgmt.WPA_PSK)) {
+            modifiedFlags.set(WifiConfiguration.KeyMgmt.FT_PSK);
+        }
+        if (keyManagementFlags.get(WifiConfiguration.KeyMgmt.WPA_EAP)) {
+            modifiedFlags.set(WifiConfiguration.KeyMgmt.FT_EAP);
+        }
+        return modifiedFlags;
+    }
+
+    /**
+     * Removes FT flags for networks if the device supports it.
+     */
+    private BitSet removeFastTransitionFlags(BitSet keyManagementFlags) {
+        BitSet modifiedFlags = (BitSet) keyManagementFlags.clone();
+        modifiedFlags.clear(WifiConfiguration.KeyMgmt.FT_PSK);
+        modifiedFlags.clear(WifiConfiguration.KeyMgmt.FT_EAP);
+        return modifiedFlags;
+    }
+
+    private static class Mutable<E> {
+        public E value;
+
+        Mutable() {
+            value = null;
+        }
+
+        Mutable(E value) {
+            this.value = value;
+        }
+    }
+
+    private class SupplicantStaNetworkHalCallback extends ISupplicantStaNetworkCallback.Stub {
+        /**
+         * Current configured network's framework network id.
+         */
+        private final int mFramewokNetworkId;
+        /**
+         * Current configured network's ssid.
+         */
+        private final String mSsid;
+
+        SupplicantStaNetworkHalCallback(int framewokNetworkId, String ssid) {
+            mFramewokNetworkId = framewokNetworkId;
+            mSsid = ssid;
+        }
+
+        @Override
+        public void onNetworkEapSimGsmAuthRequest(
+                ISupplicantStaNetworkCallback.NetworkRequestEapSimGsmAuthParams params) {
+            logCallback("onNetworkEapSimGsmAuthRequest");
+            synchronized (mLock) {
+                String[] data = new String[params.rands.size()];
+                int i = 0;
+                for (byte[] rand : params.rands) {
+                    data[i++] = NativeUtil.hexStringFromByteArray(rand);
+                }
+                mWifiMonitor.broadcastNetworkGsmAuthRequestEvent(
+                        mIfaceName, mFramewokNetworkId, mSsid, data);
+            }
+        }
+
+        @Override
+        public void onNetworkEapSimUmtsAuthRequest(
+                ISupplicantStaNetworkCallback.NetworkRequestEapSimUmtsAuthParams params) {
+            logCallback("onNetworkEapSimUmtsAuthRequest");
+            synchronized (mLock) {
+                String autnHex = NativeUtil.hexStringFromByteArray(params.autn);
+                String randHex = NativeUtil.hexStringFromByteArray(params.rand);
+                String[] data = {autnHex, randHex};
+                mWifiMonitor.broadcastNetworkUmtsAuthRequestEvent(
+                        mIfaceName, mFramewokNetworkId, mSsid, data);
+            }
+        }
+
+        @Override
+        public void onNetworkEapIdentityRequest() {
+            logCallback("onNetworkEapIdentityRequest");
+            synchronized (mLock) {
+                mWifiMonitor.broadcastNetworkIdentityRequestEvent(
+                        mIfaceName, mFramewokNetworkId, mSsid);
+            }
+        }
     }
 }

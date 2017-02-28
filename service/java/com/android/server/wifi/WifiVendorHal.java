@@ -25,6 +25,13 @@ import android.hardware.wifi.V1_0.IfaceType;
 import android.hardware.wifi.V1_0.StaRoamingConfig;
 import android.hardware.wifi.V1_0.StaRoamingState;
 import android.hardware.wifi.V1_0.WifiDebugHostWakeReasonStats;
+import android.hardware.wifi.V1_0.WifiDebugPacketFateFrameType;
+import android.hardware.wifi.V1_0.WifiDebugRingBufferFlags;
+import android.hardware.wifi.V1_0.WifiDebugRingBufferStatus;
+import android.hardware.wifi.V1_0.WifiDebugRxPacketFate;
+import android.hardware.wifi.V1_0.WifiDebugRxPacketFateReport;
+import android.hardware.wifi.V1_0.WifiDebugTxPacketFate;
+import android.hardware.wifi.V1_0.WifiDebugTxPacketFateReport;
 import android.hardware.wifi.V1_0.WifiStatus;
 import android.hardware.wifi.V1_0.WifiStatusCode;
 import android.net.apf.ApfCapabilities;
@@ -42,7 +49,9 @@ import android.util.MutableBoolean;
 import android.util.MutableInt;
 
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.internal.util.ArrayUtils;
 import com.android.server.connectivity.KeepalivePacketData;
+import com.android.server.wifi.util.BitMask;
 import com.android.server.wifi.util.NativeUtil;
 
 import java.util.ArrayList;
@@ -626,32 +635,7 @@ public class WifiVendorHal {
     }
 
     /**
-     * not to be implemented
-     */
-    public boolean enableDisableTdls(boolean enable, String macAdd,
-                                     WifiNative.TdlsEventHandler tdlsCallBack) {
-        kilroy();
-        throw new UnsupportedOperationException();
-    }
-
-    /**
-     * not to be implemented
-     */
-    public WifiNative.TdlsStatus getTdlsStatus(String macAdd) {
-        kilroy();
-        throw new UnsupportedOperationException();
-    }
-
-    /**
-     * not to be implemented
-     */
-    public WifiNative.TdlsCapabilities getTdlsCapabilities() {
-        kilroy();
-        throw new UnsupportedOperationException();
-    }
-
-    /**
-     * to be implemented
+     * to be implemented TODO(b/34901821)
      */
     public boolean setLoggingEventHandler(WifiNative.WifiLoggerEventHandler handler) {
         kilroy();
@@ -671,7 +655,24 @@ public class WifiVendorHal {
     public boolean startLoggingRingBuffer(int verboseLevel, int flags, int maxIntervalInSec,
                                           int minDataSizeInBytes, String ringName) {
         kilroy();
-        throw new UnsupportedOperationException();
+        synchronized (sLock) {
+            try {
+                if (mIWifiChip == null) return false;
+                kilroy();
+                // note - flags are not used
+                WifiStatus status = mIWifiChip.startLoggingToDebugRingBuffer(
+                        ringName,
+                        verboseLevel,
+                        maxIntervalInSec,
+                        minDataSizeInBytes
+                );
+                return status.code == WifiStatusCode.SUCCESS;
+            } catch (RemoteException e) {
+                kilroy();
+                handleRemoteException(e);
+                return false;
+            }
+        }
     }
 
     /**
@@ -684,7 +685,7 @@ public class WifiVendorHal {
     }
 
     /**
-     * to be implemented
+     * to be implemented TODO(b/34901821)
      */
     public boolean resetLogHandler() {
         kilroy();
@@ -736,11 +737,81 @@ public class WifiVendorHal {
     }
 
     /**
+     * Creates RingBufferStatus from the Hal version
+     */
+    private static WifiNative.RingBufferStatus ringBufferStatus(WifiDebugRingBufferStatus h) {
+        WifiNative.RingBufferStatus ans = new WifiNative.RingBufferStatus();
+        ans.name = h.ringName;
+        ans.flag = frameworkRingBufferFlagsFromHal(h.flags);
+        ans.ringBufferId = h.ringId;
+        ans.ringBufferByteSize = h.sizeInBytes;
+        ans.verboseLevel = h.verboseLevel;
+        // Remaining fields are unavailable
+        //  writtenBytes;
+        //  readBytes;
+        //  writtenRecords;
+        return ans;
+    }
+
+    /**
+     * Translates a hal wifiDebugRingBufferFlag to the WifiNative version
+     */
+    private static int frameworkRingBufferFlagsFromHal(int wifiDebugRingBufferFlag) {
+        BitMask checkoff = new BitMask(wifiDebugRingBufferFlag);
+        int flags = 0;
+        if (checkoff.testAndClear(WifiDebugRingBufferFlags.HAS_BINARY_ENTRIES)) {
+            flags |= WifiNative.RingBufferStatus.HAS_BINARY_ENTRIES;
+        }
+        if (checkoff.testAndClear(WifiDebugRingBufferFlags.HAS_ASCII_ENTRIES)) {
+            flags |= WifiNative.RingBufferStatus.HAS_ASCII_ENTRIES;
+        }
+        if (checkoff.testAndClear(WifiDebugRingBufferFlags.HAS_PER_PACKET_ENTRIES)) {
+            flags |= WifiNative.RingBufferStatus.HAS_PER_PACKET_ENTRIES;
+        }
+        if (checkoff.value != 0) {
+            throw new IllegalArgumentException("Unknown WifiDebugRingBufferFlag " + checkoff.value);
+        }
+        return flags;
+    }
+
+    /**
+     * Creates array of RingBufferStatus from the Hal version
+     */
+    private static WifiNative.RingBufferStatus[] makeRingBufferStatusArray(
+            ArrayList<WifiDebugRingBufferStatus> ringBuffers) {
+        WifiNative.RingBufferStatus[] ans = new WifiNative.RingBufferStatus[ringBuffers.size()];
+        int i = 0;
+        for (WifiDebugRingBufferStatus b : ringBuffers) {
+            ans[i++] = ringBufferStatus(b);
+        }
+        return ans;
+    }
+
+    /**
      * API to get the status of all ring buffers supported by driver
      */
     public WifiNative.RingBufferStatus[] getRingBufferStatus() {
         kilroy();
-        throw new UnsupportedOperationException();
+        class AnswerBox {
+            public WifiNative.RingBufferStatus[] value = null;
+        }
+        AnswerBox ans = new AnswerBox();
+        synchronized (sLock) {
+            if (mIWifiChip == null) return null;
+            try {
+                kilroy();
+                mIWifiChip.getDebugRingBuffersStatus((status, ringBuffers) -> {
+                    kilroy();
+                    if (status.code != WifiStatusCode.SUCCESS) return;
+                    ans.value = makeRingBufferStatusArray(ringBuffers);
+                });
+            } catch (RemoteException e) {
+                kilroy();
+                handleRemoteException(e);
+                return null;
+            }
+        }
+        return ans.value;
     }
 
     /**
@@ -749,7 +820,17 @@ public class WifiVendorHal {
      */
     public boolean getRingBufferData(String ringName) {
         kilroy();
-        throw new UnsupportedOperationException();
+        synchronized (sLock) {
+            try {
+                if (mIWifiChip == null) return false;
+                kilroy();
+                WifiStatus status = mIWifiChip.forceDumpToDebugRingBuffer(ringName);
+                return status.code == WifiStatusCode.SUCCESS;
+            } catch (RemoteException e) {
+                handleRemoteException(e);
+                return false;
+            }
+        }
     }
 
     /**
@@ -770,19 +851,99 @@ public class WifiVendorHal {
 
     /**
      * Start packet fate monitoring
-     * <p>
+     *
      * Once started, monitoring remains active until HAL is unloaded.
      *
      * @return true for success
      */
     public boolean startPktFateMonitoring() {
         kilroy();
-        throw new UnsupportedOperationException();
+        synchronized (sLock) {
+            if (mIWifiStaIface == null) return false;
+            try {
+                kilroy();
+                WifiStatus status = mIWifiStaIface.startDebugPacketFateMonitoring();
+                return status.code == WifiStatusCode.SUCCESS;
+            } catch (RemoteException e) {
+                kilroy();
+                handleRemoteException(e);
+                return false;
+            }
+        }
+    }
+
+    private byte halToFrameworkPktFateFrameType(int type) {
+        switch (type) {
+            case WifiDebugPacketFateFrameType.UNKNOWN:
+                return WifiLoggerHal.FRAME_TYPE_UNKNOWN;
+            case WifiDebugPacketFateFrameType.ETHERNET_II:
+                return WifiLoggerHal.FRAME_TYPE_ETHERNET_II;
+            case WifiDebugPacketFateFrameType.MGMT_80211:
+                return WifiLoggerHal.FRAME_TYPE_80211_MGMT;
+            default:
+                throw new IllegalArgumentException("bad " + type);
+        }
+    }
+
+    private byte halToFrameworkRxPktFate(int type) {
+        switch (type) {
+            case WifiDebugRxPacketFate.SUCCESS:
+                return WifiLoggerHal.RX_PKT_FATE_SUCCESS;
+            case WifiDebugRxPacketFate.FW_QUEUED:
+                return WifiLoggerHal.RX_PKT_FATE_FW_QUEUED;
+            case WifiDebugRxPacketFate.FW_DROP_FILTER:
+                return WifiLoggerHal.RX_PKT_FATE_FW_DROP_FILTER;
+            case WifiDebugRxPacketFate.FW_DROP_INVALID:
+                return WifiLoggerHal.RX_PKT_FATE_FW_DROP_INVALID;
+            case WifiDebugRxPacketFate.FW_DROP_NOBUFS:
+                return WifiLoggerHal.RX_PKT_FATE_FW_DROP_NOBUFS;
+            case WifiDebugRxPacketFate.FW_DROP_OTHER:
+                return WifiLoggerHal.RX_PKT_FATE_FW_DROP_OTHER;
+            case WifiDebugRxPacketFate.DRV_QUEUED:
+                return WifiLoggerHal.RX_PKT_FATE_DRV_QUEUED;
+            case WifiDebugRxPacketFate.DRV_DROP_FILTER:
+                return WifiLoggerHal.RX_PKT_FATE_DRV_DROP_FILTER;
+            case WifiDebugRxPacketFate.DRV_DROP_INVALID:
+                return WifiLoggerHal.RX_PKT_FATE_DRV_DROP_INVALID;
+            case WifiDebugRxPacketFate.DRV_DROP_NOBUFS:
+                return WifiLoggerHal.RX_PKT_FATE_DRV_DROP_NOBUFS;
+            case WifiDebugRxPacketFate.DRV_DROP_OTHER:
+                return WifiLoggerHal.RX_PKT_FATE_DRV_DROP_OTHER;
+            default:
+                throw new IllegalArgumentException("bad " + type);
+        }
+    }
+
+    private byte halToFrameworkTxPktFate(int type) {
+        switch (type) {
+            case WifiDebugTxPacketFate.ACKED:
+                return WifiLoggerHal.TX_PKT_FATE_ACKED;
+            case WifiDebugTxPacketFate.SENT:
+                return WifiLoggerHal.TX_PKT_FATE_SENT;
+            case WifiDebugTxPacketFate.FW_QUEUED:
+                return WifiLoggerHal.TX_PKT_FATE_FW_QUEUED;
+            case WifiDebugTxPacketFate.FW_DROP_INVALID:
+                return WifiLoggerHal.TX_PKT_FATE_FW_DROP_INVALID;
+            case WifiDebugTxPacketFate.FW_DROP_NOBUFS:
+                return WifiLoggerHal.TX_PKT_FATE_FW_DROP_NOBUFS;
+            case WifiDebugTxPacketFate.FW_DROP_OTHER:
+                return WifiLoggerHal.TX_PKT_FATE_FW_DROP_OTHER;
+            case WifiDebugTxPacketFate.DRV_QUEUED:
+                return WifiLoggerHal.TX_PKT_FATE_DRV_QUEUED;
+            case WifiDebugTxPacketFate.DRV_DROP_INVALID:
+                return WifiLoggerHal.TX_PKT_FATE_DRV_DROP_INVALID;
+            case WifiDebugTxPacketFate.DRV_DROP_NOBUFS:
+                return WifiLoggerHal.TX_PKT_FATE_DRV_DROP_NOBUFS;
+            case WifiDebugTxPacketFate.DRV_DROP_OTHER:
+                return WifiLoggerHal.TX_PKT_FATE_DRV_DROP_OTHER;
+            default:
+                throw new IllegalArgumentException("bad " + type);
+        }
     }
 
     /**
      * Retrieve fates of outbound packets
-     * <p>
+     *
      * Reports the outbound frames for the most recent association (space allowing).
      *
      * @param reportBufs
@@ -790,12 +951,44 @@ public class WifiVendorHal {
      */
     public boolean getTxPktFates(WifiNative.TxFateReport[] reportBufs) {
         kilroy();
-        throw new UnsupportedOperationException();
+        if (ArrayUtils.isEmpty(reportBufs)) return false;
+        synchronized (sLock) {
+            if (mIWifiStaIface == null) return false;
+            try {
+                kilroy();
+                MutableBoolean ok = new MutableBoolean(false);
+                mIWifiStaIface.getDebugTxPacketFates((status, fates) -> {
+                            kilroy();
+                            if (status.code != WifiStatusCode.SUCCESS) return;
+                            int i = 0;
+                            for (WifiDebugTxPacketFateReport fate : fates) {
+                                kilroy();
+                                if (i >= reportBufs.length) break;
+                                byte code = halToFrameworkTxPktFate(fate.fate);
+                                long us = fate.frameInfo.driverTimestampUsec;
+                                byte type =
+                                        halToFrameworkPktFateFrameType(fate.frameInfo.frameType);
+                                byte[] frame =
+                                        NativeUtil.byteArrayFromArrayList(
+                                                fate.frameInfo.frameContent);
+                                reportBufs[i++] =
+                                        new WifiNative.TxFateReport(code, us, type, frame);
+                            }
+                            ok.value = true;
+                        }
+                );
+                return ok.value;
+            } catch (RemoteException e) {
+                kilroy();
+                handleRemoteException(e);
+                return false;
+            }
+        }
     }
 
     /**
      * Retrieve fates of inbound packets
-     * <p>
+     *
      * Reports the inbound frames for the most recent association (space allowing).
      *
      * @param reportBufs
@@ -803,18 +996,74 @@ public class WifiVendorHal {
      */
     public boolean getRxPktFates(WifiNative.RxFateReport[] reportBufs) {
         kilroy();
-        throw new UnsupportedOperationException();
+        if (ArrayUtils.isEmpty(reportBufs)) return false;
+        synchronized (sLock) {
+            if (mIWifiStaIface == null) return false;
+            try {
+                kilroy();
+                MutableBoolean ok = new MutableBoolean(false);
+                mIWifiStaIface.getDebugRxPacketFates((status, fates) -> {
+                            kilroy();
+                            if (status.code != WifiStatusCode.SUCCESS) return;
+                            int i = 0;
+                            for (WifiDebugRxPacketFateReport fate : fates) {
+                                kilroy();
+                                if (i >= reportBufs.length) break;
+                                byte code = halToFrameworkRxPktFate(fate.fate);
+                                long us = fate.frameInfo.driverTimestampUsec;
+                                byte type =
+                                        halToFrameworkPktFateFrameType(fate.frameInfo.frameType);
+                                byte[] frame =
+                                        NativeUtil.byteArrayFromArrayList(
+                                                fate.frameInfo.frameContent);
+                                reportBufs[i++] =
+                                        new WifiNative.RxFateReport(code, us, type, frame);
+                            }
+                            ok.value = true;
+                        }
+                );
+                return ok.value;
+            } catch (RemoteException e) {
+                kilroy();
+                handleRemoteException(e);
+                return false;
+            }
+        }
     }
 
     /**
      * Start sending the specified keep alive packets periodically.
-     *
+     * @param slot
+     * @param srcMac
+     * @param keepAlivePacket
+     * @param periodInMs
      * @return 0 for success, -1 for error
      */
     public int startSendingOffloadedPacket(
-            int slot, KeepalivePacketData keepAlivePacket, int periodInMs) {
-        kilroy();
-        throw new UnsupportedOperationException();
+            int slot, byte[] srcMac, KeepalivePacketData keepAlivePacket, int periodInMs) {
+        Log.d(TAG, "startSendingOffloadedPacket slot=" + slot + " periodInMs=" + periodInMs);
+
+        ArrayList<Byte> data = NativeUtil.byteArrayToArrayList(keepAlivePacket.data);
+        short protocol = (short) (keepAlivePacket.protocol);
+
+        synchronized (sLock) {
+            if (mIWifiStaIface == null) return -1;
+            try {
+                WifiStatus status = mIWifiStaIface.startSendingKeepAlivePackets(
+                        slot,
+                        data,
+                        protocol,
+                        srcMac,
+                        keepAlivePacket.dstMac,
+                        periodInMs);
+                if (status.code != WifiStatusCode.SUCCESS) return -1;
+                return 0;
+            } catch (RemoteException e) {
+                kilroy();
+                handleRemoteException(e);
+                return -1;
+            }
+        }
     }
 
     /**
@@ -824,8 +1073,20 @@ public class WifiVendorHal {
      * @return 0 for success, -1 for error
      */
     public int stopSendingOffloadedPacket(int slot) {
-        kilroy();
-        throw new UnsupportedOperationException();
+        Log.d(TAG, "stopSendingOffloadedPacket " + slot);
+
+        synchronized (sLock) {
+            if (mIWifiStaIface == null) return -1;
+            try {
+                WifiStatus wifiStatus = mIWifiStaIface.stopSendingKeepAlivePackets(slot);
+                if (wifiStatus.code != WifiStatusCode.SUCCESS) return -1;
+                kilroy();
+                return 0;
+            } catch (RemoteException e) {
+                handleRemoteException(e);
+                return -1;
+            }
+        }
     }
 
     /**
@@ -852,24 +1113,100 @@ public class WifiVendorHal {
         throw new UnsupportedOperationException();
     }
 
-    private WifiDebugHostWakeReasonStats mWifiDebugHostWakeReasonStats;
+    //TODO - belongs in NativeUtil
+    private static int[] intsFromArrayList(ArrayList<Integer> a) {
+        if (a == null) return null;
+        int[] b = new int[a.size()];
+        int i = 0;
+        for (Integer e : a) b[i++] = e;
+        return b;
+    }
+
+    /**
+     * Translates from Hal version of wake reason stats to the framework version of same
+     *
+     * @param h - Hal version of wake reason stats
+     * @return framework version of same
+     */
+    private static WifiWakeReasonAndCounts halToFrameworkWakeReasons(
+            WifiDebugHostWakeReasonStats h) {
+        if (h == null) return null;
+        WifiWakeReasonAndCounts ans = new WifiWakeReasonAndCounts();
+        ans.totalCmdEventWake = h.totalCmdEventWakeCnt;
+        ans.totalDriverFwLocalWake = h.totalDriverFwLocalWakeCnt;
+        ans.totalRxDataWake = h.totalRxPacketWakeCnt;
+        ans.rxUnicast = h.rxPktWakeDetails.rxUnicastCnt;
+        ans.rxMulticast = h.rxPktWakeDetails.rxMulticastCnt;
+        ans.rxBroadcast = h.rxPktWakeDetails.rxBroadcastCnt;
+        ans.icmp = h.rxIcmpPkWakeDetails.icmpPkt;
+        ans.icmp6 = h.rxIcmpPkWakeDetails.icmp6Pkt;
+        ans.icmp6Ra = h.rxIcmpPkWakeDetails.icmp6Ra;
+        ans.icmp6Na = h.rxIcmpPkWakeDetails.icmp6Na;
+        ans.icmp6Ns = h.rxIcmpPkWakeDetails.icmp6Ns;
+        ans.ipv4RxMulticast = h.rxMulticastPkWakeDetails.ipv4RxMulticastAddrCnt;
+        ans.ipv6Multicast = h.rxMulticastPkWakeDetails.ipv6RxMulticastAddrCnt;
+        ans.otherRxMulticast = h.rxMulticastPkWakeDetails.otherRxMulticastAddrCnt;
+        ans.cmdEventWakeCntArray = intsFromArrayList(h.cmdEventWakeCntPerType);
+        ans.driverFWLocalWakeCntArray = intsFromArrayList(h.driverFwLocalWakeCntPerType);
+        return ans;
+    }
 
     /**
      * Fetch the host wakeup reasons stats from wlan driver.
      *
-     * @return the |WifiWakeReasonAndCounts| object retrieved from the wlan driver.
+     * @return the |WifiWakeReasonAndCounts| from the wlan driver, or null on failure.
      */
     public WifiWakeReasonAndCounts getWlanWakeReasonCount() {
         kilroy();
-        throw new UnsupportedOperationException();
+        class AnswerBox {
+            public WifiDebugHostWakeReasonStats value = null;
+        }
+        AnswerBox ans = new AnswerBox();
+        synchronized (sLock) {
+            if (mIWifiChip == null) return null;
+            try {
+                kilroy();
+                mIWifiChip.getDebugHostWakeReasonStats((status, stats) -> {
+                    kilroy();
+                    if (status.code == WifiStatusCode.SUCCESS) {
+                        ans.value = stats;
+                    }
+                });
+                kilroy();
+                return halToFrameworkWakeReasons(ans.value);
+            } catch (RemoteException e) {
+                kilroy();
+                handleRemoteException(e);
+                return null;
+            }
+        }
     }
 
     /**
      * Enable/Disable Neighbour discovery offload functionality in the firmware.
+     *
+     * @param enabled true to enable, false to disable.
      */
     public boolean configureNeighborDiscoveryOffload(boolean enabled) {
         kilroy();
-        throw new UnsupportedOperationException();
+        synchronized (sLock) {
+            if (mIWifiStaIface == null) return false;
+            kilroy();
+            try {
+                kilroy();
+                WifiStatus wifiStatus = mIWifiStaIface.enableNdOffload(enabled);
+                if (wifiStatus.code != WifiStatusCode.SUCCESS) {
+                    kilroy();
+                    noteHidlError(wifiStatus, "configureNeighborDiscoveryOffload");
+                    return false;
+                }
+            } catch (RemoteException e) {
+                kilroy();
+                handleRemoteException(e);
+                return false;
+            }
+        }
+        return true;
     }
 
     // Firmware roaming control.
@@ -962,9 +1299,7 @@ public class WifiVendorHal {
                 if (config.blacklistBssids != null) {
                     kilroy();
                     for (String bssid : config.blacklistBssids) {
-                        String unquotedMacStr = WifiInfo.removeDoubleQuotes(bssid);
-                        byte[] mac = new byte[6];
-                        parseUnquotedMacStrToByteArray(unquotedMacStr, mac);
+                        byte[] mac = NativeUtil.macAddressToByteArray(bssid);
                         roamingConfig.bssidBlacklist.add(mac);
                     }
                 }
@@ -1002,21 +1337,6 @@ public class WifiVendorHal {
             }
             kilroy();
             return true;
-        }
-    }
-
-    /**
-     * Helper function that parses unquoted MAC address string to a byte array
-     *
-     * @param macWithColons mac address string without double quotes
-     * @param mac an array of 6 bytes to receive the parsed mac address
-     */
-    @VisibleForTesting
-    void parseUnquotedMacStrToByteArray(String macWithColons, byte[] mac) {
-        String[] macAddrStr = macWithColons.split(":");
-        for (int i = 0; i < 6; i++) {
-            Integer hexVal = Integer.parseInt(macAddrStr[i], 16);
-            mac[i] = hexVal.byteValue();
         }
     }
 

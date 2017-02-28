@@ -40,6 +40,7 @@ import android.os.SystemProperties;
 import android.text.TextUtils;
 import android.util.LocalLog;
 import android.util.Log;
+import android.util.SparseArray;
 
 import com.android.internal.annotations.Immutable;
 import com.android.internal.annotations.VisibleForTesting;
@@ -48,6 +49,7 @@ import com.android.server.connectivity.KeepalivePacketData;
 import com.android.server.wifi.hotspot2.Utils;
 import com.android.server.wifi.util.FrameParser;
 import com.android.server.wifi.util.InformationElementUtil;
+import com.android.server.wifi.util.NativeUtil;
 
 import libcore.util.HexEncoding;
 
@@ -133,6 +135,7 @@ public class WifiNative {
 
     // TODO(b/34884202): Set this to true to enable HIDL once we're fully ready.
     private static final boolean HIDL_ENABLE = false;
+    public static final boolean HIDL_SUP_ENABLE = false;
     private final String mTAG;
     private final String mInterfaceName;
     private final String mInterfacePrefix;
@@ -140,6 +143,7 @@ public class WifiNative {
     private SupplicantP2pIfaceHal mSupplicantP2pIfaceHal;
     private WifiVendorHal mWifiVendorHal;
     private WificondControl mWificondControl;
+    private WifiSupplicantControl mWifiSupplicantControl;
 
     private Context mContext = null;
     public void initContext(Context context) {
@@ -175,6 +179,14 @@ public class WifiNative {
     }
 
 
+    /** Explicitly sets the WifiSupplicantControl instance
+     * TODO(b/34722734): move this into the constructor of WifiNative when I clean up the awful
+     * double singleton pattern
+     */
+    public void setWifiSupplicantControl(WifiSupplicantControl wifiSupplicantControl) {
+        mWifiSupplicantControl = wifiSupplicantControl;
+    }
+
     /**
      * Explicitly sets the WifiVendorHal instance
      * TODO(b/34722734): move this into the constructor of WifiNative when I clean up the awful
@@ -206,23 +218,6 @@ public class WifiNative {
         return mWifiVendorHal.initialize();
     }
 
-    /**
-     * Registers a service notification for the ISupplicant service, which gets the service,
-     * ISupplicantStaIface and ISupplicantP2pIface.
-     * @return true if the service notification was successfully registered
-     */
-    public boolean initializeSupplicantHal() {
-        if (!HIDL_ENABLE) {
-            return true;
-        }
-
-        if (!mSupplicantP2pIfaceHal.initialize()) {
-            return false;
-        }
-
-        return mSupplicantStaIfaceHal.initialize();
-    }
-
     public String getInterfaceName() {
         return mInterfaceName;
     }
@@ -233,6 +228,12 @@ public class WifiNative {
             DBG = true;
         } else {
             DBG = false;
+        }
+        if (mWificondControl != null) {
+            mWificondControl.enableVerboseLogging(verbose > 0 ? true : false);
+        }
+        if (mSupplicantStaIfaceHal != null) {
+            mSupplicantStaIfaceHal.enableVerboseLogging(verbose > 0);
         }
     }
 
@@ -315,18 +316,42 @@ public class WifiNative {
      * Supplicant management
      */
     private native static boolean connectToSupplicantNative();
+    /**
+     * This method is called repeatedly until the connection to wpa_supplicant is established.
+     *
+     * @return true if connection is established, false otherwise.
+     */
     public boolean connectToSupplicant() {
-        synchronized (sLock) {
-            localLog(mInterfacePrefix + "connectToSupplicant");
-            return connectToSupplicantNative();
+        if (HIDL_SUP_ENABLE) {
+            // Start initialization if not already started.
+            if (!mSupplicantP2pIfaceHal.isInitializationStarted()
+                    && !mSupplicantP2pIfaceHal.initialize()) {
+                return false;
+            }
+            if (!mSupplicantStaIfaceHal.isInitializationStarted()
+                    && !mSupplicantStaIfaceHal.initialize()) {
+                return false;
+            }
+            // Check if the initialization is complete.
+            return (mSupplicantP2pIfaceHal.isInitializationComplete()
+                    && mSupplicantStaIfaceHal.isInitializationComplete());
+        } else {
+            synchronized (sLock) {
+                localLog(mInterfacePrefix + "connectToSupplicant");
+                return connectToSupplicantNative();
+            }
         }
     }
 
     private native static void closeSupplicantConnectionNative();
     public void closeSupplicantConnection() {
-        synchronized (sLock) {
-            localLog(mInterfacePrefix + "closeSupplicantConnection");
-            closeSupplicantConnectionNative();
+        if (HIDL_SUP_ENABLE) {
+            // Nothing to do for HIDL.
+        } else {
+            synchronized (sLock) {
+                localLog(mInterfacePrefix + "closeSupplicantConnection");
+                closeSupplicantConnectionNative();
+            }
         }
     }
 
@@ -419,16 +444,24 @@ public class WifiNative {
         return doStringCommand(command);
     }
 
+
     /*
      * Wrappers for supplicant commands
      */
-    public boolean ping() {
-        String pong = doStringCommand("PING");
-        return (pong != null && pong.equals("PONG"));
-    }
-
-    public void setSupplicantLogLevel(String level) {
-        doStringCommand("LOG_LEVEL " + level);
+    /**
+     * Set supplicant log level
+     *
+     * @param turnOnVerbose Whether to turn on verbose logging or not.
+     */
+    public void setSupplicantLogLevel(boolean turnOnVerbose) {
+        if (HIDL_SUP_ENABLE) {
+            int logLevel = turnOnVerbose
+                    ? SupplicantStaIfaceHal.LOG_LEVEL_DEBUG
+                    : SupplicantStaIfaceHal.LOG_LEVEL_INFO;
+            mSupplicantStaIfaceHal.setLogLevel(logLevel);
+        } else {
+            doStringCommand("LOG_LEVEL " + (turnOnVerbose ? "DEBUG" : "INFO"));
+        }
     }
 
     /*
@@ -506,7 +539,7 @@ public class WifiNative {
         if (encoded == null) {
             return false;
         }
-        return setNetworkVariable(netId, name, encoded);
+        return setNetworkVariable(netId, name, "\"" + encoded + "\"");
     }
 
     @VisibleForTesting
@@ -521,7 +554,7 @@ public class WifiNative {
             Log.e(TAG, "Unable to serialize networkExtra: " + e.toString());
             return null;
         }
-        return "\"" + encoded + "\"";
+        return encoded;
     }
 
     public boolean setNetworkVariable(int netId, String name, String value) {
@@ -538,15 +571,20 @@ public class WifiNative {
 
     public Map<String, String> getNetworkExtra(int netId, String name) {
         final String extraString = getNetworkVariable(netId, name);
-        return parseNetworkExtra(extraString);
+        if (extraString == null || !extraString.startsWith("\"") || !extraString.endsWith("\"")) {
+            return null;
+        }
+        return parseNetworkExtra(NativeUtil.removeEnclosingQuotes(extraString));
     }
 
-    public static Map<String, String> parseNetworkExtra(String extraSting) {
-        if (extraSting == null || !extraSting.startsWith("\"") || !extraSting.endsWith("\"")) {
+    /**
+     * Parse the network extra JSON encoded string to a map of string key, value pairs.
+     */
+    public static Map<String, String> parseNetworkExtra(String encoded) {
+        if (TextUtils.isEmpty(encoded)) {
             return null;
         }
         try {
-            final String encoded = extraSting.substring(1, extraSting.length() - 1);
             // This method reads a JSON dictionary that was written by setNetworkExtra(). However,
             // on devices that upgraded from Marshmallow, it may encounter a legacy value instead -
             // an FQDN stored as a plain string. If such a value is encountered, the JSONObject
@@ -584,13 +622,6 @@ public class WifiNative {
         return doBooleanCommand("REMOVE_NETWORK " + netId);
     }
 
-    /**
-     * Remove all saved networks from wpa_supplicant.
-     */
-    public boolean removeAllNetworks() {
-        return doBooleanCommand("REMOVE_NETWORK all");
-    }
-
     private void logDbg(String debug) {
         long now = SystemClock.elapsedRealtimeNanos();
         String ts = String.format("[%,d us] ", now/1000);
@@ -601,36 +632,6 @@ public class WifiNative {
                 + Thread.currentThread().getStackTrace()[5].getMethodName()+" - "
                 + Thread.currentThread().getStackTrace()[6].getMethodName());
 
-    }
-
-    /**
-     * Enables a network in wpa_supplicant.
-     * @param netId - Network ID of the network to be enabled.
-     * @return true if command succeeded, false otherwise.
-     */
-    public boolean enableNetwork(int netId) {
-        if (DBG) logDbg("enableNetwork nid=" + Integer.toString(netId));
-        return doBooleanCommand("ENABLE_NETWORK " + netId);
-    }
-
-    /**
-     * Enable a network in wpa_supplicant, do not connect.
-     * @param netId - Network ID of the network to be enabled.
-     * @return true if command succeeded, false otherwise.
-     */
-    public boolean enableNetworkWithoutConnect(int netId) {
-        if (DBG) logDbg("enableNetworkWithoutConnect nid=" + Integer.toString(netId));
-        return doBooleanCommand("ENABLE_NETWORK " + netId + " " + "no-connect");
-    }
-
-    /**
-     * Disables a network in wpa_supplicant.
-     * @param netId - Network ID of the network to be disabled.
-     * @return true if command succeeded, false otherwise.
-     */
-    public boolean disableNetwork(int netId) {
-        if (DBG) logDbg("disableNetwork nid=" + Integer.toString(netId));
-        return doBooleanCommand("DISABLE_NETWORK " + netId);
     }
 
     /**
@@ -645,17 +646,29 @@ public class WifiNative {
 
     public boolean reconnect() {
         if (DBG) logDbg("RECONNECT ");
-        return doBooleanCommand("RECONNECT");
+        if (HIDL_SUP_ENABLE) {
+            return mSupplicantStaIfaceHal.reconnect();
+        } else {
+            return doBooleanCommand("RECONNECT");
+        }
     }
 
     public boolean reassociate() {
         if (DBG) logDbg("REASSOCIATE ");
-        return doBooleanCommand("REASSOCIATE");
+        if (HIDL_SUP_ENABLE) {
+            return mSupplicantStaIfaceHal.reassociate();
+        } else {
+            return doBooleanCommand("REASSOCIATE");
+        }
     }
 
     public boolean disconnect() {
         if (DBG) logDbg("DISCONNECT ");
-        return doBooleanCommand("DISCONNECT");
+        if (HIDL_SUP_ENABLE) {
+            return mSupplicantStaIfaceHal.disconnect();
+        } else {
+            return doBooleanCommand("DISCONNECT");
+        }
     }
 
     public String status() {
@@ -671,13 +684,17 @@ public class WifiNative {
     }
 
     public String getMacAddress() {
-        //Macaddr = XX.XX.XX.XX.XX.XX
-        String ret = doStringCommand("DRIVER MACADDR");
-        if (!TextUtils.isEmpty(ret)) {
-            String[] tokens = ret.split(" = ");
-            if (tokens.length == 2) return tokens[1];
+        if (HIDL_SUP_ENABLE) {
+            return mSupplicantStaIfaceHal.getMacAddress();
+        } else {
+            //Macaddr = XX.XX.XX.XX.XX.XX
+            String ret = doStringCommand("DRIVER MACADDR");
+            if (!TextUtils.isEmpty(ret)) {
+                String[] tokens = ret.split(" = ");
+                if (tokens.length == 2) return tokens[1];
+            }
+            return null;
         }
-        return null;
     }
 
     /**
@@ -747,9 +764,16 @@ public class WifiNative {
      * The  SETSUSPENDOPT driver command overrides the filtering rules
      */
     public boolean startFilteringMulticastV4Packets() {
-        return doBooleanCommand("DRIVER RXFILTER-STOP")
-            && doBooleanCommand("DRIVER RXFILTER-REMOVE 2")
-            && doBooleanCommand("DRIVER RXFILTER-START");
+        if (HIDL_SUP_ENABLE) {
+            return mSupplicantStaIfaceHal.stopRxFilter()
+                    && mSupplicantStaIfaceHal.removeRxFilter(
+                    SupplicantStaIfaceHal.RX_FILTER_TYPE_V4_MULTICAST)
+                    && mSupplicantStaIfaceHal.stopRxFilter();
+        } else {
+            return doBooleanCommand("DRIVER RXFILTER-STOP")
+                    && doBooleanCommand("DRIVER RXFILTER-REMOVE 2")
+                    && doBooleanCommand("DRIVER RXFILTER-START");
+        }
     }
 
     /**
@@ -757,9 +781,16 @@ public class WifiNative {
      * @return {@code true} if the operation succeeded, {@code false} otherwise
      */
     public boolean stopFilteringMulticastV4Packets() {
-        return doBooleanCommand("DRIVER RXFILTER-STOP")
-            && doBooleanCommand("DRIVER RXFILTER-ADD 2")
-            && doBooleanCommand("DRIVER RXFILTER-START");
+        if (HIDL_SUP_ENABLE) {
+            return mSupplicantStaIfaceHal.stopRxFilter()
+                    && mSupplicantStaIfaceHal.addRxFilter(
+                    SupplicantStaIfaceHal.RX_FILTER_TYPE_V4_MULTICAST)
+                    && mSupplicantStaIfaceHal.stopRxFilter();
+        } else {
+            return doBooleanCommand("DRIVER RXFILTER-STOP")
+                    && doBooleanCommand("DRIVER RXFILTER-ADD 2")
+                    && doBooleanCommand("DRIVER RXFILTER-START");
+        }
     }
 
     /**
@@ -767,9 +798,16 @@ public class WifiNative {
      * @return {@code true} if the operation succeeded, {@code false} otherwise
      */
     public boolean startFilteringMulticastV6Packets() {
-        return doBooleanCommand("DRIVER RXFILTER-STOP")
-            && doBooleanCommand("DRIVER RXFILTER-REMOVE 3")
-            && doBooleanCommand("DRIVER RXFILTER-START");
+        if (HIDL_SUP_ENABLE) {
+            return mSupplicantStaIfaceHal.stopRxFilter()
+                    && mSupplicantStaIfaceHal.removeRxFilter(
+                    SupplicantStaIfaceHal.RX_FILTER_TYPE_V6_MULTICAST)
+                    && mSupplicantStaIfaceHal.stopRxFilter();
+        } else {
+            return doBooleanCommand("DRIVER RXFILTER-STOP")
+                    && doBooleanCommand("DRIVER RXFILTER-REMOVE 3")
+                    && doBooleanCommand("DRIVER RXFILTER-START");
+        }
     }
 
     /**
@@ -777,9 +815,16 @@ public class WifiNative {
      * @return {@code true} if the operation succeeded, {@code false} otherwise
      */
     public boolean stopFilteringMulticastV6Packets() {
-        return doBooleanCommand("DRIVER RXFILTER-STOP")
-            && doBooleanCommand("DRIVER RXFILTER-ADD 3")
-            && doBooleanCommand("DRIVER RXFILTER-START");
+        if (HIDL_SUP_ENABLE) {
+            return mSupplicantStaIfaceHal.stopRxFilter()
+                    && mSupplicantStaIfaceHal.addRxFilter(
+                    SupplicantStaIfaceHal.RX_FILTER_TYPE_V6_MULTICAST)
+                    && mSupplicantStaIfaceHal.stopRxFilter();
+        } else {
+            return doBooleanCommand("DRIVER RXFILTER-STOP")
+                    && doBooleanCommand("DRIVER RXFILTER-ADD 3")
+                    && doBooleanCommand("DRIVER RXFILTER-START");
+        }
     }
 
     public static final int BLUETOOTH_COEXISTENCE_MODE_ENABLED     = 0;
@@ -794,7 +839,11 @@ public class WifiNative {
       * @return Whether the mode was successfully set.
       */
     public boolean setBluetoothCoexistenceMode(int mode) {
-        return doBooleanCommand("DRIVER BTCOEXMODE " + mode);
+        if (HIDL_SUP_ENABLE) {
+            return mSupplicantStaIfaceHal.setBtCoexistenceMode((byte) mode);
+        } else {
+            return doBooleanCommand("DRIVER BTCOEXMODE " + mode);
+        }
     }
 
     /**
@@ -806,43 +855,39 @@ public class WifiNative {
      * @return {@code true} if the command succeeded, {@code false} otherwise.
      */
     public boolean setBluetoothCoexistenceScanMode(boolean setCoexScanMode) {
-        if (setCoexScanMode) {
-            return doBooleanCommand("DRIVER BTCOEXSCAN-START");
+        if (HIDL_SUP_ENABLE) {
+            return mSupplicantStaIfaceHal.setBtCoexistenceScanModeEnabled(setCoexScanMode);
         } else {
-            return doBooleanCommand("DRIVER BTCOEXSCAN-STOP");
+            if (setCoexScanMode) {
+                return doBooleanCommand("DRIVER BTCOEXSCAN-START");
+            } else {
+                return doBooleanCommand("DRIVER BTCOEXSCAN-STOP");
+            }
         }
     }
 
-    public void enableSaveConfig() {
-        doBooleanCommand("SET update_config 1");
-    }
-
-    public boolean saveConfig() {
-        return doBooleanCommand("SAVE_CONFIG");
-    }
-
-    public boolean addToBlacklist(String bssid) {
-        if (TextUtils.isEmpty(bssid)) return false;
-        return doBooleanCommand("BLACKLIST " + bssid);
-    }
-
-    public boolean clearBlacklist() {
-        return doBooleanCommand("BLACKLIST clear");
-    }
-
     public boolean setSuspendOptimizations(boolean enabled) {
-        if (enabled) {
-            return doBooleanCommand("DRIVER SETSUSPENDMODE 1");
+        if (HIDL_SUP_ENABLE) {
+            return mSupplicantStaIfaceHal.setSuspendModeEnabled(enabled);
         } else {
-            return doBooleanCommand("DRIVER SETSUSPENDMODE 0");
+            if (enabled) {
+                return doBooleanCommand("DRIVER SETSUSPENDMODE 1");
+            } else {
+                return doBooleanCommand("DRIVER SETSUSPENDMODE 0");
+            }
         }
     }
 
     public boolean setCountryCode(String countryCode) {
-        if (countryCode != null)
-            return doBooleanCommand("DRIVER COUNTRY " + countryCode.toUpperCase(Locale.ROOT));
-        else
-            return doBooleanCommand("DRIVER COUNTRY");
+        if (HIDL_SUP_ENABLE) {
+            return mSupplicantStaIfaceHal.setCountryCode(countryCode);
+        } else {
+            if (countryCode != null) {
+                return doBooleanCommand("DRIVER COUNTRY " + countryCode.toUpperCase(Locale.ROOT));
+            } else {
+                return doBooleanCommand("DRIVER COUNTRY");
+            }
+        }
     }
 
     /**
@@ -854,42 +899,35 @@ public class WifiNative {
         return doBooleanCommand(cmd);
     }
 
-    public void enableAutoConnect(boolean enable) {
-        if (enable) {
-            doBooleanCommand("STA_AUTOCONNECT 1");
-        } else {
-            doBooleanCommand("STA_AUTOCONNECT 0");
-        }
-    }
-
-    public void setScanInterval(int scanInterval) {
-        doBooleanCommand("SCAN_INTERVAL " + scanInterval);
-    }
-
-    public void setHs20(boolean hs20) {
-        if (hs20) {
-            doBooleanCommand("SET HS20 1");
-        } else {
-            doBooleanCommand("SET HS20 0");
-        }
-    }
-
     public void startTdls(String macAddr, boolean enable) {
-        if (enable) {
-            synchronized (sLock) {
-                doBooleanCommand("TDLS_DISCOVER " + macAddr);
-                doBooleanCommand("TDLS_SETUP " + macAddr);
+        if (HIDL_SUP_ENABLE) {
+            if (enable) {
+                mSupplicantStaIfaceHal.initiateTdlsDiscover(macAddr);
+                mSupplicantStaIfaceHal.initiateTdlsSetup(macAddr);
+            } else {
+                mSupplicantStaIfaceHal.initiateTdlsTeardown(macAddr);
             }
         } else {
-            doBooleanCommand("TDLS_TEARDOWN " + macAddr);
+            if (enable) {
+                synchronized (sLock) {
+                    doBooleanCommand("TDLS_DISCOVER " + macAddr);
+                    doBooleanCommand("TDLS_SETUP " + macAddr);
+                }
+            } else {
+                doBooleanCommand("TDLS_TEARDOWN " + macAddr);
+            }
         }
     }
 
     public boolean startWpsPbc(String bssid) {
-        if (TextUtils.isEmpty(bssid)) {
-            return doBooleanCommand("WPS_PBC");
+        if (HIDL_SUP_ENABLE) {
+            return mSupplicantStaIfaceHal.startWpsPbc(bssid);
         } else {
-            return doBooleanCommand("WPS_PBC " + bssid);
+            if (TextUtils.isEmpty(bssid)) {
+                return doBooleanCommand("WPS_PBC");
+            } else {
+                return doBooleanCommand("WPS_PBC " + bssid);
+            }
         }
     }
 
@@ -905,7 +943,11 @@ public class WifiNative {
 
     public boolean startWpsPinKeypad(String pin) {
         if (TextUtils.isEmpty(pin)) return false;
-        return doBooleanCommand("WPS_PIN any " + pin);
+        if (HIDL_SUP_ENABLE) {
+            return mSupplicantStaIfaceHal.startWpsPinKeypad(pin);
+        } else {
+            return doBooleanCommand("WPS_PIN any " + pin);
+        }
     }
 
     public boolean startWpsPinKeypad(String iface, String pin) {
@@ -917,10 +959,14 @@ public class WifiNative {
 
 
     public String startWpsPinDisplay(String bssid) {
-        if (TextUtils.isEmpty(bssid)) {
-            return doStringCommand("WPS_PIN any");
+        if (HIDL_SUP_ENABLE) {
+            return mSupplicantStaIfaceHal.startWpsPinDisplay(bssid);
         } else {
-            return doStringCommand("WPS_PIN " + bssid);
+            if (TextUtils.isEmpty(bssid)) {
+                return doStringCommand("WPS_PIN any");
+            } else {
+                return doStringCommand("WPS_PIN " + bssid);
+            }
         }
     }
 
@@ -935,38 +981,74 @@ public class WifiNative {
     }
 
     public boolean setExternalSim(boolean external) {
-        String value = external ? "1" : "0";
-        Log.d(TAG, "Setting external_sim to " + value);
-        return doBooleanCommand("SET external_sim " + value);
+        if (HIDL_SUP_ENABLE) {
+            return mSupplicantStaIfaceHal.setExternalSim(external);
+        } else {
+            String value = external ? "1" : "0";
+            Log.d(TAG, "Setting external_sim to " + value);
+            return doBooleanCommand("SET external_sim " + value);
+        }
     }
 
     public boolean simAuthResponse(int id, String type, String response) {
-        // with type = GSM-AUTH, UMTS-AUTH or UMTS-AUTS
-        return doBooleanCommand("CTRL-RSP-SIM-" + id + ":" + type + response);
+        if (HIDL_SUP_ENABLE) {
+            if ("GSM-AUTH".equals(type)) {
+                return mSupplicantStaIfaceHal.sendCurrentNetworkEapSimGsmAuthResponse(response);
+            } else if ("UMTS-AUTH".equals(type)) {
+                return mSupplicantStaIfaceHal.sendCurrentNetworkEapSimUmtsAuthResponse(response);
+            } else if ("UMTS-AUTS".equals(type)) {
+                return mSupplicantStaIfaceHal.sendCurrentNetworkEapSimUmtsAuthResponse(response);
+            } else {
+                return false;
+            }
+        } else {
+            // with type = GSM-AUTH, UMTS-AUTH or UMTS-AUTS
+            return doBooleanCommand("CTRL-RSP-SIM-" + id + ":" + type + response);
+        }
     }
 
     public boolean simAuthFailedResponse(int id) {
-        // should be used with type GSM-AUTH
-        return doBooleanCommand("CTRL-RSP-SIM-" + id + ":GSM-FAIL");
+        if (HIDL_SUP_ENABLE) {
+            return mSupplicantStaIfaceHal.sendCurrentNetworkEapSimGsmAuthFailure();
+        } else {
+            // should be used with type GSM-AUTH
+            return doBooleanCommand("CTRL-RSP-SIM-" + id + ":GSM-FAIL");
+        }
     }
 
     public boolean umtsAuthFailedResponse(int id) {
-        // should be used with type UMTS-AUTH
-        return doBooleanCommand("CTRL-RSP-SIM-" + id + ":UMTS-FAIL");
+        if (HIDL_SUP_ENABLE) {
+            return mSupplicantStaIfaceHal.sendCurrentNetworkEapSimUmtsAuthFailure();
+        } else {
+            // should be used with type UMTS-AUTH
+            return doBooleanCommand("CTRL-RSP-SIM-" + id + ":UMTS-FAIL");
+        }
     }
 
     public boolean simIdentityResponse(int id, String response) {
-        return doBooleanCommand("CTRL-RSP-IDENTITY-" + id + ":" + response);
+        if (HIDL_SUP_ENABLE) {
+            return mSupplicantStaIfaceHal.sendCurrentNetworkEapIdentityResponse(response);
+        } else {
+            return doBooleanCommand("CTRL-RSP-IDENTITY-" + id + ":" + response);
+        }
     }
 
     /* Configures an access point connection */
     public boolean startWpsRegistrar(String bssid, String pin) {
         if (TextUtils.isEmpty(bssid) || TextUtils.isEmpty(pin)) return false;
-        return doBooleanCommand("WPS_REG " + bssid + " " + pin);
+        if (HIDL_SUP_ENABLE) {
+            return mSupplicantStaIfaceHal.startWpsRegistrar(bssid, pin);
+        } else {
+            return doBooleanCommand("WPS_REG " + bssid + " " + pin);
+        }
     }
 
     public boolean cancelWps() {
-        return doBooleanCommand("WPS_CANCEL");
+        if (HIDL_SUP_ENABLE) {
+            return mSupplicantStaIfaceHal.cancelWps();
+        } else {
+            return doBooleanCommand("WPS_CANCEL");
+        }
     }
 
     public boolean setPersistentReconnect(boolean enabled) {
@@ -975,31 +1057,59 @@ public class WifiNative {
     }
 
     public boolean setDeviceName(String name) {
-        return doBooleanCommand("SET device_name " + name);
+        if (HIDL_SUP_ENABLE) {
+            return mSupplicantStaIfaceHal.setWpsDeviceName(name);
+        } else {
+            return doBooleanCommand("SET device_name " + name);
+        }
     }
 
     public boolean setDeviceType(String type) {
-        return doBooleanCommand("SET device_type " + type);
+        if (HIDL_SUP_ENABLE) {
+            return mSupplicantStaIfaceHal.setWpsDeviceType(type);
+        } else {
+            return doBooleanCommand("SET device_type " + type);
+        }
     }
 
     public boolean setConfigMethods(String cfg) {
-        return doBooleanCommand("SET config_methods " + cfg);
+        if (HIDL_SUP_ENABLE) {
+            return mSupplicantStaIfaceHal.setWpsConfigMethods(cfg);
+        } else {
+            return doBooleanCommand("SET config_methods " + cfg);
+        }
     }
 
     public boolean setManufacturer(String value) {
-        return doBooleanCommand("SET manufacturer " + value);
+        if (HIDL_SUP_ENABLE) {
+            return mSupplicantStaIfaceHal.setWpsManufacturer(value);
+        } else {
+            return doBooleanCommand("SET manufacturer " + value);
+        }
     }
 
     public boolean setModelName(String value) {
-        return doBooleanCommand("SET model_name " + value);
+        if (HIDL_SUP_ENABLE) {
+            return mSupplicantStaIfaceHal.setWpsModelName(value);
+        } else {
+            return doBooleanCommand("SET model_name " + value);
+        }
     }
 
     public boolean setModelNumber(String value) {
-        return doBooleanCommand("SET model_number " + value);
+        if (HIDL_SUP_ENABLE) {
+            return mSupplicantStaIfaceHal.setWpsModelNumber(value);
+        } else {
+            return doBooleanCommand("SET model_number " + value);
+        }
     }
 
     public boolean setSerialNumber(String value) {
-        return doBooleanCommand("SET serial_number " + value);
+        if (HIDL_SUP_ENABLE) {
+            return mSupplicantStaIfaceHal.setWpsSerialNumber(value);
+        } else {
+            return doBooleanCommand("SET serial_number " + value);
+        }
     }
 
     public boolean setP2pSsidPostfix(String postfix) {
@@ -1013,10 +1123,14 @@ public class WifiNative {
     }
 
     public void setPowerSave(boolean enabled) {
-        if (enabled) {
-            doBooleanCommand("SET ps 1");
+        if (HIDL_SUP_ENABLE) {
+            mSupplicantStaIfaceHal.setPowerSave(enabled);
         } else {
-            doBooleanCommand("SET ps 0");
+            if (enabled) {
+                doBooleanCommand("SET ps 1");
+            } else {
+                doBooleanCommand("SET ps 0");
+            }
         }
     }
 
@@ -1412,6 +1526,230 @@ public class WifiNative {
         return doBooleanCommand("NFC_REPORT_HANDOVER RESP P2P " + requestMessage + " 00");
     }
 
+    /** WifiSupplicantControl methods. TODO: These should use HIDL soon. */
+    /**
+     * Migrate all the configured networks from wpa_supplicant.
+     *
+     * @param configs       Map of configuration key to configuration objects corresponding to all
+     *                      the networks.
+     * @param networkExtras Map of extra configuration parameters stored in wpa_supplicant.conf
+     * @return Max priority of all the configs.
+     */
+    public boolean migrateNetworksFromSupplicant(Map<String, WifiConfiguration> configs,
+                                                 SparseArray<Map<String, String>> networkExtras) {
+        if (HIDL_SUP_ENABLE) {
+            return mSupplicantStaIfaceHal.loadNetworks(configs, networkExtras);
+        } else {
+            mWifiSupplicantControl.loadNetworks(configs, networkExtras);
+            return true;
+        }
+    }
+
+    /**
+     * Add the provided network configuration to wpa_supplicant and initiate connection to it.
+     * This method does the following:
+     * 1. Triggers disconnect command to wpa_supplicant (if |shouldDisconnect| is true).
+     * 2. Remove any existing network in wpa_supplicant.
+     * 3. Add a new network to wpa_supplicant.
+     * 4. Save the provided configuration to wpa_supplicant.
+     * 5. Select the new network in wpa_supplicant.
+     * 6. Triggers reconnect command to wpa_supplicant.
+     *
+     * @param configuration WifiConfiguration parameters for the provided network.
+     * @param shouldDisconnect whether to trigger a disconnection or not.
+     * @return {@code true} if it succeeds, {@code false} otherwise
+     */
+    public boolean connectToNetwork(WifiConfiguration configuration, boolean shouldDisconnect) {
+        if (HIDL_SUP_ENABLE) {
+            return mSupplicantStaIfaceHal.connectToNetwork(configuration, shouldDisconnect);
+        } else {
+            return mWifiSupplicantControl.connectToNetwork(configuration, shouldDisconnect);
+        }
+    }
+
+    /**
+     * Initiates roaming to the already configured network in wpa_supplicant. If the network
+     * configuration provided does not match the already configured network, then this triggers
+     * a new connection attempt (instead of roam).
+     * 1. First check if we're attempting to connect to the same network as we currently have
+     * configured.
+     * 2. Set the new bssid for the network in wpa_supplicant.
+     * 3. Triggers reassociate command to wpa_supplicant.
+     *
+     * @param configuration WifiConfiguration parameters for the provided network.
+     * @return {@code true} if it succeeds, {@code false} otherwise
+     */
+    public boolean roamToNetwork(WifiConfiguration configuration) {
+        if (HIDL_SUP_ENABLE) {
+            return mSupplicantStaIfaceHal.roamToNetwork(configuration);
+        } else {
+            return mWifiSupplicantControl.roamToNetwork(configuration);
+        }
+    }
+
+    /**
+     * Get the framework network ID corresponding to the provided supplicant network ID for the
+     * network configured in wpa_supplicant.
+     *
+     * @param supplicantNetworkId network ID in wpa_supplicant for the network.
+     * @return Corresponding framework network ID if found, -1 if network not found.
+     */
+    public int getFrameworkNetworkId(int supplicantNetworkId) {
+        if (HIDL_SUP_ENABLE) {
+            // In the HIDL world, wifi monitor events contain the framework network Id.
+            return supplicantNetworkId;
+        } else {
+            return mWifiSupplicantControl.getFrameworkNetworkId(supplicantNetworkId);
+        }
+    }
+
+    /**
+     * Remove all the networks.
+     *
+     * @return {@code true} if it succeeds, {@code false} otherwise
+     */
+    public boolean removeAllNetworks() {
+        if (HIDL_SUP_ENABLE) {
+            return mSupplicantStaIfaceHal.removeAllNetworks();
+        } else {
+            if (!doBooleanCommand("REMOVE_NETWORK all")) {
+                Log.e(TAG, "Remove all networks in wpa_supplicant failed");
+                return false;
+            }
+            return true;
+        }
+    }
+
+    /**
+     * Set the BSSID for the currently configured network in wpa_supplicant.
+     *
+     * @return true if successful, false otherwise.
+     */
+    public boolean setConfiguredNetworkBSSID(String bssid) {
+        if (HIDL_SUP_ENABLE) {
+            return mSupplicantStaIfaceHal.setCurrentNetworkBssid(bssid);
+        } else {
+            return mWifiSupplicantControl.setConfiguredNetworkBSSID(bssid);
+        }
+    }
+
+    /**
+     * Save the current configuration to wpa_supplicant.conf.
+     */
+    public boolean saveConfig() {
+        return doBooleanCommand("SAVE_CONFIG");
+    }
+
+    /**
+     * Read network variables from wpa_supplicant.conf.
+     *
+     * @param key The parameter to be parsed.
+     * @return Map of corresponding configKey to the value of the param requested.
+     */
+    public Map<String, String> readNetworkVariablesFromSupplicantFile(String key) {
+        return mWifiSupplicantControl.readNetworkVariablesFromSupplicantFile(key);
+    }
+
+    /**
+     * Get Fast BSS Transition capability.
+     */
+    public boolean getSystemSupportsFastBssTransition() {
+        return mWifiSupplicantControl.getSystemSupportsFastBssTransition();
+    }
+
+    /**
+     * Set Fast BSS Transition capability.
+     */
+    public void setSystemSupportsFastBssTransition(boolean supported) {
+        mWifiSupplicantControl.setSystemSupportsFastBssTransition(supported);
+    }
+
+    /**
+     * Initiate ANQP query.
+     *
+     * @param bssid BSSID of the AP to be queried
+     * @param anqpIds Set of anqp IDs.
+     * @param hs20Subtypes Set of HS20 subtypes.
+     * @return true on success, false otherwise.
+     */
+    public boolean requestAnqp(String bssid, Set<Integer> anqpIds, Set<Integer> hs20Subtypes) {
+        if (bssid == null || ((anqpIds == null || anqpIds.isEmpty())
+                && (hs20Subtypes == null || hs20Subtypes.isEmpty()))) {
+            return false;
+        }
+        if (HIDL_SUP_ENABLE) {
+            ArrayList<Short> anqpIdList = new ArrayList<>();
+            for (Integer anqpId : anqpIds) {
+                anqpIdList.add(anqpId.shortValue());
+            }
+            ArrayList<Integer> hs20SubtypeList = new ArrayList<>();
+            hs20SubtypeList.addAll(hs20Subtypes);
+            return mSupplicantStaIfaceHal.initiateAnqpQuery(bssid, anqpIdList, hs20SubtypeList);
+        } else {
+            String command = buildAnqpQueryCommand(bssid, anqpIds, hs20Subtypes);
+            String result = doStringCommand(command);
+            return result != null && result.startsWith("OK");
+        }
+    }
+
+    /**
+     * Build a wpa_supplicant ANQP query command
+     *
+     * @param bssid BSSID of the AP to be queried
+     * @param anqpIds Set of anqp IDs.
+     * @param hs20Subtypes Set of HS20 subtypes.
+     * @return A command string.
+     */
+    @VisibleForTesting
+    public static String buildAnqpQueryCommand(String bssid, Set<Integer> anqpIds,
+                                               Set<Integer> hs20Subtypes) {
+
+        boolean baseANQPElements = !anqpIds.isEmpty();
+        StringBuilder sb = new StringBuilder();
+        if (baseANQPElements) {
+            sb.append("ANQP_GET ");
+        } else {
+            // ANQP_GET does not work for a sole hs20:8 (OSU) query
+            sb.append("HS20_ANQP_GET ");
+        }
+        sb.append(bssid).append(' ');
+        boolean first = true;
+        for (Integer id : anqpIds) {
+            if (first) {
+                first = false;
+            } else {
+                sb.append(',');
+            }
+            sb.append(id);
+        }
+        for (Integer subType : hs20Subtypes) {
+            if (first) {
+                first = false;
+            } else {
+                sb.append(',');
+            }
+            if (baseANQPElements) {
+                sb.append("hs20:");
+            }
+            sb.append(subType);
+        }
+        return sb.toString();
+    }
+
+    /**
+     * Request a passpoint icon file |filename| from the specified AP |bssid|.
+     * @param bssid BSSID of the AP
+     * @param fileName name of the icon file
+     * @return true if request is sent successfully, false otherwise
+     */
+    public boolean requestIcon(String  bssid, String fileName) {
+        if (HIDL_SUP_ENABLE) {
+            return mSupplicantStaIfaceHal.initiateHs20IconQuery(bssid, fileName);
+        } else {
+            String result = doStringCommand("REQ_HS20_ICON " + bssid + " " + fileName);
+            return result != null && result.startsWith("OK");
+        }
+    }
 
     /* kernel logging support */
     private static native byte[] readKernelLogNative();
@@ -2492,6 +2830,11 @@ public class WifiNative {
         int readBytes;
         int writtenRecords;
 
+        // Bit masks for interpreting |flag|
+        public static final int HAS_BINARY_ENTRIES = (1 << 0);
+        public static final int HAS_ASCII_ENTRIES = (1 << 1);
+        public static final int HAS_PER_PACKET_ENTRIES = (1 << 2);
+
         @Override
         public String toString() {
             return "name: " + name + " flag: " + flag + " ringBufferId: " + ringBufferId +
@@ -3105,6 +3448,24 @@ public class WifiNative {
         return false;
     }
 
+    /**
+     * Reset firmware roaming configuration.
+     */
+    public boolean resetRoamingConfiguration() {
+        Log.d(TAG, "resetRoamingConfiguration ");
+        try {
+            if (mWifiVendorHal != null) {
+                // Pass in an empty RoamingConfig object which translates to zero size
+                // blacklist and whitelist to reset the firmware roaming configuration.
+                RoamingConfig config = new RoamingConfig();
+                return mWifiVendorHal.configureRoaming(config);
+            }
+        } catch (UnsupportedOperationException e) {
+        }
+
+        return false;
+    }
+
 
     StackTraceElement[] mTrace;
     void legacyHalWarning() {
@@ -3114,5 +3475,4 @@ public class WifiNative {
         Log.e(TAG, "LEGACY HAL th " + cur.getId()
                 + " line " + s.getLineNumber() + " " + s.getMethodName());
     }
-
 }

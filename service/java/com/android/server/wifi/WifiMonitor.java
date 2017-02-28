@@ -30,12 +30,15 @@ import android.os.Handler;
 import android.os.Message;
 import android.text.TextUtils;
 import android.util.ArraySet;
+import android.util.Base64;
 import android.util.LocalLog;
 import android.util.Log;
 import android.util.SparseArray;
 
+import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.Protocol;
 import com.android.internal.util.StateMachine;
+import com.android.server.wifi.hotspot2.AnqpEvent;
 import com.android.server.wifi.hotspot2.IconEvent;
 import com.android.server.wifi.hotspot2.Utils;
 import com.android.server.wifi.hotspot2.WnmData;
@@ -530,6 +533,11 @@ public class WifiMonitor {
     public static final int AUTHENTICATION_FAILURE_REASON_WRONG_PSWD = 2;
     public static final int AUTHENTICATION_FAILURE_REASON_EAP_FAILURE = 3;
 
+    /**
+     * Used for icon retrieval.
+     */
+    private static final int ICON_CHUNK_SIZE = 1400;  // 2K*3/4 - overhead
+
     // Singleton instance
     private static WifiMonitor sWifiMonitor = new WifiMonitor();
     public static WifiMonitor getInstance() {
@@ -581,7 +589,14 @@ public class WifiMonitor {
         }
     }
 
-    private void setMonitoring(String iface, boolean enabled) {
+    /**
+     * Enable/Disable monitoring for the provided iface.
+     *
+     * @param iface Name of the iface.
+     * @param enabled true to enable, false to disable.
+     */
+    @VisibleForTesting
+    public void setMonitoring(String iface, boolean enabled) {
         mMonitoringMap.put(iface, enabled);
     }
 
@@ -602,7 +617,9 @@ public class WifiMonitor {
         while (true) {
             if (mWifiNative.connectToSupplicant()) {
                 mConnected = true;
-                new MonitorThread(mWifiNative.getLocalLog()).start();
+                if (!WifiNative.HIDL_SUP_ENABLE) {
+                    new MonitorThread(mWifiNative.getLocalLog()).start();
+                }
                 return true;
             }
             if (connectTries++ < 5) {
@@ -621,12 +638,12 @@ public class WifiMonitor {
 
         if (ensureConnectedLocked()) {
             setMonitoring(iface, true);
-            sendMessage(iface, SUP_CONNECTION_EVENT);
+            broadcastSupplicantConnectionEvent(iface);
         }
         else {
             boolean originalMonitoring = isMonitoring(iface);
             setMonitoring(iface, true);
-            sendMessage(iface, SUP_DISCONNECTION_EVENT);
+            broadcastSupplicantDisconnectionEvent(iface);
             setMonitoring(iface, originalMonitoring);
             Log.e(TAG, "startMonitoring(" + iface + ") failed!");
         }
@@ -635,7 +652,7 @@ public class WifiMonitor {
     public synchronized void stopMonitoring(String iface) {
         if (mVerboseLoggingEnabled) Log.d(TAG, "stopMonitoring(" + iface + ")");
         setMonitoring(iface, true);
-        sendMessage(iface, SUP_DISCONNECTION_EVENT);
+        broadcastSupplicantDisconnectionEvent(iface);
         setMonitoring(iface, false);
     }
 
@@ -820,13 +837,13 @@ public class WifiMonitor {
 
         if (!eventStr.startsWith(EVENT_PREFIX_STR)) {
             if (eventStr.startsWith(WPS_SUCCESS_STR)) {
-                sendMessage(iface, WPS_SUCCESS_EVENT);
+                broadcastWpsSuccessEvent(iface);
             } else if (eventStr.startsWith(WPS_FAIL_STR)) {
                 handleWpsFailEvent(eventStr, iface);
             } else if (eventStr.startsWith(WPS_OVERLAP_STR)) {
-                sendMessage(iface, WPS_OVERLAP_EVENT);
+                broadcastWpsOverlapEvent(iface);
             } else if (eventStr.startsWith(WPS_TIMEOUT_STR)) {
-                sendMessage(iface, WPS_TIMEOUT_EVENT);
+                broadcastWpsTimeoutEvent(iface);
             } else if (eventStr.startsWith(P2P_EVENT_PREFIX_STR)) {
                 handleP2pEvents(eventStr, iface);
             } else if (eventStr.startsWith(HOST_AP_EVENT_PREFIX_STR)) {
@@ -861,12 +878,11 @@ public class WifiMonitor {
                 handleAssociatedBSSIDEvent(eventStr, iface);
             } else if (eventStr.startsWith(AUTH_EVENT_PREFIX_STR)
                     && eventStr.endsWith(AUTH_TIMEOUT_STR)) {
-                sendMessage(iface, AUTHENTICATION_FAILURE_EVENT, eventLogCounter,
-                        AUTHENTICATION_FAILURE_REASON_TIMEOUT);
+                broadcastAuthenticationFailureEvent(iface, AUTHENTICATION_FAILURE_REASON_TIMEOUT);
             } else if (eventStr.startsWith(WPA_EVENT_PREFIX_STR)
                     && eventStr.endsWith(PASSWORD_MAY_BE_INCORRECT_STR)) {
-                sendMessage(iface, AUTHENTICATION_FAILURE_EVENT, eventLogCounter,
-                        AUTHENTICATION_FAILURE_REASON_WRONG_PSWD);
+                broadcastAuthenticationFailureEvent(
+                        iface, AUTHENTICATION_FAILURE_REASON_WRONG_PSWD);
             } else {
                 if (mVerboseLoggingEnabled) {
                     Log.w(TAG, "couldn't identify event type - " + eventStr);
@@ -1004,12 +1020,12 @@ public class WifiMonitor {
             }
 
             // Notify and exit
-            sendMessage(null, SUP_DISCONNECTION_EVENT, eventLogCounter);
+            broadcastSupplicantDisconnectionEvent(null);
             return true;
         } else if (event == EAP_FAILURE) {
             if (eventData.startsWith(EAP_AUTH_FAILURE_STR)) {
-                sendMessage(iface, AUTHENTICATION_FAILURE_EVENT, eventLogCounter,
-                        AUTHENTICATION_FAILURE_REASON_EAP_FAILURE);
+                broadcastAuthenticationFailureEvent(
+                        iface, AUTHENTICATION_FAILURE_REASON_EAP_FAILURE);
             }
         } else if (event == ASSOC_REJECT) {
             Matcher match = mAssocRejectEventPattern.matcher(eventData);
@@ -1036,7 +1052,7 @@ public class WifiMonitor {
                     status = -1;
                 }
             }
-            sendMessage(iface, ASSOCIATION_REJECTION_EVENT, eventLogCounter, status, BSSID);
+            broadcastAssociationRejectionEvent(iface, status, BSSID);
         } else if (event == BSS_ADDED && !DBG) {
             // Ignore that event - it is not handled, and dont log it as it is too verbose
         } else if (event == BSS_REMOVED && !DBG) {
@@ -1110,49 +1126,26 @@ public class WifiMonitor {
         if (match.find()) {
             BSSID = match.group(1);
         }
-        sendMessage(iface, WifiStateMachine.CMD_ASSOCIATED_BSSID, eventLogCounter, 0, BSSID);
+        broadcastAssociationSuccesfulEvent(iface, BSSID);
     }
 
 
     private void handleWpsFailEvent(String dataString, String iface) {
         final Pattern p = Pattern.compile(WPS_FAIL_PATTERN);
         Matcher match = p.matcher(dataString);
-        int reason = 0;
+        int vendorErrorCodeInt = 0;
+        int cfgErrInt = 0;
         if (match.find()) {
             String cfgErrStr = match.group(1);
-            String reasonStr = match.group(2);
-
-            if (reasonStr != null) {
-                int reasonInt = Integer.parseInt(reasonStr);
-                switch(reasonInt) {
-                    case REASON_TKIP_ONLY_PROHIBITED:
-                        sendMessage(iface, WPS_FAIL_EVENT, WifiManager.WPS_TKIP_ONLY_PROHIBITED);
-                        return;
-                    case REASON_WEP_PROHIBITED:
-                        sendMessage(iface, WPS_FAIL_EVENT, WifiManager.WPS_WEP_PROHIBITED);
-                        return;
-                    default:
-                        reason = reasonInt;
-                        break;
-                }
+            String vendorErrorCodeStr = match.group(2);
+            if (vendorErrorCodeStr != null) {
+                vendorErrorCodeInt = Integer.parseInt(vendorErrorCodeStr);
             }
             if (cfgErrStr != null) {
-                int cfgErrInt = Integer.parseInt(cfgErrStr);
-                switch(cfgErrInt) {
-                    case CONFIG_AUTH_FAILURE:
-                        sendMessage(iface, WPS_FAIL_EVENT, WifiManager.WPS_AUTH_FAILURE);
-                        return;
-                    case CONFIG_MULTIPLE_PBC_DETECTED:
-                        sendMessage(iface, WPS_FAIL_EVENT, WifiManager.WPS_OVERLAP_ERROR);
-                        return;
-                    default:
-                        if (reason == 0) reason = cfgErrInt;
-                        break;
-                }
+                cfgErrInt = Integer.parseInt(cfgErrStr);
             }
         }
-        //For all other errors, return a generic internal error
-        sendMessage(iface, WPS_FAIL_EVENT, WifiManager.ERROR, reason);
+        broadcastWpsFailEvent(iface, cfgErrInt, vendorErrorCodeInt);
     }
 
     /* <event> status=<err> and the special case of <event> reason=FREQ_CONFLICT */
@@ -1277,16 +1270,27 @@ public class WifiMonitor {
             eoresult = eventStr.length();
         }
 
+        long bssid = 0;
+        int result = 0;
         try {
-            long bssid = Utils.parseMac(eventStr.substring(addrPos + ADDR_STRING.length(), eoaddr));
-            int result = eventStr.substring(
+            bssid = Utils.parseMac(eventStr.substring(addrPos + ADDR_STRING.length(), eoaddr));
+            result = eventStr.substring(
                     resPos + RESULT_STRING.length(), eoresult).equalsIgnoreCase("success") ? 1 : 0;
-
-            sendMessage(iface, ANQP_DONE_EVENT, result, 0, bssid);
         }
         catch (IllegalArgumentException iae) {
             Log.e(TAG, "Bad MAC address in ANQP response: " + iae.getMessage());
+            return;
         }
+        AnqpEvent anqpEvent = null;
+        // If there are no errors fetch the ANQP elements from wpa_supplicant, otherwise return
+        // empty ANQP elements.
+        if (bssid != 0 && result != 0) {
+            String bssData = mWifiNative.scanResult(Utils.macToString(bssid));
+            anqpEvent = AnqpEvent.buildAnqpEvent(bssid, bssData);
+        } else {
+            anqpEvent = AnqpEvent.buildAnqpEvent(bssid, null);
+        }
+        broadcastAnqpDoneEvent(iface, anqpEvent);
     }
 
     private void handleIconResult(String eventStr, String iface) {
@@ -1300,18 +1304,70 @@ public class WifiMonitor {
             String bssid = segments[1];
             String fileName = segments[2];
             int size = Integer.parseInt(segments[3]);
-            sendMessage(iface, RX_HS20_ANQP_ICON_EVENT,
-                    new IconEvent(Utils.parseMac(bssid), fileName, size));
+            byte[] iconData = null;
+            if (!TextUtils.isEmpty(bssid) && !TextUtils.isEmpty(fileName) && size > 0) {
+                try {
+                    iconData = retrieveIcon(Utils.parseMac(bssid), fileName, size);
+                } catch (IOException ioe) {
+                    Log.e(TAG, "Failed to retrieve icon: " + ioe.toString() + ": " + fileName);
+                }
+            }
+            broadcastIconDoneEvent(
+                    iface, new IconEvent(Utils.parseMac(bssid), fileName, size, iconData));
         }
         catch (NumberFormatException nfe) {
             throw new IllegalArgumentException("Bad numeral");
         }
     }
 
+    // Retrieve the icon data from wpa_supplicant.
+    private byte[] retrieveIcon(long bssid, String fileName, int fileSize) throws IOException {
+        byte[] iconData = new byte[fileSize];
+        try {
+            int offset = 0;
+            while (offset < fileSize) {
+                int size = Math.min(fileSize - offset, ICON_CHUNK_SIZE);
+
+                String command = String.format("GET_HS20_ICON %s %s %d %d",
+                        Utils.macToString(bssid), fileName, offset, size);
+                Log.d(TAG, "Issuing '" + command + "'");
+                String response = mWifiNative.doCustomSupplicantCommand(command);
+                if (response == null) {
+                    throw new IOException("No icon data returned");
+                }
+
+                try {
+                    byte[] fragment = Base64.decode(response, Base64.DEFAULT);
+                    if (fragment.length == 0) {
+                        throw new IOException("Null data for '" + command + "': " + response);
+                    }
+                    if (fragment.length + offset > iconData.length) {
+                        throw new IOException("Icon chunk exceeds image size");
+                    }
+                    System.arraycopy(fragment, 0, iconData, offset, fragment.length);
+                    offset += fragment.length;
+                } catch (IllegalArgumentException iae) {
+                    throw new IOException("Failed to parse response to '" + command
+                            + "': " + response);
+                }
+            }
+            if (offset != fileSize) {
+                Log.w(TAG, "Partial icon data: " + offset + ", expected " + fileSize);
+            }
+        } finally {
+            // Delete the icon file in supplicant.
+            Log.d(TAG, "Deleting icon for " + fileName);
+            String result = mWifiNative.doCustomSupplicantCommand("DEL_HS20_ICON "
+                    + Utils.macToString(bssid) + " " + fileName);
+            Log.d(TAG, "Result: " + result);
+        }
+        return iconData;
+    }
+
     private void handleWnmFrame(String eventStr, String iface) {
         try {
             WnmData wnmData = WnmData.buildWnmData(eventStr);
-            sendMessage(iface, HS20_REMEDIATION_EVENT, wnmData);
+            broadcastWnmEvent(iface, wnmData);
         } catch (IOException | NumberFormatException e) {
             Log.w(TAG, "Bad WNM event: '" + eventStr + "'");
         }
@@ -1322,7 +1378,7 @@ public class WifiMonitor {
      */
     private void handleRequests(String dataString, String iface) {
         String SSID = null;
-        int reason = -2;
+        int  networkId = -2;
         String requestName = dataString.substring(REQUEST_PREFIX_LEN_STR);
         if (TextUtils.isEmpty(requestName)) {
             return;
@@ -1332,32 +1388,25 @@ public class WifiMonitor {
             if (match.find()) {
                 SSID = match.group(2);
                 try {
-                    reason = Integer.parseInt(match.group(1));
+                    networkId = Integer.parseInt(match.group(1));
                 } catch (NumberFormatException e) {
-                    reason = -1;
+                    networkId = -1;
                 }
             } else {
                 Log.e(TAG, "didn't find SSID " + requestName);
             }
-            sendMessage(iface, SUP_REQUEST_IDENTITY, eventLogCounter, reason, SSID);
+            broadcastNetworkIdentityRequestEvent(iface, networkId, SSID);
         } else if (requestName.startsWith(SIM_STR)) {
             Matcher matchGsm = mRequestGsmAuthPattern.matcher(requestName);
             Matcher matchUmts = mRequestUmtsAuthPattern.matcher(requestName);
-            SimAuthRequestData data = new SimAuthRequestData();
             if (matchGsm.find()) {
-                data.networkId = Integer.parseInt(matchGsm.group(1));
-                data.protocol = WifiEnterpriseConfig.Eap.SIM;
-                data.ssid = matchGsm.group(4);
-                data.data = matchGsm.group(2).split(":");
-                sendMessage(iface, SUP_REQUEST_SIM_AUTH, data);
+                String[] data = matchGsm.group(2).split(":");
+                broadcastNetworkGsmAuthRequestEvent(iface, Integer.parseInt(matchGsm.group(1)),
+                        matchGsm.group(4), data);
             } else if (matchUmts.find()) {
-                data.networkId = Integer.parseInt(matchUmts.group(1));
-                data.protocol = WifiEnterpriseConfig.Eap.AKA;
-                data.ssid = matchUmts.group(4);
-                data.data = new String[2];
-                data.data[0] = matchUmts.group(2);
-                data.data[1] = matchUmts.group(3);
-                sendMessage(iface, SUP_REQUEST_SIM_AUTH, data);
+                String[] data = {matchUmts.group(2), matchUmts.group(3)};
+                broadcastNetworkUmtsAuthRequestEvent(iface, Integer.parseInt(matchUmts.group(1)),
+                        matchUmts.group(4), data);
             } else {
                 Log.e(TAG, "couldn't parse SIM auth request - " + requestName);
             }
@@ -1423,8 +1472,7 @@ public class WifiMonitor {
         if (newSupplicantState == SupplicantState.INVALID) {
             Log.w(TAG, "Invalid supplicant state: " + newState);
         }
-        sendMessage(iface, SUPPLICANT_STATE_CHANGE_EVENT, eventLogCounter, 0,
-                new StateChangeResult(networkId, wifiSsid, BSSID, newSupplicantState));
+        broadcastSupplicantStateChangeEvent(iface, networkId, wifiSsid, BSSID, newSupplicantState);
     }
 
     private void handleNetworkStateChange(NetworkInfo.DetailedState newState, String data,
@@ -1449,7 +1497,7 @@ public class WifiMonitor {
                     networkId = -1;
                 }
             }
-            sendMessage(iface, NETWORK_CONNECTION_EVENT, networkId, reason, BSSID);
+            broadcastNetworkConnectionEvent(iface, networkId, BSSID);
         } else if (newState == NetworkInfo.DetailedState.DISCONNECTED) {
             match = mDisconnectedEventPattern.matcher(data);
             if (!match.find()) {
@@ -1473,7 +1521,233 @@ public class WifiMonitor {
                 Log.d(TAG, "WifiMonitor notify network disconnect: " + BSSID
                         + " reason=" + Integer.toString(reason));
             }
-            sendMessage(iface, NETWORK_DISCONNECTION_EVENT, local, reason, BSSID);
+            broadcastNetworkDisconnectionEvent(iface, local, reason, BSSID);
         }
+    }
+
+    /**
+     * Broadcast the WPS fail event to all the handlers registered for this event.
+     *
+     * @param iface Name of iface on which this occurred.
+     * @param cfgError Configuration error code.
+     * @param vendorErrorCode Vendor specific error indication code.
+     */
+    public void broadcastWpsFailEvent(String iface, int cfgError, int vendorErrorCode) {
+        int reason = 0;
+        switch(vendorErrorCode) {
+            case REASON_TKIP_ONLY_PROHIBITED:
+                sendMessage(iface, WPS_FAIL_EVENT, WifiManager.WPS_TKIP_ONLY_PROHIBITED);
+                return;
+            case REASON_WEP_PROHIBITED:
+                sendMessage(iface, WPS_FAIL_EVENT, WifiManager.WPS_WEP_PROHIBITED);
+                return;
+            default:
+                reason = vendorErrorCode;
+                break;
+        }
+        switch(cfgError) {
+            case CONFIG_AUTH_FAILURE:
+                sendMessage(iface, WPS_FAIL_EVENT, WifiManager.WPS_AUTH_FAILURE);
+                return;
+            case CONFIG_MULTIPLE_PBC_DETECTED:
+                sendMessage(iface, WPS_FAIL_EVENT, WifiManager.WPS_OVERLAP_ERROR);
+                return;
+            default:
+                if (reason == 0) {
+                    reason = cfgError;
+                }
+                break;
+        }
+        //For all other errors, return a generic internal error
+        sendMessage(iface, WPS_FAIL_EVENT, WifiManager.ERROR, reason);
+    }
+
+   /**
+    * Broadcast the WPS succes event to all the handlers registered for this event.
+    *
+    * @param iface Name of iface on which this occurred.
+    */
+    public void broadcastWpsSuccessEvent(String iface) {
+        sendMessage(iface, WPS_SUCCESS_EVENT);
+    }
+
+    /**
+     * Broadcast the WPS overlap event to all the handlers registered for this event.
+     *
+     * @param iface Name of iface on which this occurred.
+     */
+    public void broadcastWpsOverlapEvent(String iface) {
+        sendMessage(iface, WPS_OVERLAP_EVENT);
+    }
+
+    /**
+     * Broadcast the WPS timeout event to all the handlers registered for this event.
+     *
+     * @param iface Name of iface on which this occurred.
+     */
+    public void broadcastWpsTimeoutEvent(String iface) {
+        sendMessage(iface, WPS_TIMEOUT_EVENT);
+    }
+
+    /**
+     * Broadcast the ANQP done event to all the handlers registered for this event.
+     *
+     * @param iface Name of iface on which this occurred.
+     * @param anqpEvent ANQP result retrieved.
+     */
+    public void broadcastAnqpDoneEvent(String iface, AnqpEvent anqpEvent) {
+        sendMessage(iface, ANQP_DONE_EVENT, anqpEvent);
+    }
+
+    /**
+     * Broadcast the Icon done event to all the handlers registered for this event.
+     *
+     * @param iface Name of iface on which this occurred.
+     * @param iconEvent Instance of IconEvent containing the icon data retrieved.
+     */
+    public void broadcastIconDoneEvent(String iface, IconEvent iconEvent) {
+        sendMessage(iface, RX_HS20_ANQP_ICON_EVENT, iconEvent);
+    }
+
+    /**
+     * Broadcast the WNM event to all the handlers registered for this event.
+     *
+     * @param iface Name of iface on which this occurred.
+     * @param wnmData Instance of WnmData containing the event data.
+     */
+    public void broadcastWnmEvent(String iface, WnmData wnmData) {
+        sendMessage(iface, HS20_REMEDIATION_EVENT, wnmData);
+    }
+
+    /**
+     * Broadcast the Network identity request event to all the handlers registered for this event.
+     *
+     * @param iface Name of iface on which this occurred.
+     * @param networkId ID of the network in wpa_supplicant.
+     * @param ssid SSID of the network.
+     */
+    public void broadcastNetworkIdentityRequestEvent(String iface, int networkId, String ssid) {
+        sendMessage(iface, SUP_REQUEST_IDENTITY, 0, networkId, ssid);
+    }
+
+    /**
+     * Broadcast the Network Gsm Sim auth request event to all the handlers registered for this
+     * event.
+     *
+     * @param iface Name of iface on which this occurred.
+     * @param networkId ID of the network in wpa_supplicant.
+     * @param ssid SSID of the network.
+     * @param data Accompanying event data.
+     */
+    public void broadcastNetworkGsmAuthRequestEvent(String iface, int networkId, String ssid,
+                                                    String[] data) {
+        sendMessage(iface, SUP_REQUEST_SIM_AUTH,
+                new SimAuthRequestData(networkId, WifiEnterpriseConfig.Eap.SIM, ssid, data));
+    }
+
+    /**
+     * Broadcast the Network Umts Sim auth request event to all the handlers registered for this
+     * event.
+     *
+     * @param iface Name of iface on which this occurred.
+     * @param networkId ID of the network in wpa_supplicant.
+     * @param ssid SSID of the network.
+     * @param data Accompanying event data.
+     */
+    public void broadcastNetworkUmtsAuthRequestEvent(String iface, int networkId, String ssid,
+                                                     String[] data) {
+        sendMessage(iface, SUP_REQUEST_SIM_AUTH,
+                new SimAuthRequestData(networkId, WifiEnterpriseConfig.Eap.AKA, ssid, data));
+    }
+
+    /**
+     * Broadcast the authentication failure event to all the handlers registered for this event.
+     *
+     * @param iface Name of iface on which this occurred.
+     * @param reason Reason for authentication failure. This has to be one of the
+     *               |AUTHENTICATION_FAILURE_REASON_*| reason codes.
+     */
+    public void broadcastAuthenticationFailureEvent(String iface, int reason) {
+        sendMessage(iface, AUTHENTICATION_FAILURE_EVENT, 0, reason);
+    }
+
+    /**
+     * Broadcast the association rejection event to all the handlers registered for this event.
+     *
+     * @param iface Name of iface on which this occurred.
+     * @param status Status code for association rejection.
+     * @param bssid BSSID of the access point from which we received the reject.
+     */
+    public void broadcastAssociationRejectionEvent(String iface, int status, String bssid) {
+        sendMessage(iface, ASSOCIATION_REJECTION_EVENT, 0, status, bssid);
+    }
+
+    /**
+     * Broadcast the association success event to all the handlers registered for this event.
+     *
+     * @param iface Name of iface on which this occurred.
+     * @param bssid BSSID of the access point from which we received the reject.
+     */
+    public void broadcastAssociationSuccesfulEvent(String iface, String bssid) {
+        sendMessage(iface, WifiStateMachine.CMD_ASSOCIATED_BSSID, 0, 0, bssid);
+    }
+
+    /**
+     * Broadcast the network connection event to all the handlers registered for this event.
+     *
+     * @param iface Name of iface on which this occurred.
+     * @param networkId ID of the network in wpa_supplicant.
+     * @param bssid BSSID of the access point.
+     */
+    public void broadcastNetworkConnectionEvent(String iface, int networkId, String bssid) {
+        sendMessage(iface, NETWORK_CONNECTION_EVENT, networkId, 0, bssid);
+    }
+
+    /**
+     * Broadcast the network disconnection event to all the handlers registered for this event.
+     *
+     * @param iface Name of iface on which this occurred.
+     * @param local Whether the disconnect was locally triggered.
+     * @param reason Disconnect reason code.
+     * @param bssid BSSID of the access point.
+     */
+    public void broadcastNetworkDisconnectionEvent(String iface, int local, int reason,
+                                                   String bssid) {
+        sendMessage(iface, NETWORK_DISCONNECTION_EVENT, local, reason, bssid);
+    }
+
+    /**
+     * Broadcast the supplicant state change event to all the handlers registered for this event.
+     *
+     * @param iface Name of iface on which this occurred.
+     * @param networkId ID of the network in wpa_supplicant.
+     * @param bssid BSSID of the access point.
+     * @param newSupplicantState New supplicant state.
+     */
+    public void broadcastSupplicantStateChangeEvent(String iface, int networkId, WifiSsid wifiSsid,
+                                                    String bssid,
+                                                    SupplicantState newSupplicantState) {
+        sendMessage(iface, SUPPLICANT_STATE_CHANGE_EVENT, 0, 0,
+                new StateChangeResult(networkId, wifiSsid, bssid, newSupplicantState));
+    }
+
+    /**
+     * Broadcast the connection to wpa_supplicant event to all the handlers registered for
+     * this event.
+     *
+     * @param iface Name of iface on which this occurred.
+     */
+    public void broadcastSupplicantConnectionEvent(String iface) {
+        sendMessage(iface, SUP_CONNECTION_EVENT);
+    }
+
+    /**
+     * Broadcast the loss of connection to wpa_supplicant event to all the handlers registered for
+     * this event.
+     *
+     * @param iface Name of iface on which this occurred.
+     */
+    public void broadcastSupplicantDisconnectionEvent(String iface) {
+        sendMessage(iface, SUP_DISCONNECTION_EVENT);
     }
 }

@@ -25,6 +25,7 @@ import android.net.wifi.WifiConfiguration;
 import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiNetworkScoreCache;
 import android.net.wifi.WifiScanner;
+import android.os.BatteryStats;
 import android.os.HandlerThread;
 import android.os.IBinder;
 import android.os.INetworkManagementService;
@@ -38,6 +39,7 @@ import android.telephony.TelephonyManager;
 import android.util.LocalLog;
 
 import com.android.internal.R;
+import com.android.internal.app.IBatteryStats;
 import com.android.server.am.BatteryStatsService;
 import com.android.server.net.DelayedDiskWrite;
 import com.android.server.net.IpConfigStore;
@@ -108,6 +110,8 @@ public class WifiInjector {
     private final SIMAccessor mSimAccessor;
     private HandlerThread mWifiAwareHandlerThread;
     private HalDeviceManager mHalDeviceManager;
+    private final IBatteryStats mBatteryStats;
+    private final WifiStateTracker mWifiStateTracker;
 
     private final boolean mUseRealLogger;
 
@@ -132,7 +136,9 @@ public class WifiInjector {
         mNetworkScoreManager = mContext.getSystemService(NetworkScoreManager.class);
         mWifiPermissionsUtil = new WifiPermissionsUtil(mWifiPermissionsWrapper, mContext,
                 mSettingsStore, UserManager.get(mContext), mNetworkScoreManager, this);
-
+        mBatteryStats = IBatteryStats.Stub.asInterface(mFrameworkFacade.getService(
+                BatteryStats.SERVICE_NAME));
+        mWifiStateTracker = new WifiStateTracker(mBatteryStats);
         // Now create and start handler threads
         mWifiServiceHandlerThread = new HandlerThread("WifiService");
         mWifiServiceHandlerThread.start();
@@ -153,7 +159,7 @@ public class WifiInjector {
         // Modules interacting with Native.
         mHalDeviceManager = new HalDeviceManager();
         mWifiVendorHal = new WifiVendorHal(mHalDeviceManager, mWifiStateMachineHandlerThread);
-        mSupplicantStaIfaceHal = new SupplicantStaIfaceHal(mWifiStateMachineHandlerThread);
+        mSupplicantStaIfaceHal = new SupplicantStaIfaceHal(mContext, WifiMonitor.getInstance());
         mWificondControl = new WificondControl(this);
         mSupplicantP2pIfaceHal = new SupplicantP2pIfaceHal();
         mWifiNative = WifiNative.getWlanNativeInterface();
@@ -178,9 +184,10 @@ public class WifiInjector {
         mWifiNetworkHistory = new WifiNetworkHistory(mContext, mWifiNative.getLocalLog(), writer);
         mWifiSupplicantControl = new WifiSupplicantControl(
                 TelephonyManager.from(mContext), mWifiNative, mWifiNative.getLocalLog());
+        mWifiNative.setWifiSupplicantControl(mWifiSupplicantControl);
         mIpConfigStore = new IpConfigStore(writer);
         mWifiConfigStoreLegacy = new WifiConfigStoreLegacy(
-                mWifiNetworkHistory, mWifiSupplicantControl, mIpConfigStore);
+                mWifiNetworkHistory, mWifiNative, mIpConfigStore);
         // Config Manager
         mWifiConfigManager = new WifiConfigManager(mContext, mFrameworkFacade, mClock,
                 UserManager.get(mContext), TelephonyManager.from(mContext),
@@ -199,7 +206,7 @@ public class WifiInjector {
                 localLog, externalScoreEvaluator);
         mSimAccessor = new SIMAccessor(mContext);
         mPasspointManager = new PasspointManager(mContext, mWifiNative, mWifiKeyStore, mClock,
-                mSimAccessor, new PasspointObjectFactory());
+                mSimAccessor, new PasspointObjectFactory(), mWifiConfigManager, mWifiConfigStore);
         mPasspointNetworkEvaluator = new PasspointNetworkEvaluator(
                 mPasspointManager, mWifiConfigManager, localLog);
         mWifiStateMachine = new WifiStateMachine(mContext, mFrameworkFacade,
@@ -312,10 +319,6 @@ public class WifiInjector {
         return mWifiMulticastLockManager;
     }
 
-    public WifiSupplicantControl getWifiSupplicantControl() {
-        return mWifiSupplicantControl;
-    }
-
     public WifiConfigManager getWifiConfigManager() {
         return mWifiConfigManager;
     }
@@ -327,6 +330,10 @@ public class WifiInjector {
     public TelephonyManager makeTelephonyManager() {
         // may not be available when WiFi starts
         return (TelephonyManager) mContext.getSystemService(Context.TELEPHONY_SERVICE);
+    }
+
+    public WifiStateTracker getWifiStateTracker() {
+        return mWifiStateTracker;
     }
 
     public IWificond makeWificond() {

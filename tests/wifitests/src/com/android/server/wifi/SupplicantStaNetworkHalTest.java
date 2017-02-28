@@ -16,22 +16,29 @@
 package com.android.server.wifi;
 
 import static org.junit.Assert.*;
+import static org.mockito.Matchers.eq;
 import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import android.app.test.MockAnswerUtil.AnswerWithArguments;
+import android.content.Context;
 import android.hardware.wifi.supplicant.V1_0.ISupplicantNetwork;
 import android.hardware.wifi.supplicant.V1_0.ISupplicantStaNetwork;
+import android.hardware.wifi.supplicant.V1_0.ISupplicantStaNetworkCallback;
+import android.hardware.wifi.supplicant.V1_0.ISupplicantStaNetworkCallback
+        .NetworkRequestEapSimGsmAuthParams;
+import android.hardware.wifi.supplicant.V1_0.ISupplicantStaNetworkCallback
+        .NetworkRequestEapSimUmtsAuthParams;
 import android.hardware.wifi.supplicant.V1_0.SupplicantStatus;
 import android.hardware.wifi.supplicant.V1_0.SupplicantStatusCode;
 import android.net.wifi.WifiConfiguration;
 import android.net.wifi.WifiEnterpriseConfig;
-import android.os.HandlerThread;
 import android.os.RemoteException;
-import android.os.test.TestLooper;
 import android.text.TextUtils;
 
+import com.android.internal.R;
 import com.android.server.wifi.util.NativeUtil;
 
 import org.junit.Before;
@@ -42,33 +49,35 @@ import org.mockito.MockitoAnnotations;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Random;
 
 /**
  * Unit tests for SupplicantStaNetworkHal
  */
 public class SupplicantStaNetworkHalTest {
-    private static final String TAG = "SupplicantStaNetworkHalTest";
+    private static final String IFACE_NAME = "wlan0";
 
     private SupplicantStaNetworkHal mSupplicantNetwork;
     private SupplicantStatus mStatusSuccess;
     private SupplicantStatus mStatusFailure;
     @Mock private ISupplicantStaNetwork mISupplicantStaNetworkMock;
-    @Mock private HandlerThread mHandlerThread;
-    private TestLooper mTestLooper;
+    @Mock private Context mContext;
+    @Mock private WifiMonitor mWifiMonitor;
     private SupplicantNetworkVariables mSupplicantVariables;
+    private MockResources mResources;
+    private ISupplicantStaNetworkCallback mISupplicantStaNetworkCallback;
 
     @Before
     public void setUp() throws Exception {
         MockitoAnnotations.initMocks(this);
-        mTestLooper = new TestLooper();
         mStatusSuccess = createSupplicantStatus(SupplicantStatusCode.SUCCESS);
         mStatusFailure = createSupplicantStatus(SupplicantStatusCode.FAILURE_UNKNOWN);
-        when(mHandlerThread.getLooper()).thenReturn(mTestLooper.getLooper());
         mSupplicantVariables = new SupplicantNetworkVariables();
         setupISupplicantNetworkMock();
 
-        mSupplicantNetwork =
-                new SupplicantStaNetworkHal(mISupplicantStaNetworkMock, mHandlerThread);
+        mResources = new MockResources();
+        when(mContext.getResources()).thenReturn(mResources);
+        createSupplicantStaNetwork();
     }
 
     /**
@@ -89,6 +98,19 @@ public class SupplicantStaNetworkHalTest {
         WifiConfiguration config = WifiConfigurationTestUtil.createPskNetwork();
         config.requirePMF = true;
         testWifiConfigurationSaveLoad(config);
+    }
+
+    /**
+     * Tests the saving of WifiConfiguration to wpa_supplicant removes enclosing quotes of psk
+     * passphrase
+     */
+    @Test
+    public void testPskNetworkWifiConfigurationSaveRemovesPskQuotes() throws Exception {
+        WifiConfiguration config = WifiConfigurationTestUtil.createPskNetwork();
+        config.preSharedKey = "\"quoted_psd\"";
+        assertTrue(mSupplicantNetwork.saveWifiConfiguration(config));
+        assertEquals(mSupplicantVariables.pskPassphrase,
+                NativeUtil.removeEnclosingQuotes(config.preSharedKey));
     }
 
     /**
@@ -132,6 +154,17 @@ public class SupplicantStaNetworkHalTest {
         config.enterpriseConfig =
                 WifiConfigurationTestUtil.createTLSWifiEnterpriseConfigWithNonePhase2();
         config.enterpriseConfig.setClientCertificateAlias("test_alias");
+        testWifiConfigurationSaveLoad(config);
+    }
+
+    /**
+     * Tests the saving of WifiConfiguration to wpa_supplicant.
+     */
+    @Test
+    public void testEapTlsAkaNetworkWifiConfigurationSaveLoad() throws Exception {
+        WifiConfiguration config = WifiConfigurationTestUtil.createEapNetwork();
+        config.enterpriseConfig =
+                WifiConfigurationTestUtil.createTLSWifiEnterpriseConfigWithAkaPhase2();
         testWifiConfigurationSaveLoad(config);
     }
 
@@ -545,6 +578,155 @@ public class SupplicantStaNetworkHalTest {
         assertTrue(mSupplicantNetwork.sendNetworkEapIdentityResponse(identityStr));
     }
 
+    /**
+     * Tests the addition of FT flags when the device supports it.
+     */
+    @Test
+    public void testAddFtPskFlags() throws Exception {
+        mResources.setBoolean(R.bool.config_wifi_fast_bss_transition_enabled, true);
+        createSupplicantStaNetwork();
+
+        WifiConfiguration config = WifiConfigurationTestUtil.createPskNetwork();
+        assertTrue(mSupplicantNetwork.saveWifiConfiguration(config));
+
+        // Check the supplicant variables to ensure that we have added the FT flags.
+        assertTrue((mSupplicantVariables.keyMgmtMask & ISupplicantStaNetwork.KeyMgmtMask.FT_PSK)
+                == ISupplicantStaNetwork.KeyMgmtMask.FT_PSK);
+
+        WifiConfiguration loadConfig = new WifiConfiguration();
+        Map<String, String> networkExtras = new HashMap<>();
+        assertTrue(mSupplicantNetwork.loadWifiConfiguration(loadConfig, networkExtras));
+        // The FT flags should be stripped out when reading it back.
+        WifiConfigurationTestUtil.assertConfigurationEqualForSupplicant(config, loadConfig);
+    }
+
+    /**
+     * Tests the addition of FT flags when the device supports it.
+     */
+    @Test
+    public void testAddFtEapFlags() throws Exception {
+        mResources.setBoolean(R.bool.config_wifi_fast_bss_transition_enabled, true);
+        createSupplicantStaNetwork();
+
+        WifiConfiguration config = WifiConfigurationTestUtil.createEapNetwork();
+        assertTrue(mSupplicantNetwork.saveWifiConfiguration(config));
+
+        // Check the supplicant variables to ensure that we have added the FT flags.
+        assertTrue((mSupplicantVariables.keyMgmtMask & ISupplicantStaNetwork.KeyMgmtMask.FT_EAP)
+                == ISupplicantStaNetwork.KeyMgmtMask.FT_EAP);
+
+        WifiConfiguration loadConfig = new WifiConfiguration();
+        Map<String, String> networkExtras = new HashMap<>();
+        assertTrue(mSupplicantNetwork.loadWifiConfiguration(loadConfig, networkExtras));
+        // The FT flags should be stripped out when reading it back.
+        WifiConfigurationTestUtil.assertConfigurationEqualForSupplicant(config, loadConfig);
+    }
+
+    /**
+     * Tests the retrieval of WPS NFC token.
+     */
+    @Test
+    public void testGetWpsNfcConfigurationToken() throws Exception {
+        final ArrayList<Byte> token = new ArrayList<>();
+        token.add(Byte.valueOf((byte) 0x45));
+        token.add(Byte.valueOf((byte) 0x34));
+
+        doAnswer(new AnswerWithArguments() {
+            public void answer(ISupplicantStaNetwork.getWpsNfcConfigurationTokenCallback cb)
+                    throws RemoteException {
+                cb.onValues(mStatusSuccess, token);
+            }
+        }).when(mISupplicantStaNetworkMock)
+                .getWpsNfcConfigurationToken(
+                        any(ISupplicantStaNetwork.getWpsNfcConfigurationTokenCallback.class));
+
+        assertEquals("4534", mSupplicantNetwork.getWpsNfcConfigurationToken());
+    }
+
+    /**
+     * Tests that callback registration failure triggers a failure in saving network config.
+     */
+    @Test
+    public void testSaveFailureDueToCallbackReg() throws Exception {
+        when(mISupplicantStaNetworkMock.registerCallback(any(ISupplicantStaNetworkCallback.class)))
+                .thenReturn(mStatusFailure);
+        WifiConfiguration config = WifiConfigurationTestUtil.createPskNetwork();
+        assertFalse(mSupplicantNetwork.saveWifiConfiguration(config));
+    }
+
+    /**
+     * Tests the network gsm auth callback.
+     */
+    @Test
+    public void testNetworkEapGsmAuthCallback() throws Exception {
+        WifiConfiguration config = WifiConfigurationTestUtil.createPskNetwork();
+        assertTrue(mSupplicantNetwork.saveWifiConfiguration(config));
+        assertNotNull(mISupplicantStaNetworkCallback);
+
+        // Now trigger eap gsm callback and ensure that the event is broadcast via WifiMonitor.
+        NetworkRequestEapSimGsmAuthParams params = new NetworkRequestEapSimGsmAuthParams();
+        Random random = new Random();
+        byte[] rand1 = new byte[16];
+        byte[] rand2 = new byte[16];
+        byte[] rand3 = new byte[16];
+        random.nextBytes(rand1);
+        random.nextBytes(rand2);
+        random.nextBytes(rand3);
+        params.rands.add(rand1);
+        params.rands.add(rand2);
+        params.rands.add(rand3);
+
+        String[] expectedRands = {
+                NativeUtil.hexStringFromByteArray(rand1), NativeUtil.hexStringFromByteArray(rand2),
+                NativeUtil.hexStringFromByteArray(rand3)
+        };
+
+        mISupplicantStaNetworkCallback.onNetworkEapSimGsmAuthRequest(params);
+        verify(mWifiMonitor).broadcastNetworkGsmAuthRequestEvent(
+                eq(IFACE_NAME), eq(config.networkId), eq(config.SSID), eq(expectedRands));
+    }
+
+    /**
+     * Tests the network umts auth callback.
+     */
+    @Test
+    public void testNetworkEapUmtsAuthCallback() throws Exception {
+        WifiConfiguration config = WifiConfigurationTestUtil.createPskNetwork();
+        assertTrue(mSupplicantNetwork.saveWifiConfiguration(config));
+        assertNotNull(mISupplicantStaNetworkCallback);
+
+        // Now trigger eap gsm callback and ensure that the event is broadcast via WifiMonitor.
+        NetworkRequestEapSimUmtsAuthParams params = new NetworkRequestEapSimUmtsAuthParams();
+        Random random = new Random();
+        random.nextBytes(params.autn);
+        random.nextBytes(params.rand);
+
+        String[] expectedRands = {
+                NativeUtil.hexStringFromByteArray(params.autn),
+                NativeUtil.hexStringFromByteArray(params.rand)
+        };
+
+        mISupplicantStaNetworkCallback.onNetworkEapSimUmtsAuthRequest(params);
+        verify(mWifiMonitor).broadcastNetworkUmtsAuthRequestEvent(
+                eq(IFACE_NAME), eq(config.networkId), eq(config.SSID), eq(expectedRands));
+    }
+
+    /**
+     * Tests the network identity callback.
+     */
+    @Test
+    public void testNetworkIdentityCallback() throws Exception {
+        WifiConfiguration config = WifiConfigurationTestUtil.createPskNetwork();
+        assertTrue(mSupplicantNetwork.saveWifiConfiguration(config));
+        assertNotNull(mISupplicantStaNetworkCallback);
+
+        // Now trigger identity request callback and ensure that the event is broadcast via
+        // WifiMonitor.
+        mISupplicantStaNetworkCallback.onNetworkEapIdentityRequest();
+        verify(mWifiMonitor).broadcastNetworkIdentityRequestEvent(
+                eq(IFACE_NAME), eq(config.networkId), eq(config.SSID));
+    }
+
     private void testWifiConfigurationSaveLoad(WifiConfiguration config) {
         assertTrue(mSupplicantNetwork.saveWifiConfiguration(config));
         WifiConfiguration loadConfig = new WifiConfiguration();
@@ -944,17 +1126,17 @@ public class SupplicantStaNetworkHalTest {
         /** EAP Private Key */
         doAnswer(new AnswerWithArguments() {
             public SupplicantStatus answer(String key) throws RemoteException {
-                mSupplicantVariables.eapPrivateKey = key;
+                mSupplicantVariables.eapPrivateKeyId = key;
                 return mStatusSuccess;
             }
-        }).when(mISupplicantStaNetworkMock).setEapPrivateKey(any(String.class));
+        }).when(mISupplicantStaNetworkMock).setEapPrivateKeyId(any(String.class));
         doAnswer(new AnswerWithArguments() {
-            public void answer(ISupplicantStaNetwork.getEapPrivateKeyCallback cb)
+            public void answer(ISupplicantStaNetwork.getEapPrivateKeyIdCallback cb)
                     throws RemoteException {
-                cb.onValues(mStatusSuccess, mSupplicantVariables.eapPrivateKey);
+                cb.onValues(mStatusSuccess, mSupplicantVariables.eapPrivateKeyId);
             }
         }).when(mISupplicantStaNetworkMock)
-                .getEapPrivateKey(any(ISupplicantStaNetwork.getEapPrivateKeyCallback.class));
+                .getEapPrivateKeyId(any(ISupplicantStaNetwork.getEapPrivateKeyIdCallback.class));
 
         /** EAP Alt Subject Match */
         doAnswer(new AnswerWithArguments() {
@@ -1010,12 +1192,31 @@ public class SupplicantStaNetworkHalTest {
                 return mStatusSuccess;
             }
         }).when(mISupplicantStaNetworkMock).setProactiveKeyCaching(any(boolean.class));
+
+        /** Callback registeration */
+        doAnswer(new AnswerWithArguments() {
+            public SupplicantStatus answer(ISupplicantStaNetworkCallback cb)
+                    throws RemoteException {
+                mISupplicantStaNetworkCallback = cb;
+                return mStatusSuccess;
+            }
+        }).when(mISupplicantStaNetworkMock)
+                .registerCallback(any(ISupplicantStaNetworkCallback.class));
     }
 
     private SupplicantStatus createSupplicantStatus(int code) {
         SupplicantStatus status = new SupplicantStatus();
         status.code = code;
         return status;
+    }
+
+    /**
+     * Need this for tests which wants to manipulate context before creating the instance.
+     */
+    private void createSupplicantStaNetwork() {
+        mSupplicantNetwork =
+                new SupplicantStaNetworkHal(
+                        mISupplicantStaNetworkMock, IFACE_NAME, mContext, mWifiMonitor);
     }
 
     // Private class to to store/inspect values set via the HIDL mock.
@@ -1043,7 +1244,7 @@ public class SupplicantStaNetworkHalTest {
         public String eapCACert;
         public String eapCAPath;
         public String eapClientCert;
-        public String eapPrivateKey;
+        public String eapPrivateKeyId;
         public String eapSubjectMatch;
         public String eapAltSubjectMatch;
         public boolean eapEngine;

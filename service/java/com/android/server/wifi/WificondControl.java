@@ -38,6 +38,7 @@ import java.util.ArrayList;
  * NOTE: This class should only be used from WifiNative.
  */
 public class WificondControl {
+    private boolean mVerboseLoggingEnabled = false;
 
     private static final String TAG = "WificondControl";
     private static final int MAC_ADDR_LEN = 6;
@@ -51,12 +52,20 @@ public class WificondControl {
         mWifiInjector = wifiInjector;
     }
 
+    /** Enable or disable verbose logging of WificondControl.
+     *  @param enable True to enable verbose logging. False to disable verbose logging.
+     */
+    public void enableVerboseLogging(boolean enable) {
+        mVerboseLoggingEnabled = enable;
+    }
+
     /**
     * Setup driver for client mode via wificond.
     * @return An IClientInterface as wificond client interface binder handler.
     * Returns null on failure.
     */
     public IClientInterface setupDriverForClientMode() {
+        Log.d(TAG, "Setting up driver for client mode");
         mWificond = mWifiInjector.makeWificond();
         if (mWificond == null) {
             Log.e(TAG, "Failed to get reference to wificond");
@@ -94,6 +103,7 @@ public class WificondControl {
     * Returns null on failure.
     */
     public IApInterface setupDriverForSoftApMode() {
+        Log.d(TAG, "Setting up driver for soft ap mode");
         mWificond = mWifiInjector.makeWificond();
         if (mWificond == null) {
             Log.e(TAG, "Failed to get reference to wificond");
@@ -126,6 +136,7 @@ public class WificondControl {
     * @return Returns true on success.
     */
     public boolean tearDownInterfaces() {
+        Log.d(TAG, "tearing down interfaces in wificond");
         // Explicitly refresh the wificodn handler because |tearDownInterfaces()|
         // could be used to cleanup before we setup any interfaces.
         mWificond = mWifiInjector.makeWificond();
@@ -197,7 +208,7 @@ public class WificondControl {
                 return null;
             }
         } catch (RemoteException e) {
-            Log.e(TAG, "Failed to do signal polling  due to remote exception");
+            Log.e(TAG, "Failed to do signal polling due to remote exception");
             return null;
         }
         WifiNative.SignalPollResult pollResult = new WifiNative.SignalPollResult();
@@ -226,7 +237,7 @@ public class WificondControl {
                 return null;
             }
         } catch (RemoteException e) {
-            Log.e(TAG, "Failed to do signal polling  due to remote exception");
+            Log.e(TAG, "Failed to do signal polling due to remote exception");
             return null;
         }
         WifiNative.TxPacketCounters counters = new WifiNative.TxPacketCounters();
@@ -271,6 +282,10 @@ public class WificondControl {
         } catch (RemoteException e1) {
             Log.e(TAG, "Failed to create ScanDetail ArrayList");
         }
+        if (mVerboseLoggingEnabled) {
+            Log.d(TAG, "get " + results.size() + " scan results from wificond");
+        }
+
         return results;
     }
 }

@@ -303,7 +303,6 @@ public class WifiStateMachineTest {
     TestIpManager mTestIpManager;
     TestLooper mLooper;
 
-    @Mock WifiNative mWifiNative;
     @Mock WifiScanner mWifiScanner;
     @Mock SupplicantStateTracker mSupplicantStateTracker;
     @Mock WifiMetrics mWifiMetrics;
@@ -321,9 +320,10 @@ public class WifiStateMachineTest {
     @Mock IBinder mApInterfaceBinder;
     @Mock IBinder mClientInterfaceBinder;
     @Mock WifiConfigManager mWifiConfigManager;
-    @Mock WifiSupplicantControl mWifiSupplicantControl;
+    @Mock WifiNative mWifiNative;
     @Mock WifiConnectivityManager mWifiConnectivityManager;
     @Mock SoftApManager mSoftApManager;
+    @Mock WifiStateTracker mWifiStateTracker;
 
     public WifiStateMachineTest() throws Exception {
     }
@@ -352,7 +352,6 @@ public class WifiStateMachineTest {
                 mock(BaseWifiDiagnostics.class));
         when(mWifiInjector.makeWificond()).thenReturn(mWificond);
         when(mWifiInjector.getWifiConfigManager()).thenReturn(mWifiConfigManager);
-        when(mWifiInjector.getWifiSupplicantControl()).thenReturn(mWifiSupplicantControl);
         when(mWifiInjector.getWifiScanner()).thenReturn(mWifiScanner);
         when(mWifiInjector.getWifiNetworkSelector()).thenReturn(mock(WifiNetworkSelector.class));
         when(mWifiInjector.makeWifiConnectivityManager(any(WifiInfo.class), anyBoolean()))
@@ -364,10 +363,11 @@ public class WifiStateMachineTest {
 
         when(mWifiNative.setupDriverForClientMode()).thenReturn(mClientInterface);
         when(mWifiNative.setupDriverForSoftApMode()).thenReturn(mApInterface);
+        when(mWifiInjector.getWifiStateTracker()).thenReturn(mWifiStateTracker);
         when(mWifiNative.getInterfaceName()).thenReturn("mockWlan");
         when(mWifiNative.enableSupplicant()).thenReturn(true);
         when(mWifiNative.disableSupplicant()).thenReturn(true);
-        when(mWifiSupplicantControl.getFrameworkNetworkId(anyInt())).thenReturn(0);
+        when(mWifiNative.getFrameworkNetworkId(anyInt())).thenReturn(0);
 
 
         FrameworkFacade factory = getFrameworkFacade();
@@ -594,6 +594,58 @@ public class WifiStateMachineTest {
         mLooper.dispatchAll();
 
         assertEquals("ScanModeState", getCurrentState().getName());
+    }
+
+    /**
+     * Verifies that configs can be removed when in client mode.
+     */
+    @Test
+    public void canRemoveNetworkConfigInClientMode() throws Exception {
+        boolean result;
+        when(mWifiConfigManager.removeNetwork(eq(0), anyInt())).thenReturn(true);
+        addNetworkAndVerifySuccess();
+        mLooper.startAutoDispatch();
+        result = mWsm.syncRemoveNetwork(mWsmAsyncChannel, 0);
+        mLooper.stopAutoDispatch();
+        assertTrue(result);
+    }
+
+    /**
+     * Verifies that configs can be removed when not in client mode.
+     */
+    @Test
+    public void canRemoveNetworkConfigWhenWifiDisabed() {
+        boolean result;
+        when(mWifiConfigManager.removeNetwork(eq(0), anyInt())).thenReturn(true);
+        mLooper.startAutoDispatch();
+        result = mWsm.syncRemoveNetwork(mWsmAsyncChannel, 0);
+        mLooper.stopAutoDispatch();
+
+        assertTrue(result);
+        verify(mWifiConfigManager).removeNetwork(anyInt(), anyInt());
+    }
+
+    /**
+     * Verifies that configs can be forgotten when in client mode.
+     */
+    @Test
+    public void canForgetNetworkConfigInClientMode() throws Exception {
+        when(mWifiConfigManager.removeNetwork(eq(0), anyInt())).thenReturn(true);
+        addNetworkAndVerifySuccess();
+        mWsm.sendMessage(WifiManager.FORGET_NETWORK, 0, MANAGED_PROFILE_UID);
+        mLooper.dispatchAll();
+        verify(mWifiConfigManager).removeNetwork(anyInt(), anyInt());
+    }
+
+    /**
+     * Verifies that configs can be removed when not in client mode.
+     */
+    @Test
+    public void canForgetNetworkConfigWhenWifiDisabled() throws Exception {
+        when(mWifiConfigManager.removeNetwork(eq(0), anyInt())).thenReturn(true);
+        mWsm.sendMessage(WifiManager.FORGET_NETWORK, 0, MANAGED_PROFILE_UID);
+        mLooper.dispatchAll();
+        verify(mWifiConfigManager).removeNetwork(anyInt(), anyInt());
     }
 
     private void addNetworkAndVerifySuccess() throws Exception {

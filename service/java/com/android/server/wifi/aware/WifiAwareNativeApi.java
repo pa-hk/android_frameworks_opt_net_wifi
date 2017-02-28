@@ -130,7 +130,6 @@ public class WifiAwareNativeApi {
                 req.configParams.numberOfSubscribeServiceIdsInBeacon = 0;
                 req.configParams.rssiWindowSize = 8;
                 req.configParams.macAddressRandomizationIntervalSec = 1800;
-                req.configParams.acceptRangingRequests = true;
 
                 NanBandSpecificConfig config24 = new NanBandSpecificConfig();
                 config24.rssiClose = 60;
@@ -138,7 +137,15 @@ public class WifiAwareNativeApi {
                 config24.rssiCloseProximity = 60;
                 config24.dwellTimeMs = (byte) 200;
                 config24.scanPeriodSec = 20;
-                config24.validDiscoveryWindowIntervalVal = false;
+                if (configRequest.mDiscoveryWindowInterval[ConfigRequest.NAN_BAND_24GHZ]
+                        == ConfigRequest.DW_INTERVAL_NOT_INIT) {
+                    config24.validDiscoveryWindowIntervalVal = false;
+                } else {
+                    config24.validDiscoveryWindowIntervalVal = true;
+                    config24.discoveryWindowIntervalVal =
+                            (byte) configRequest.mDiscoveryWindowInterval[ConfigRequest
+                                    .NAN_BAND_24GHZ];
+                }
                 req.configParams.bandSpecificConfig[NanBandIndex.NAN_BAND_24GHZ] = config24;
 
                 NanBandSpecificConfig config5 = new NanBandSpecificConfig();
@@ -147,7 +154,15 @@ public class WifiAwareNativeApi {
                 config5.rssiCloseProximity = 60;
                 config5.dwellTimeMs = (byte) 200;
                 config5.scanPeriodSec = 20;
-                config5.validDiscoveryWindowIntervalVal = false;
+                if (configRequest.mDiscoveryWindowInterval[ConfigRequest.NAN_BAND_5GHZ]
+                        == ConfigRequest.DW_INTERVAL_NOT_INIT) {
+                    config5.validDiscoveryWindowIntervalVal = false;
+                } else {
+                    config5.validDiscoveryWindowIntervalVal = true;
+                    config5.discoveryWindowIntervalVal =
+                            (byte) configRequest.mDiscoveryWindowInterval[ConfigRequest
+                                    .NAN_BAND_5GHZ];
+                }
                 req.configParams.bandSpecificConfig[NanBandIndex.NAN_BAND_5GHZ] = config5;
 
                 req.debugConfigs.validClusterIdVals = true;
@@ -183,7 +198,6 @@ public class WifiAwareNativeApi {
                 req.numberOfSubscribeServiceIdsInBeacon = 0;
                 req.rssiWindowSize = 8;
                 req.macAddressRandomizationIntervalSec = 1800;
-                req.acceptRangingRequests = true;
 
                 NanBandSpecificConfig config24 = new NanBandSpecificConfig();
                 config24.rssiClose = 60;
@@ -191,7 +205,15 @@ public class WifiAwareNativeApi {
                 config24.rssiCloseProximity = 60;
                 config24.dwellTimeMs = (byte) 200;
                 config24.scanPeriodSec = 20;
-                config24.validDiscoveryWindowIntervalVal = false;
+                if (configRequest.mDiscoveryWindowInterval[ConfigRequest.NAN_BAND_24GHZ]
+                        == ConfigRequest.DW_INTERVAL_NOT_INIT) {
+                    config24.validDiscoveryWindowIntervalVal = false;
+                } else {
+                    config24.validDiscoveryWindowIntervalVal = true;
+                    config24.discoveryWindowIntervalVal =
+                            (byte) configRequest.mDiscoveryWindowInterval[ConfigRequest
+                                    .NAN_BAND_24GHZ];
+                }
                 req.bandSpecificConfig[NanBandIndex.NAN_BAND_24GHZ] = config24;
 
                 NanBandSpecificConfig config5 = new NanBandSpecificConfig();
@@ -200,7 +222,15 @@ public class WifiAwareNativeApi {
                 config5.rssiCloseProximity = 60;
                 config5.dwellTimeMs = (byte) 200;
                 config5.scanPeriodSec = 20;
-                config5.validDiscoveryWindowIntervalVal = false;
+                if (configRequest.mDiscoveryWindowInterval[ConfigRequest.NAN_BAND_5GHZ]
+                        == ConfigRequest.DW_INTERVAL_NOT_INIT) {
+                    config5.validDiscoveryWindowIntervalVal = false;
+                } else {
+                    config5.validDiscoveryWindowIntervalVal = true;
+                    config5.discoveryWindowIntervalVal =
+                            (byte) configRequest.mDiscoveryWindowInterval[ConfigRequest
+                                    .NAN_BAND_5GHZ];
+                }
                 req.bandSpecificConfig[NanBandIndex.NAN_BAND_5GHZ] = config5;
 
                 status = iface.configRequest(transactionId, req);
@@ -344,6 +374,11 @@ public class WifiAwareNativeApi {
                 !subscribeConfig.mEnableTerminateNotification;
         req.baseConfigs.disableMatchExpirationIndication = true;
         req.baseConfigs.disableFollowupReceivedIndication = false;
+
+        // TODO: configure ranging and security
+        req.baseConfigs.securityEnabledInNdp = false;
+        req.baseConfigs.rangingRequired = false;
+
         req.subscribeType = subscribeConfig.mSubscribeType;
 
         try {

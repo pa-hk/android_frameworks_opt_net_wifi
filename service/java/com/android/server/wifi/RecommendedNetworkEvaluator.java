@@ -33,6 +33,7 @@ import android.os.Looper;
 import android.os.Process;
 import android.provider.Settings;
 import android.text.TextUtils;
+import android.util.ArraySet;
 import android.util.LocalLog;
 import android.util.Pair;
 import android.util.Slog;
@@ -42,6 +43,7 @@ import com.android.server.wifi.util.ScanResultUtil;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 /**
  * {@link WifiNetworkSelector.NetworkEvaluator} implementation that uses
@@ -89,6 +91,7 @@ public class RecommendedNetworkEvaluator implements WifiNetworkSelector.NetworkE
         } else {
             mExternalScoreEvaluator.update(scanDetails);
         }
+        clearNotRecommendedFlag();
     }
 
     private void updateNetworkScoreCache(List<ScanDetail> scanDetails) {
@@ -117,6 +120,14 @@ public class RecommendedNetworkEvaluator implements WifiNetworkSelector.NetworkE
         }
     }
 
+    private void clearNotRecommendedFlag() {
+        List<WifiConfiguration> savedNetworks = mWifiConfigManager.getSavedNetworks();
+        for (int i = 0; i < savedNetworks.size(); i++) {
+            mWifiConfigManager.updateNetworkNotRecommended(
+                    savedNetworks.get(i).networkId, false /* notRecommended*/);
+        }
+    }
+
     @Override
     public WifiConfiguration evaluateNetworks(List<ScanDetail> scanDetails,
             WifiConfiguration currentNetwork, String currentBssid, boolean connected,
@@ -126,7 +137,7 @@ public class RecommendedNetworkEvaluator implements WifiNetworkSelector.NetworkE
             return mExternalScoreEvaluator.evaluateNetworks(scanDetails, currentNetwork,
                     currentBssid, connected, untrustedNetworkAllowed, connectableNetworks);
         }
-        List<WifiConfiguration> availableConfiguredNetworks = new ArrayList<>();
+        Set<WifiConfiguration> availableConfiguredNetworks = new ArraySet<>();
         List<ScanResult> scanResults = new ArrayList<>();
         for (int i = 0; i < scanDetails.size(); i++) {
             ScanDetail scanDetail = scanDetails.get(i);
@@ -147,6 +158,9 @@ public class RecommendedNetworkEvaluator implements WifiNetworkSelector.NetworkE
             }
 
             if (configuredNetwork != null) {
+                if (!configuredNetwork.getNetworkSelectionStatus().isNetworkEnabled()) {
+                    continue;
+                }
                 availableConfiguredNetworks.add(configuredNetwork);
             }
             scanResults.add(scanResult);
@@ -173,7 +187,19 @@ public class RecommendedNetworkEvaluator implements WifiNetworkSelector.NetworkE
                 // TODO: pass in currently recommended network
                 .build();
         RecommendationResult result = mNetworkScoreManager.requestRecommendation(request);
-        if (result == null || result.getWifiConfiguration() == null) {
+        if (result == null) {
+            // Recommendation provider could not be reached.
+            return null;
+        }
+
+        if (result.getWifiConfiguration() == null) {
+            // Recommendation provider recommended not connecting to any network.
+            for (int i = 0; i < availableConfigsArray.length; i++) {
+                if (availableConfigsArray[i].getNetworkSelectionStatus().isNetworkEnabled()) {
+                    mWifiConfigManager.updateNetworkNotRecommended(
+                            availableConfigsArray[i].networkId, true /* notRecommended*/);
+                }
+            }
             return null;
         }
 
