@@ -250,8 +250,10 @@ public class SoftApStateMachine extends StateMachine {
                || (wifiApState == WIFI_AP_STATE_FAILED)) {
             boolean skipUnload = false;
             int wifiState = mWifiStateMachine.syncGetWifiState();
+            int mode = mWifiStateMachine.getOperationalMode();
             if ((wifiState ==  WifiManager.WIFI_STATE_ENABLING) ||
-                    (wifiState == WifiManager.WIFI_STATE_ENABLED)) {
+                    (wifiState == WifiManager.WIFI_STATE_ENABLED) ||
+                     (mode == WifiStateMachine.SCAN_ONLY_WITH_WIFI_OFF_MODE)) {
                 Log.d(TAG, "Avoid unload driver, WIFI_STATE is enabled/enabling");
                 skipUnload = true;
             }
@@ -285,8 +287,10 @@ public class SoftApStateMachine extends StateMachine {
         }
         if (mWifiStateMachine != null) {
             int wifiState = mWifiStateMachine.syncGetWifiState();
+            int mode = mWifiStateMachine.getOperationalMode();
             if ((wifiState == WifiManager.WIFI_STATE_ENABLING) ||
-                (wifiState == WifiManager.WIFI_STATE_ENABLED)) {
+                (wifiState == WifiManager.WIFI_STATE_ENABLED) ||
+                (mode == WifiStateMachine.SCAN_ONLY_WITH_WIFI_OFF_MODE)) {
                 Log.d(TAG,"Wifi is in enabled state skip firmware reload");
                 return true;
             }

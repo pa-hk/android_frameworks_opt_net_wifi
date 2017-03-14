@@ -811,12 +811,22 @@ public class WifiController extends StateMachine {
         public boolean processMessage(Message msg) {
             switch(msg.what) {
                 case CMD_AP_STOPPED:
-                    log("ApDisablingState: CMD_AP_STOPPED->mApStaDisabledState");
-                    transitionTo(mApStaDisabledState);
+                    if (mSettingsStore.isScanAlwaysAvailable()) {
+                        log("ApDisablingState: CMD_AP_STOPPED->mStaDisabledWithScanState");
+                        transitionTo(mStaDisabledWithScanState);
+                    } else {
+                        log("ApDisablingState: CMD_AP_STOPPED->mApStaDisabledState");
+                        transitionTo(mApStaDisabledState);
+                    }
                     break;
                 case CMD_AP_STOP_FAILURE:
-                    log("ApDisablingState: CMD_AP_STOP_FAILURE ->mApStaDisabledState");
-                    transitionTo(mApStaDisabledState);
+                    if (mSettingsStore.isScanAlwaysAvailable()) {
+                        log("ApDisablingState: CMD_AP_STOP_FAILURE->mStaDisabledWithScanState");
+                        transitionTo(mStaDisabledWithScanState);
+                    } else {
+                        log("ApDisablingState: CMD_AP_STOP_FAILURE->mApStaDisabledState");
+                        transitionTo(mApStaDisabledState);
+                    }
                     break;
                 case CMD_SET_AP:
                     log("ApDisablingState: CMD_SET_AP defered");
@@ -989,10 +999,14 @@ public class WifiController extends StateMachine {
                         mHaveDeferredEnable = !mHaveDeferredEnable;
                         break;
                     }
-                    if (DBG) {
-                        Slog.d(TAG,"ApStaEnabledState:CMD_WIFI_TOGGLED:setSupplicantRunning(false)");
+                    if (mSettingsStore.isScanAlwaysAvailable()) {
+                        log("ApStaEnabledState:CMD_WIFI_TOGGLED:set:SCAN_ONLY_WITH_WIFI_OFF_MODE");
+                        mWifiStateMachine.setOperationalMode(WifiStateMachine.SCAN_ONLY_WITH_WIFI_OFF_MODE);
+                    } else {
+                        log("ApStaEnabledState:CMD_WIFI_TOGGLED:setSupplicantRunning(false)");
+                        mWifiStateMachine.setOperationalMode(WifiStateMachine.CONNECT_MODE);
+                        mWifiStateMachine.setSupplicantRunning(false);
                     }
-                    mWifiStateMachine.setSupplicantRunning(false);
                     transitionTo(mApStaDisablingState);
                 }
                 break;
@@ -1008,6 +1022,8 @@ public class WifiController extends StateMachine {
             case CMD_AP_START_FAILURE:
                 transitionTo(mStaEnabledState);
                 break;
+            default :
+                return NOT_HANDLED;
            }
            return HANDLED;
       }
@@ -1160,15 +1176,24 @@ public class WifiController extends StateMachine {
                     break;
                 case CMD_SCAN_ALWAYS_MODE_CHANGED:
                     if (! mSettingsStore.isScanAlwaysAvailable()) {
+                        if (mStaAndApConcurrency) {
+                            mWifiStateMachine.setOperationalMode(WifiStateMachine.CONNECT_MODE);
+                            mWifiStateMachine.setSupplicantRunning(false);
+                        }
                         transitionTo(mApStaDisabledState);
                     }
                     break;
                 case CMD_SET_AP:
-                    // Before starting tethering, turn off supplicant for scan mode
-                    if (msg.arg1 == 1) {
-                        mSettingsStore.setWifiSavedState(WifiSettingsStore.WIFI_DISABLED);
-                        deferMessage(obtainMessage(msg.what, msg.arg1, 1, msg.obj));
-                        transitionTo(mApStaDisabledState);
+                    if (mStaAndApConcurrency) {
+                        mSoftApStateMachine.setHostApRunning((WifiConfiguration) msg.obj, true);
+                        transitionTo(mApEnablingState);
+                    } else {
+                        // Before starting tethering, turn off supplicant for scan mode
+                        if (msg.arg1 == 1) {
+                            mSettingsStore.setWifiSavedState(WifiSettingsStore.WIFI_DISABLED);
+                            deferMessage(obtainMessage(msg.what, msg.arg1, 1, msg.obj));
+                            transitionTo(mApStaDisabledState);
+                        }
                     }
                     break;
                 case CMD_DEFERRED_TOGGLE:
@@ -1250,13 +1275,31 @@ public class WifiController extends StateMachine {
                 case CMD_WIFI_TOGGLED:
                     if (mSettingsStore.isWifiToggleEnabled()) {
                         if (mStaAndApConcurrency) {
-                            Slog.d(TAG,"ApEnabledState:CMD_WIFI_TOGGLED:->ApStaEnablingState");
-                            mWifiStateMachine.setSupplicantRunning(true);
-                            transitionTo(mApStaEnablingState);
+                            if (mSettingsStore.isScanAlwaysAvailable()) {
+                                mWifiStateMachine.setOperationalMode(WifiStateMachine.CONNECT_MODE);
+                                transitionTo(mApStaEnabledState);
+                            } else {
+                                Slog.d(TAG,"ApEnabledState:CMD_WIFI_TOGGLED:->ApStaEnablingState");
+                                mWifiStateMachine.setSupplicantRunning(true);
+                                transitionTo(mApStaEnablingState);
+                            }
                         } else {
                             mWifiStateMachine.setHostApRunning(null, false);
                             mPendingState = mStaEnabledState;
                         }
+                    }
+                    break;
+                case CMD_SCAN_ALWAYS_MODE_CHANGED:
+                    if (!mStaAndApConcurrency) {
+                        return NOT_HANDLED;
+                    }
+                    if (mSettingsStore.isScanAlwaysAvailable()) {
+                        mWifiStateMachine.setSupplicantRunning(true);
+                        mWifiStateMachine.setOperationalMode(WifiStateMachine.SCAN_ONLY_WITH_WIFI_OFF_MODE);
+                        mWifiStateMachine.setDriverStart(true);
+                    } else {
+                        mWifiStateMachine.setOperationalMode(WifiStateMachine.CONNECT_MODE);
+                        mWifiStateMachine.setSupplicantRunning(false);
                     }
                     break;
                 case CMD_SET_AP:
