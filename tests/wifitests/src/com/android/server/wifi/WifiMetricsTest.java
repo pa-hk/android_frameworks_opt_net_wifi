@@ -22,6 +22,7 @@ import static org.mockito.Mockito.*;
 import android.net.NetworkAgent;
 import android.net.wifi.ScanResult;
 import android.net.wifi.WifiConfiguration;
+import android.net.wifi.WifiManager;
 import android.test.suitebuilder.annotation.SmallTest;
 import android.util.Base64;
 
@@ -162,16 +163,18 @@ public class WifiMetricsTest {
         assertDeserializedMetricsCorrect();
     }
 
-    private static final int NUM_SAVED_NETWORKS = 1;
     private static final int NUM_OPEN_NETWORKS = 2;
     private static final int NUM_PERSONAL_NETWORKS = 3;
     private static final int NUM_ENTERPRISE_NETWORKS = 5;
-    private static final int NUM_HIDDEN_NETWORKS = 3;
-    private static final int NUM_PASSPOINT_NETWORKS = 4;
+    private static final int NUM_SAVED_NETWORKS = NUM_OPEN_NETWORKS + NUM_PERSONAL_NETWORKS
+            + NUM_ENTERPRISE_NETWORKS;
+    private static final int NUM_HIDDEN_NETWORKS = NUM_OPEN_NETWORKS;
+    private static final int NUM_PASSPOINT_NETWORKS = NUM_ENTERPRISE_NETWORKS;
+    private static final int NUM_NETWORKS_ADDED_BY_USER = 1;
+    private static final int NUM_NETWORKS_ADDED_BY_APPS = NUM_SAVED_NETWORKS
+            - NUM_NETWORKS_ADDED_BY_USER;
     private static final boolean TEST_VAL_IS_LOCATION_ENABLED = true;
     private static final boolean IS_SCANNING_ALWAYS_ENABLED = true;
-    private static final int NUM_NEWTORKS_ADDED_BY_USER = 13;
-    private static final int NUM_NEWTORKS_ADDED_BY_APPS = 17;
     private static final int NUM_EMPTY_SCAN_RESULTS = 19;
     private static final int NUM_NON_EMPTY_SCAN_RESULTS = 23;
     private static final int NUM_SCAN_UNKNOWN = 1;
@@ -213,6 +216,10 @@ public class WifiMetricsTest {
     private static final int NUM_WIFI_SCORES_TO_INCREMENT = 20;
     private static final int WIFI_SCORE_RANGE_MAX = 60;
     private static final int NUM_OUT_OF_BOUND_ENTRIES = 10;
+    private static final int MAX_NUM_SOFTAP_RETURN_CODES = 3;
+    private static final int NUM_SOFTAP_START_SUCCESS = 3;
+    private static final int NUM_SOFTAP_FAILED_GENERAL_ERROR = 2;
+    private static final int NUM_SOFTAP_FAILED_NO_CHANNEL = 1;
 
     private ScanDetail buildMockScanDetail(boolean hidden, NetworkDetail.HSRelease hSRelease,
             String capabilities) {
@@ -243,18 +250,27 @@ public class WifiMetricsTest {
         return mockScanDetails;
     }
 
+    private List<WifiConfiguration> buildSavedNetworkList() {
+        List<WifiConfiguration> testSavedNetworks = new ArrayList<WifiConfiguration>();
+        for (int i = 0; i < NUM_OPEN_NETWORKS; i++) {
+            testSavedNetworks.add(WifiConfigurationTestUtil.createOpenHiddenNetwork());
+        }
+        for (int i = 0; i < NUM_PERSONAL_NETWORKS; i++) {
+            testSavedNetworks.add(WifiConfigurationTestUtil.createPskNetwork());
+        }
+        for (int i = 0; i < NUM_ENTERPRISE_NETWORKS; i++) {
+            // Passpoint networks are counted in both Passpoint and Enterprise counters
+            testSavedNetworks.add(WifiConfigurationTestUtil.createPasspointNetwork());
+        }
+        testSavedNetworks.get(0).selfAdded = true;
+        return testSavedNetworks;
+    }
+
     /**
      * Set simple metrics, increment others
      */
     public void setAndIncrementMetrics() throws Exception {
-        mWifiMetrics.setNumSavedNetworks(NUM_SAVED_NETWORKS);
-        mWifiMetrics.setNumOpenNetworks(NUM_OPEN_NETWORKS);
-        mWifiMetrics.setNumPersonalNetworks(NUM_PERSONAL_NETWORKS);
-        mWifiMetrics.setNumEnterpriseNetworks(NUM_ENTERPRISE_NETWORKS);
-        mWifiMetrics.setNumHiddenNetworks(NUM_HIDDEN_NETWORKS);
-        mWifiMetrics.setNumPasspointNetworks(NUM_PASSPOINT_NETWORKS);
-        mWifiMetrics.setNumNetworksAddedByUser(NUM_NEWTORKS_ADDED_BY_USER);
-        mWifiMetrics.setNumNetworksAddedByApps(NUM_NEWTORKS_ADDED_BY_APPS);
+        mWifiMetrics.updateSavedNetworks(buildSavedNetworkList());
         mWifiMetrics.setIsLocationEnabled(TEST_VAL_IS_LOCATION_ENABLED);
         mWifiMetrics.setIsScanningAlwaysEnabled(IS_SCANNING_ALWAYS_ENABLED);
 
@@ -364,6 +380,18 @@ public class WifiMetricsTest {
         for (int i = 1; i < NUM_OUT_OF_BOUND_ENTRIES; i++) {
             mWifiMetrics.incrementWifiScoreCount(WIFI_SCORE_RANGE_MAX + i);
         }
+
+        // increment soft ap start return codes
+        for (int i = 0; i < NUM_SOFTAP_START_SUCCESS; i++) {
+            mWifiMetrics.incrementSoftApStartResult(true, 0);
+        }
+        for (int i = 0; i < NUM_SOFTAP_FAILED_GENERAL_ERROR; i++) {
+            mWifiMetrics.incrementSoftApStartResult(false, WifiManager.SAP_START_FAILURE_GENERAL);
+        }
+        for (int i = 0; i < NUM_SOFTAP_FAILED_NO_CHANNEL; i++) {
+            mWifiMetrics.incrementSoftApStartResult(false,
+                    WifiManager.SAP_START_FAILURE_NO_CHANNEL);
+        }
     }
 
     /**
@@ -380,13 +408,13 @@ public class WifiMetricsTest {
                         + "== NUM_ENTERPRISE_NETWORKS",
                 mDeserializedWifiMetrics.numEnterpriseNetworks, NUM_ENTERPRISE_NETWORKS);
         assertEquals("mDeserializedWifiMetrics.numNetworksAddedByUser "
-                        + "== NUM_NEWTORKS_ADDED_BY_USER",
-                mDeserializedWifiMetrics.numNetworksAddedByUser, NUM_NEWTORKS_ADDED_BY_USER);
+                        + "== NUM_NETWORKS_ADDED_BY_USER",
+                mDeserializedWifiMetrics.numNetworksAddedByUser, NUM_NETWORKS_ADDED_BY_USER);
         assertEquals(NUM_HIDDEN_NETWORKS, mDeserializedWifiMetrics.numHiddenNetworks);
         assertEquals(NUM_PASSPOINT_NETWORKS, mDeserializedWifiMetrics.numPasspointNetworks);
         assertEquals("mDeserializedWifiMetrics.numNetworksAddedByApps "
-                        + "== NUM_NEWTORKS_ADDED_BY_APPS",
-                mDeserializedWifiMetrics.numNetworksAddedByApps, NUM_NEWTORKS_ADDED_BY_APPS);
+                        + "== NUM_NETWORKS_ADDED_BY_APPS",
+                mDeserializedWifiMetrics.numNetworksAddedByApps, NUM_NETWORKS_ADDED_BY_APPS);
         assertEquals("mDeserializedWifiMetrics.isLocationEnabled == TEST_VAL_IS_LOCATION_ENABLED",
                 mDeserializedWifiMetrics.isLocationEnabled, TEST_VAL_IS_LOCATION_ENABLED);
         assertEquals("mDeserializedWifiMetrics.isScanningAlwaysEnabled "
@@ -488,6 +516,18 @@ public class WifiMetricsTest {
         sb_wifi_limits.append("Wifi Score limit is " +  NetworkAgent.WIFI_BASE_SCORE
                 + ">= " + WIFI_SCORE_RANGE_MAX);
         assertTrue(sb_wifi_limits.toString(), NetworkAgent.WIFI_BASE_SCORE <= WIFI_SCORE_RANGE_MAX);
+        assertEquals(MAX_NUM_SOFTAP_RETURN_CODES, mDeserializedWifiMetrics.softApReturnCode.length);
+        assertEquals(WifiMetricsProto.SoftApReturnCodeCount.SOFT_AP_STARTED_SUCCESSFULLY,
+                     mDeserializedWifiMetrics.softApReturnCode[0].startResult);
+        assertEquals(NUM_SOFTAP_START_SUCCESS, mDeserializedWifiMetrics.softApReturnCode[0].count);
+        assertEquals(WifiMetricsProto.SoftApReturnCodeCount.SOFT_AP_FAILED_GENERAL_ERROR,
+                     mDeserializedWifiMetrics.softApReturnCode[1].startResult);
+        assertEquals(NUM_SOFTAP_FAILED_GENERAL_ERROR,
+                     mDeserializedWifiMetrics.softApReturnCode[1].count);
+        assertEquals(WifiMetricsProto.SoftApReturnCodeCount.SOFT_AP_FAILED_NO_CHANNEL,
+                     mDeserializedWifiMetrics.softApReturnCode[2].startResult);
+        assertEquals(NUM_SOFTAP_FAILED_NO_CHANNEL,
+                     mDeserializedWifiMetrics.softApReturnCode[2].count);
     }
 
     /**

@@ -317,6 +317,10 @@ public class WifiAwareServiceImpl extends IWifiAwareManager.Stub {
         enforceAccessPermission();
         enforceChangePermission();
 
+        if (retryCount != 0) {
+            enforceConnectivityInternalPermission();
+        }
+
         if (message != null
                 && message.length > mStateManager.getCharacteristics().getMaxServiceNameLength()) {
             throw new IllegalArgumentException(
@@ -343,6 +347,9 @@ public class WifiAwareServiceImpl extends IWifiAwareManager.Stub {
     public int startRanging(int clientId, int sessionId, RttManager.ParcelableRttParams params) {
         enforceAccessPermission();
         enforceLocationPermission();
+
+        // TODO: b/35676064 restricts access to this API until decide if will open.
+        enforceConnectivityInternalPermission();
 
         int uid = getMockableCallingUid();
         enforceClientValidity(uid, clientId);

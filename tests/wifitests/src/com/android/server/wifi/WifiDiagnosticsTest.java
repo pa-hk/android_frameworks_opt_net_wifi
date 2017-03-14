@@ -33,7 +33,6 @@ import static org.mockito.Mockito.when;
 import android.app.test.MockAnswerUtil.AnswerWithArguments;
 import android.content.Context;
 import android.test.suitebuilder.annotation.SmallTest;
-import android.util.LocalLog;
 
 import com.android.internal.R;
 
@@ -43,6 +42,7 @@ import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 import org.mockito.Spy;
 
+import java.io.ByteArrayInputStream;
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
 import java.io.StringWriter;
@@ -60,6 +60,8 @@ public class WifiDiagnosticsTest {
     @Mock WifiInjector mWifiInjector;
     @Spy FakeWifiLog mLog;
     @Mock LastMileLogger mLastMileLogger;
+    @Mock Runtime mJavaRuntime;
+    @Mock Process mExternalProcess;
     WifiDiagnostics mWifiDiagnostics;
 
     private static final String FAKE_RING_BUFFER_NAME = "fake-ring-buffer";
@@ -67,7 +69,6 @@ public class WifiDiagnosticsTest {
     private static final int LARGE_RING_BUFFER_SIZE_KB = 1024;
     private static final int BYTES_PER_KBYTE = 1024;
     private static final long FAKE_CONNECTION_ID = 1;
-    private LocalLog mWifiNativeLocalLog;
 
     private WifiNative.RingBufferStatus mFakeRbs;
     /**
@@ -91,14 +92,15 @@ public class WifiDiagnosticsTest {
         WifiNative.RingBufferStatus[] ringBufferStatuses = new WifiNative.RingBufferStatus[] {
                 mFakeRbs
         };
-        mWifiNativeLocalLog = new LocalLog(8192);
 
         when(mWifiNative.getRingBufferStatus()).thenReturn(ringBufferStatuses);
         when(mWifiNative.readKernelLog()).thenReturn("");
-        when(mWifiNative.getLocalLog()).thenReturn(mWifiNativeLocalLog);
         when(mBuildProperties.isEngBuild()).thenReturn(false);
         when(mBuildProperties.isUserdebugBuild()).thenReturn(false);
         when(mBuildProperties.isUserBuild()).thenReturn(true);
+        when(mExternalProcess.getInputStream()).thenReturn(new ByteArrayInputStream(new byte[0]));
+        when(mExternalProcess.getErrorStream()).thenReturn(new ByteArrayInputStream(new byte[0]));
+        when(mJavaRuntime.exec(anyString())).thenReturn(mExternalProcess);
 
         MockResources resources = new MockResources();
         resources.setInteger(R.integer.config_wifi_logger_ring_buffer_default_size_limit_kb,
@@ -107,6 +109,7 @@ public class WifiDiagnosticsTest {
                 LARGE_RING_BUFFER_SIZE_KB);
         when(mContext.getResources()).thenReturn(resources);
         when(mWifiInjector.makeLog(anyString())).thenReturn(mLog);
+        when(mWifiInjector.getJavaRuntime()).thenReturn(mJavaRuntime);
 
         mWifiDiagnostics = new WifiDiagnostics(
                 mContext, mWifiInjector, mWsm, mWifiNative, mBuildProperties, mLastMileLogger);
@@ -775,19 +778,6 @@ public class WifiDiagnosticsTest {
         PrintWriter pw = new PrintWriter(sw);
         mWifiDiagnostics.dump(new FileDescriptor(), pw, new String[]{});
         assertFalse(sw.toString().contains(WifiDiagnostics.FIRMWARE_DUMP_SECTION_HEADER));
-    }
-
-    /** Verifies that the dump() includes contents of WifiNative's LocalLog. */
-    @Test
-    public void dumpIncludesContentOfWifiNativeLocalLog() {
-        final String wifiNativeLogMessage = "This is a message";
-        mWifiNativeLocalLog.log(wifiNativeLogMessage);
-
-        mWifiDiagnostics.startLogging(false  /* verbose disabled */);
-        StringWriter sw = new StringWriter();
-        PrintWriter pw = new PrintWriter(sw);
-        mWifiDiagnostics.dump(new FileDescriptor(), pw, new String[]{});
-        assertTrue(sw.toString().contains(wifiNativeLogMessage));
     }
 
     @Test

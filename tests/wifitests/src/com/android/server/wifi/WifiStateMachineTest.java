@@ -17,6 +17,7 @@
 package com.android.server.wifi;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.*;
 
@@ -42,6 +43,8 @@ import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
 import android.net.wifi.WifiScanner;
 import android.net.wifi.WifiSsid;
+import android.net.wifi.hotspot2.PasspointConfiguration;
+import android.net.wifi.hotspot2.pps.HomeSp;
 import android.net.wifi.p2p.IWifiP2pManager;
 import android.os.BatteryStats;
 import android.os.Binder;
@@ -73,6 +76,7 @@ import com.android.internal.util.AsyncChannel;
 import com.android.internal.util.IState;
 import com.android.internal.util.StateMachine;
 import com.android.server.wifi.hotspot2.NetworkDetail;
+import com.android.server.wifi.hotspot2.PasspointManager;
 import com.android.server.wifi.p2p.WifiP2pServiceImpl;
 
 import org.junit.After;
@@ -192,8 +196,6 @@ public class WifiStateMachineTest {
                     }
                 });
 
-        when(facade.checkUidPermission(eq(android.Manifest.permission.OVERRIDE_WIFI_CONFIG),
-                anyInt())).thenReturn(PackageManager.PERMISSION_GRANTED);
         return facade;
     }
 
@@ -324,6 +326,7 @@ public class WifiStateMachineTest {
     @Mock WifiConnectivityManager mWifiConnectivityManager;
     @Mock SoftApManager mSoftApManager;
     @Mock WifiStateTracker mWifiStateTracker;
+    @Mock PasspointManager mPasspointManager;
 
     public WifiStateMachineTest() throws Exception {
     }
@@ -342,7 +345,7 @@ public class WifiStateMachineTest {
 
         mWifiMonitor = new MockWifiMonitor();
         when(mWifiInjector.getWifiMetrics()).thenReturn(mWifiMetrics);
-        when(mWifiInjector.getClock()).thenReturn(mock(Clock.class));
+        when(mWifiInjector.getClock()).thenReturn(new Clock());
         when(mWifiInjector.getWifiLastResortWatchdog()).thenReturn(mWifiLastResortWatchdog);
         when(mWifiInjector.getPropertyService()).thenReturn(mPropertyService);
         when(mWifiInjector.getBuildProperties()).thenReturn(mBuildProperties);
@@ -360,10 +363,13 @@ public class WifiStateMachineTest {
                 any(SoftApManager.Listener.class), any(IApInterface.class),
                 any(WifiConfiguration.class)))
                 .thenReturn(mSoftApManager);
-
-        when(mWifiNative.setupDriverForClientMode()).thenReturn(mClientInterface);
-        when(mWifiNative.setupDriverForSoftApMode()).thenReturn(mApInterface);
+        when(mWifiInjector.getPasspointManager()).thenReturn(mPasspointManager);
         when(mWifiInjector.getWifiStateTracker()).thenReturn(mWifiStateTracker);
+        when(mWifiInjector.getWifiMonitor()).thenReturn(mWifiMonitor);
+        when(mWifiInjector.getWifiNative()).thenReturn(mWifiNative);
+
+        when(mWifiNative.setupForClientMode()).thenReturn(mClientInterface);
+        when(mWifiNative.setupForSoftApMode()).thenReturn(mApInterface);
         when(mWifiNative.getInterfaceName()).thenReturn("mockWlan");
         when(mWifiNative.enableSupplicant()).thenReturn(true);
         when(mWifiNative.disableSupplicant()).thenReturn(true);
@@ -453,23 +459,7 @@ public class WifiStateMachineTest {
 
     @Test
     public void loadComponentsInStaMode() throws Exception {
-        mWsm.setSupplicantRunning(true);
-        mLooper.dispatchAll();
-
-        assertEquals("SupplicantStartingState", getCurrentState().getName());
-
-        when(mWifiNative.setDeviceName(anyString())).thenReturn(true);
-        when(mWifiNative.setManufacturer(anyString())).thenReturn(true);
-        when(mWifiNative.setModelName(anyString())).thenReturn(true);
-        when(mWifiNative.setModelNumber(anyString())).thenReturn(true);
-        when(mWifiNative.setSerialNumber(anyString())).thenReturn(true);
-        when(mWifiNative.setConfigMethods(anyString())).thenReturn(true);
-        when(mWifiNative.setDeviceType(anyString())).thenReturn(true);
-        when(mWifiNative.setSerialNumber(anyString())).thenReturn(true);
-        when(mWifiNative.setScanningMacOui(any(byte[].class))).thenReturn(true);
-
-        mWsm.sendMessage(WifiMonitor.SUP_CONNECTION_EVENT);
-        mLooper.dispatchAll();
+        startSupplicantAndDispatchMessages();
 
         assertEquals("DisconnectedState", getCurrentState().getName());
     }
@@ -559,6 +549,52 @@ public class WifiStateMachineTest {
     }
 
     /**
+     *  Test that mode changes accurately reflect the value for isWifiEnabled.
+     */
+    @Test
+    public void checkIsWifiEnabledForModeChanges() throws Exception {
+        when(mWifiNative.startHal(anyBoolean())).thenReturn(true);
+
+        // Check initial state
+        mLooper.dispatchAll();
+        assertEquals("InitialState", getCurrentState().getName());
+        assertEquals(WifiManager.WIFI_STATE_DISABLED, mWsm.syncGetWifiState());
+
+        mWsm.setOperationalMode(WifiStateMachine.SCAN_ONLY_MODE);
+        startSupplicantAndDispatchMessages();
+        mWsm.setSupplicantRunning(true);
+        mLooper.dispatchAll();
+        assertEquals(WifiStateMachine.SCAN_ONLY_MODE, mWsm.getOperationalModeForTest());
+        assertEquals("ScanModeState", getCurrentState().getName());
+        assertEquals(WifiManager.WIFI_STATE_DISABLED, mWsm.syncGetWifiState());
+
+        // switch to connect mode and verify wifi is reported as enabled
+        mWsm.setOperationalMode(WifiStateMachine.CONNECT_MODE);
+        mLooper.dispatchAll();
+        assertEquals("DisconnectedState", getCurrentState().getName());
+        assertEquals(WifiStateMachine.CONNECT_MODE, mWsm.getOperationalModeForTest());
+        assertEquals(WifiManager.WIFI_STATE_ENABLED, mWsm.syncGetWifiState());
+
+        // now go back to scan mode with "wifi disabled" to verify the reported wifi state.
+        mWsm.setOperationalMode(WifiStateMachine.SCAN_ONLY_WITH_WIFI_OFF_MODE);
+        mLooper.dispatchAll();
+        assertEquals(WifiStateMachine.SCAN_ONLY_WITH_WIFI_OFF_MODE,
+                     mWsm.getOperationalModeForTest());
+        assertEquals("ScanModeState", getCurrentState().getName());
+        assertEquals(WifiManager.WIFI_STATE_DISABLED, mWsm.syncGetWifiState());
+
+        // now go to AP mode
+        mWsm.setSupplicantRunning(false);
+        mWsm.sendMessage(WifiStateMachine.CMD_DISABLE_P2P_RSP);
+        mWsm.sendMessage(WifiMonitor.SUP_DISCONNECTION_EVENT);
+        mWsm.setHostApRunning(new WifiConfiguration(), true);
+        mLooper.dispatchAll();
+        assertEquals("SoftApState", getCurrentState().getName());
+        assertEquals(WifiManager.WIFI_STATE_DISABLED, mWsm.syncGetWifiState());
+    }
+
+
+    /**
      * Test that mode changes for WifiStateMachine in the InitialState are realized when supplicant
      * is started.
      */
@@ -577,21 +613,7 @@ public class WifiStateMachineTest {
         assertEquals(WifiStateMachine.SCAN_ONLY_MODE, mWsm.getOperationalModeForTest());
 
         // Start supplicant so we move to the next state
-        mWsm.setSupplicantRunning(true);
-        mLooper.dispatchAll();
-        assertEquals("SupplicantStartingState", getCurrentState().getName());
-        when(mWifiNative.setDeviceName(anyString())).thenReturn(true);
-        when(mWifiNative.setManufacturer(anyString())).thenReturn(true);
-        when(mWifiNative.setModelName(anyString())).thenReturn(true);
-        when(mWifiNative.setModelNumber(anyString())).thenReturn(true);
-        when(mWifiNative.setSerialNumber(anyString())).thenReturn(true);
-        when(mWifiNative.setConfigMethods(anyString())).thenReturn(true);
-        when(mWifiNative.setDeviceType(anyString())).thenReturn(true);
-        when(mWifiNative.setSerialNumber(anyString())).thenReturn(true);
-        when(mWifiNative.setScanningMacOui(any(byte[].class))).thenReturn(true);
-
-        mWsm.sendMessage(WifiMonitor.SUP_CONNECTION_EVENT);
-        mLooper.dispatchAll();
+        startSupplicantAndDispatchMessages();
 
         assertEquals("ScanModeState", getCurrentState().getName());
     }
@@ -614,7 +636,7 @@ public class WifiStateMachineTest {
      * Verifies that configs can be removed when not in client mode.
      */
     @Test
-    public void canRemoveNetworkConfigWhenWifiDisabed() {
+    public void canRemoveNetworkConfigWhenWifiDisabled() {
         boolean result;
         when(mWifiConfigManager.removeNetwork(eq(0), anyInt())).thenReturn(true);
         mLooper.startAutoDispatch();
@@ -646,6 +668,29 @@ public class WifiStateMachineTest {
         mWsm.sendMessage(WifiManager.FORGET_NETWORK, 0, MANAGED_PROFILE_UID);
         mLooper.dispatchAll();
         verify(mWifiConfigManager).removeNetwork(anyInt(), anyInt());
+    }
+
+    /**
+     * Helper method to move through SupplicantStarting and SupplicantStarted states.
+     */
+    private void startSupplicantAndDispatchMessages() throws Exception {
+        mWsm.setSupplicantRunning(true);
+        mLooper.dispatchAll();
+
+        assertEquals("SupplicantStartingState", getCurrentState().getName());
+
+        when(mWifiNative.setDeviceName(anyString())).thenReturn(true);
+        when(mWifiNative.setManufacturer(anyString())).thenReturn(true);
+        when(mWifiNative.setModelName(anyString())).thenReturn(true);
+        when(mWifiNative.setModelNumber(anyString())).thenReturn(true);
+        when(mWifiNative.setSerialNumber(anyString())).thenReturn(true);
+        when(mWifiNative.setConfigMethods(anyString())).thenReturn(true);
+        when(mWifiNative.setDeviceType(anyString())).thenReturn(true);
+        when(mWifiNative.setSerialNumber(anyString())).thenReturn(true);
+        when(mWifiNative.setScanningMacOui(any(byte[].class))).thenReturn(true);
+
+        mWsm.sendMessage(WifiMonitor.SUP_CONNECTION_EVENT);
+        mLooper.dispatchAll();
     }
 
     private void addNetworkAndVerifySuccess() throws Exception {
@@ -771,7 +816,7 @@ public class WifiStateMachineTest {
         mLooper.dispatchAll();
 
         mLooper.startAutoDispatch();
-        mWsm.syncEnableNetwork(mWsmAsyncChannel, 0, true);
+        assertTrue(mWsm.syncEnableNetwork(mWsmAsyncChannel, 0, true));
         mLooper.stopAutoDispatch();
 
         verify(mWifiConfigManager).enableNetwork(eq(0), eq(true), anyInt());
@@ -795,6 +840,95 @@ public class WifiStateMachineTest {
         mLooper.dispatchAll();
 
         assertEquals("ConnectedState", getCurrentState().getName());
+    }
+
+    @Test
+    public void connectWithNoEnablePermission() throws Exception {
+        addNetworkAndVerifySuccess();
+        when(mWifiConfigManager.enableNetwork(eq(0), eq(true), anyInt())).thenReturn(false);
+        when(mWifiConfigManager.checkAndUpdateLastConnectUid(eq(0), anyInt())).thenReturn(false);
+
+        mWsm.setOperationalMode(WifiStateMachine.CONNECT_MODE);
+        mLooper.dispatchAll();
+
+        mLooper.startAutoDispatch();
+        assertTrue(mWsm.syncEnableNetwork(mWsmAsyncChannel, 0, true));
+        mLooper.stopAutoDispatch();
+
+        verify(mWifiConfigManager).enableNetwork(eq(0), eq(true), anyInt());
+
+        mWsm.sendMessage(WifiMonitor.NETWORK_CONNECTION_EVENT, 0, 0, sBSSID);
+        mLooper.dispatchAll();
+
+        mWsm.sendMessage(WifiMonitor.SUPPLICANT_STATE_CHANGE_EVENT, 0, 0,
+                new StateChangeResult(0, sWifiSsid, sBSSID, SupplicantState.COMPLETED));
+        mLooper.dispatchAll();
+
+        assertEquals("ObtainingIpState", getCurrentState().getName());
+
+        DhcpResults dhcpResults = new DhcpResults();
+        dhcpResults.setGateway("1.2.3.4");
+        dhcpResults.setIpAddress("192.168.1.100", 0);
+        dhcpResults.addDns("8.8.8.8");
+        dhcpResults.setLeaseDuration(3600);
+
+        mTestIpManager.injectDhcpSuccess(dhcpResults);
+        mLooper.dispatchAll();
+
+        assertEquals("ConnectedState", getCurrentState().getName());
+    }
+
+    @Test
+    public void enableWithInvalidNetworkId() throws Exception {
+        addNetworkAndVerifySuccess();
+        when(mWifiConfigManager.getConfiguredNetwork(eq(0))).thenReturn(null);
+
+        mWsm.setOperationalMode(WifiStateMachine.CONNECT_MODE);
+        mLooper.dispatchAll();
+
+        mLooper.startAutoDispatch();
+        assertFalse(mWsm.syncEnableNetwork(mWsmAsyncChannel, 0, true));
+        mLooper.stopAutoDispatch();
+
+        verify(mWifiConfigManager, never()).enableNetwork(eq(0), eq(true), anyInt());
+        verify(mWifiConfigManager, never()).checkAndUpdateLastConnectUid(eq(0), anyInt());
+    }
+
+    /**
+     * If caller tries to connect to a network that is already connected, the connection request
+     * should succeed.
+     *
+     * Test: Create and connect to a network, then try to reconnect to the same network. Verify
+     * that connection request returns with CONNECT_NETWORK_SUCCEEDED.
+     */
+    @Test
+    public void reconnectToConnectedNetwork() throws Exception {
+        addNetworkAndVerifySuccess();
+
+        mWsm.setOperationalMode(WifiStateMachine.CONNECT_MODE);
+        mLooper.dispatchAll();
+
+        mLooper.startAutoDispatch();
+        mWsm.syncEnableNetwork(mWsmAsyncChannel, 0, true);
+        mLooper.stopAutoDispatch();
+
+        verify(mWifiConfigManager).enableNetwork(eq(0), eq(true), anyInt());
+
+        mWsm.sendMessage(WifiMonitor.NETWORK_CONNECTION_EVENT, 0, 0, sBSSID);
+        mLooper.dispatchAll();
+
+        mWsm.sendMessage(WifiMonitor.SUPPLICANT_STATE_CHANGE_EVENT, 0, 0,
+                new StateChangeResult(0, sWifiSsid, sBSSID, SupplicantState.COMPLETED));
+        mLooper.dispatchAll();
+
+        assertEquals("ObtainingIpState", getCurrentState().getName());
+
+        // try to reconnect
+        mLooper.startAutoDispatch();
+        Message reply = mWsmAsyncChannel.sendMessageSynchronously(WifiManager.CONNECT_NETWORK, 0);
+        mLooper.stopAutoDispatch();
+
+        assertEquals(WifiManager.CONNECT_NETWORK_SUCCEEDED, reply.what);
     }
 
     @Test
@@ -902,52 +1036,43 @@ public class WifiStateMachineTest {
         // TODO(b/31065385): Passpoint config management.
     }
 
+    @Test
+    public void verboseLogRecSizeIsGreaterThanNormalSize() {
+        assertTrue(LOG_REC_LIMIT_IN_VERBOSE_MODE > WifiStateMachine.NUM_LOG_RECS_NORMAL);
+    }
+
     /**
      * Verifies that, by default, we allow only the "normal" number of log records.
      */
     @Test
     public void normalLogRecSizeIsUsedByDefault() {
-        for (int i = 0; i < WifiStateMachine.NUM_LOG_RECS_NORMAL * 2; i++) {
-            mWsm.sendMessage(WifiStateMachine.CMD_DISCONNECT);
-        }
-        mLooper.dispatchAll();
-        assertEquals(WifiStateMachine.NUM_LOG_RECS_NORMAL, mWsm.getLogRecSize());
+        assertEquals(WifiStateMachine.NUM_LOG_RECS_NORMAL, mWsm.getLogRecMaxSize());
     }
 
     /**
      * Verifies that, in verbose mode, we allow a larger number of log records.
      */
     @Test
-    public void enablingVerboseLoggingIncreasesLogRecSize() {
-        assertTrue(LOG_REC_LIMIT_IN_VERBOSE_MODE > WifiStateMachine.NUM_LOG_RECS_NORMAL);
+    public void enablingVerboseLoggingUpdatesLogRecSize() {
         mWsm.enableVerboseLogging(1);
-        for (int i = 0; i < LOG_REC_LIMIT_IN_VERBOSE_MODE * 2; i++) {
-            mWsm.sendMessage(WifiStateMachine.CMD_DISCONNECT);
-        }
-        mLooper.dispatchAll();
-        assertEquals(LOG_REC_LIMIT_IN_VERBOSE_MODE, mWsm.getLogRecSize());
+        assertEquals(LOG_REC_LIMIT_IN_VERBOSE_MODE, mWsm.getLogRecMaxSize());
     }
 
-    /**
-     * Verifies that moving from verbose mode to normal mode resets the buffer, and limits new
-     * records to a small number of entries.
-     */
     @Test
-    public void disablingVerboseLoggingClearsRecordsAndDecreasesLogRecSize() {
-        mWsm.enableVerboseLogging(1);
-        for (int i = 0; i < LOG_REC_LIMIT_IN_VERBOSE_MODE; i++) {
-            mWsm.sendMessage(WifiStateMachine.CMD_DISCONNECT);
-        }
+    public void disablingVerboseLoggingClearsRecords() {
+        mWsm.sendMessage(WifiStateMachine.CMD_DISCONNECT);
         mLooper.dispatchAll();
-        assertEquals(LOG_REC_LIMIT_IN_VERBOSE_MODE, mWsm.getLogRecSize());
+        assertTrue(mWsm.getLogRecSize() >= 1);
 
         mWsm.enableVerboseLogging(0);
         assertEquals(0, mWsm.getLogRecSize());
-        for (int i = 0; i < LOG_REC_LIMIT_IN_VERBOSE_MODE; i++) {
-            mWsm.sendMessage(WifiStateMachine.CMD_DISCONNECT);
-        }
-        mLooper.dispatchAll();
-        assertEquals(WifiStateMachine.NUM_LOG_RECS_NORMAL, mWsm.getLogRecSize());
+    }
+
+    @Test
+    public void disablingVerboseLoggingUpdatesLogRecSize() {
+        mWsm.enableVerboseLogging(1);
+        mWsm.enableVerboseLogging(0);
+        assertEquals(WifiStateMachine.NUM_LOG_RECS_NORMAL, mWsm.getLogRecMaxSize());
     }
 
     /** Verifies that enabling verbose logging sets the hal log property in eng builds. */
@@ -1021,5 +1146,83 @@ public class WifiStateMachineTest {
                 testGetSupportedFeaturesCase(featureInfra | featureD2dRtt | featureD2apRtt, false));
         assertEquals(featureInfra,
                 testGetSupportedFeaturesCase(featureInfra | featureD2dRtt | featureD2apRtt, true));
+    }
+
+    /**
+     * Verify that syncAddOrUpdatePasspointConfig will redirect calls to {@link PasspointManager}
+     * and returning the result that's returned from {@link PasspointManager}.
+     */
+    @Test
+    public void syncAddOrUpdatePasspointConfig() throws Exception {
+        when(mPasspointManager.addOrUpdateProvider(any(PasspointConfiguration.class)))
+                .thenReturn(true);
+        mLooper.startAutoDispatch();
+        assertTrue(mWsm.syncAddOrUpdatePasspointConfig(mWsmAsyncChannel,
+                new PasspointConfiguration()));
+        mLooper.stopAutoDispatch();
+        reset(mPasspointManager);
+
+        when(mPasspointManager.addOrUpdateProvider(any(PasspointConfiguration.class)))
+                .thenReturn(false);
+        mLooper.startAutoDispatch();
+        assertFalse(mWsm.syncAddOrUpdatePasspointConfig(mWsmAsyncChannel,
+                new PasspointConfiguration()));
+        mLooper.stopAutoDispatch();
+    }
+
+    /**
+     * Verify that syncRemovePasspointConfig will redirect calls to {@link PasspointManager}
+     * and returning the result that's returned from {@link PasspointManager}.
+     */
+    @Test
+    public void syncRemovePasspointConfig() throws Exception {
+        String fqdn = "test.com";
+        when(mPasspointManager.removeProvider(fqdn)).thenReturn(true);
+        mLooper.startAutoDispatch();
+        assertTrue(mWsm.syncRemovePasspointConfig(mWsmAsyncChannel, fqdn));
+        mLooper.stopAutoDispatch();
+        reset(mPasspointManager);
+
+        when(mPasspointManager.removeProvider(fqdn)).thenReturn(false);
+        mLooper.startAutoDispatch();
+        assertFalse(mWsm.syncRemovePasspointConfig(mWsmAsyncChannel, fqdn));
+        mLooper.stopAutoDispatch();
+    }
+
+    /**
+     * Verify that syncRemovePasspointConfig will redirect calls to {@link PasspointManager}
+     * and returning the result that's returned from {@link PasspointManager} when in client mode.
+     */
+    @Test
+    public void syncRemovePasspointConfigInClientMode() throws Exception {
+        loadComponentsInStaMode();
+        syncRemovePasspointConfig();
+    }
+
+    /**
+     * Verify that syncGetPasspointConfigs will redirect calls to {@link PasspointManager}
+     * and returning the result that's returned from {@link PasspointManager}.
+     */
+    @Test
+    public void syncGetPasspointConfigs() throws Exception {
+        // Setup expected configs.
+        List<PasspointConfiguration> expectedConfigs = new ArrayList<>();
+        PasspointConfiguration config = new PasspointConfiguration();
+        HomeSp homeSp = new HomeSp();
+        homeSp.setFqdn("test.com");
+        config.setHomeSp(homeSp);
+        expectedConfigs.add(config);
+
+        when(mPasspointManager.getProviderConfigs()).thenReturn(expectedConfigs);
+        mLooper.startAutoDispatch();
+        assertEquals(expectedConfigs, mWsm.syncGetPasspointConfigs(mWsmAsyncChannel));
+        mLooper.stopAutoDispatch();
+        reset(mPasspointManager);
+
+        when(mPasspointManager.getProviderConfigs())
+                .thenReturn(new ArrayList<PasspointConfiguration>());
+        mLooper.startAutoDispatch();
+        assertTrue(mWsm.syncGetPasspointConfigs(mWsmAsyncChannel).isEmpty());
+        mLooper.stopAutoDispatch();
     }
 }

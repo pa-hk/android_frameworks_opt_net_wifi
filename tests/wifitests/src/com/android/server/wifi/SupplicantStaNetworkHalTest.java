@@ -18,7 +18,9 @@ package com.android.server.wifi;
 import static org.junit.Assert.*;
 import static org.mockito.Matchers.eq;
 import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.anyString;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -56,6 +58,13 @@ import java.util.Random;
  */
 public class SupplicantStaNetworkHalTest {
     private static final String IFACE_NAME = "wlan0";
+    private static final Map<String, String> NETWORK_EXTRAS_VALUES = new HashMap<>();
+    static {
+        NETWORK_EXTRAS_VALUES.put("key1", "value1");
+        NETWORK_EXTRAS_VALUES.put("key2", "value2");
+    }
+    private static final String NETWORK_EXTRAS_SERIALIZED =
+            "%7B%22key1%22%3A%22value1%22%2C%22key2%22%3A%22value2%22%7D";
 
     private SupplicantStaNetworkHal mSupplicantNetwork;
     private SupplicantStatus mStatusSuccess;
@@ -91,13 +100,35 @@ public class SupplicantStaNetworkHalTest {
     }
 
     /**
-     * Tests the saving/loading of WifiConfiguration to wpa_supplicant.
+     * Tests the saving/loading of WifiConfiguration to wpa_supplicant with psk passphrase.
+     */
+    @Test
+    public void testPskPassphraseNetworkWifiConfigurationSaveLoad() throws Exception {
+        WifiConfiguration config = WifiConfigurationTestUtil.createPskNetwork();
+        config.requirePMF = true;
+        testWifiConfigurationSaveLoad(config);
+        verify(mISupplicantStaNetworkMock).setPskPassphrase(anyString());
+        verify(mISupplicantStaNetworkMock)
+                .getPskPassphrase(any(ISupplicantStaNetwork.getPskPassphraseCallback.class));
+        verify(mISupplicantStaNetworkMock, never()).setPsk(any(byte[].class));
+        verify(mISupplicantStaNetworkMock, never())
+                .getPsk(any(ISupplicantStaNetwork.getPskCallback.class));
+    }
+
+    /**
+     * Tests the saving/loading of WifiConfiguration to wpa_supplicant with raw psk.
      */
     @Test
     public void testPskNetworkWifiConfigurationSaveLoad() throws Exception {
         WifiConfiguration config = WifiConfigurationTestUtil.createPskNetwork();
-        config.requirePMF = true;
+        config.preSharedKey = "945ef00c463c2a7c2496376b13263d1531366b46377179a4b17b393687450779";
         testWifiConfigurationSaveLoad(config);
+        verify(mISupplicantStaNetworkMock).setPsk(any(byte[].class));
+        verify(mISupplicantStaNetworkMock)
+                .getPsk(any(ISupplicantStaNetwork.getPskCallback.class));
+        verify(mISupplicantStaNetworkMock, never()).setPskPassphrase(anyString());
+        verify(mISupplicantStaNetworkMock)
+                .getPskPassphrase(any(ISupplicantStaNetwork.getPskPassphraseCallback.class));
     }
 
     /**
@@ -356,10 +387,10 @@ public class SupplicantStaNetworkHalTest {
         final byte[] kc = new byte[]{0x45, 0x45, 0x32, 0x34, 0x45, 0x10, 0x34, 0x12};
         final byte[] sres = new byte[]{0x12, 0x10, 0x32, 0x23};
         // Send 2 kc/sres pair for this request.
-        String paramsStr = ":kc:" + NativeUtil.hexStringFromByteArray(kc)
-                + ":sres:" + NativeUtil.hexStringFromByteArray(sres)
-                + ":kc:" + NativeUtil.hexStringFromByteArray(kc)
-                + ":sres:" + NativeUtil.hexStringFromByteArray(sres);
+        String paramsStr = ":" + NativeUtil.hexStringFromByteArray(kc)
+                + ":" + NativeUtil.hexStringFromByteArray(sres)
+                + ":" + NativeUtil.hexStringFromByteArray(kc)
+                + ":" + NativeUtil.hexStringFromByteArray(sres);
 
         doAnswer(new AnswerWithArguments() {
             public SupplicantStatus answer(
@@ -389,12 +420,12 @@ public class SupplicantStaNetworkHalTest {
         final byte[] kc3 = new byte[]{0x25, 0x34, 0x12, 0x14, 0x45, 0x10, 0x34, 0x12};
         final byte[] sres3 = new byte[]{0x42, 0x23, 0x22, 0x23};
         // Send 3 kc/sres pair for this request.
-        String paramsStr = ":kc:" + NativeUtil.hexStringFromByteArray(kc1)
-                + ":sres:" + NativeUtil.hexStringFromByteArray(sres1)
-                + ":kc:" + NativeUtil.hexStringFromByteArray(kc2)
-                + ":sres:" + NativeUtil.hexStringFromByteArray(sres2)
-                + ":kc:" + NativeUtil.hexStringFromByteArray(kc3)
-                + ":sres:" + NativeUtil.hexStringFromByteArray(sres3);
+        String paramsStr = ":" + NativeUtil.hexStringFromByteArray(kc1)
+                + ":" + NativeUtil.hexStringFromByteArray(sres1)
+                + ":" + NativeUtil.hexStringFromByteArray(kc2)
+                + ":" + NativeUtil.hexStringFromByteArray(sres2)
+                + ":" + NativeUtil.hexStringFromByteArray(kc3)
+                + ":" + NativeUtil.hexStringFromByteArray(sres3);
 
         doAnswer(new AnswerWithArguments() {
             public SupplicantStatus answer(
@@ -424,10 +455,10 @@ public class SupplicantStaNetworkHalTest {
         final byte[] kc2 = new byte[]{0x45, 0x34, 0x12, 0x34, 0x45, 0x10, 0x34, 0x12};
         final byte[] sres2 = new byte[]{0x12, 0x23, 0x12, 0x23};
         // Send 2 kc/sres pair for this request.
-        String paramsStr = ":kc:" + NativeUtil.hexStringFromByteArray(kc1)
-                + ":sres:" + NativeUtil.hexStringFromByteArray(sres1)
-                + ":kc:" + NativeUtil.hexStringFromByteArray(kc2)
-                + ":sres:" + NativeUtil.hexStringFromByteArray(sres2);
+        String paramsStr = ":" + NativeUtil.hexStringFromByteArray(kc1)
+                + ":" + NativeUtil.hexStringFromByteArray(sres1)
+                + ":" + NativeUtil.hexStringFromByteArray(kc2)
+                + ":" + NativeUtil.hexStringFromByteArray(sres2);
 
         doAnswer(new AnswerWithArguments() {
             public SupplicantStatus answer(
@@ -448,8 +479,8 @@ public class SupplicantStaNetworkHalTest {
         final byte[] kc = new byte[]{0x45, 0x34, 0x12, 0x34, 0x45, 0x10, 0x34, 0x12};
         final byte[] sres = new byte[]{0x12, 0x23, 0x12, 0x23};
         // Send 1 kc/sres pair for this request.
-        String paramsStr = ":kc:" + NativeUtil.hexStringFromByteArray(kc)
-                + ":sres:" + NativeUtil.hexStringFromByteArray(sres);
+        String paramsStr = ":" + NativeUtil.hexStringFromByteArray(kc)
+                + ":" + NativeUtil.hexStringFromByteArray(sres);
 
         doAnswer(new AnswerWithArguments() {
             public SupplicantStatus answer(
@@ -472,9 +503,9 @@ public class SupplicantStaNetworkHalTest {
         final byte[] ck = new byte[]{0x12, 0x10, 0x32, 0x23, 0x45, 0x10, 0x34, 0x12, 0x23, 0x34,
                 0x33, 0x23, 0x34, 0x10, 0x40, 0x34};
         final byte[] res = new byte[]{0x12, 0x10, 0x32, 0x23, 0x45, 0x10, 0x34, 0x12, 0x23, 0x34};
-        String paramsStr = ":ik:" + NativeUtil.hexStringFromByteArray(ik)
-                + ":ck:" + NativeUtil.hexStringFromByteArray(ck)
-                + ":res:" + NativeUtil.hexStringFromByteArray(res);
+        String paramsStr = ":" + NativeUtil.hexStringFromByteArray(ik)
+                + ":" + NativeUtil.hexStringFromByteArray(ck)
+                + ":" + NativeUtil.hexStringFromByteArray(res);
 
         doAnswer(new AnswerWithArguments() {
             public SupplicantStatus answer(
@@ -505,9 +536,9 @@ public class SupplicantStaNetworkHalTest {
         final byte[] ck = new byte[]{0x12, 0x10, 0x32, 0x23, 0x45, 0x10, 0x34, 0x12, 0x23, 0x34,
                 0x33, 0x23, 0x34, 0x10, 0x40};
         final byte[] res = new byte[]{0x12, 0x10, 0x32, 0x23, 0x45, 0x10, 0x34, 0x12, 0x23, 0x34};
-        String paramsStr = ":ik:" + NativeUtil.hexStringFromByteArray(ik)
-                + ":ck:" + NativeUtil.hexStringFromByteArray(ck)
-                + ":res:" + NativeUtil.hexStringFromByteArray(res);
+        String paramsStr = ":" + NativeUtil.hexStringFromByteArray(ik)
+                + ":" + NativeUtil.hexStringFromByteArray(ck)
+                + ":" + NativeUtil.hexStringFromByteArray(res);
 
         doAnswer(new AnswerWithArguments() {
             public SupplicantStatus answer(
@@ -702,8 +733,8 @@ public class SupplicantStaNetworkHalTest {
         random.nextBytes(params.rand);
 
         String[] expectedRands = {
-                NativeUtil.hexStringFromByteArray(params.autn),
-                NativeUtil.hexStringFromByteArray(params.rand)
+                NativeUtil.hexStringFromByteArray(params.rand),
+                NativeUtil.hexStringFromByteArray(params.autn)
         };
 
         mISupplicantStaNetworkCallback.onNetworkEapSimUmtsAuthRequest(params);
@@ -752,6 +783,18 @@ public class SupplicantStaNetworkHalTest {
                     Integer.parseInt(oppKeyCaching) == 1 ? true : false,
                     mSupplicantVariables.eapProactiveKeyCaching);
         }
+    }
+
+    /**
+     * Verifies that createNetworkExtra() & parseNetworkExtra correctly writes a serialized and
+     * URL-encoded JSON object.
+     */
+    @Test
+    public void testNetworkExtra() {
+        assertEquals(NETWORK_EXTRAS_SERIALIZED,
+                SupplicantStaNetworkHal.createNetworkExtra(NETWORK_EXTRAS_VALUES));
+        assertEquals(NETWORK_EXTRAS_VALUES,
+                SupplicantStaNetworkHal.parseNetworkExtra(NETWORK_EXTRAS_SERIALIZED));
     }
 
     /**
@@ -824,7 +867,7 @@ public class SupplicantStaNetworkHalTest {
         }).when(mISupplicantStaNetworkMock)
                 .getRequirePmf(any(ISupplicantStaNetwork.getRequirePmfCallback.class));
 
-        /** PSK pass phrase*/
+        /** PSK passphrase */
         doAnswer(new AnswerWithArguments() {
             public SupplicantStatus answer(String pskPassphrase) throws RemoteException {
                 mSupplicantVariables.pskPassphrase = pskPassphrase;
@@ -838,6 +881,21 @@ public class SupplicantStaNetworkHalTest {
             }
         }).when(mISupplicantStaNetworkMock)
                 .getPskPassphrase(any(ISupplicantStaNetwork.getPskPassphraseCallback.class));
+
+        /** PSK */
+        doAnswer(new AnswerWithArguments() {
+            public SupplicantStatus answer(byte[] psk) throws RemoteException {
+                mSupplicantVariables.psk = psk;
+                return mStatusSuccess;
+            }
+        }).when(mISupplicantStaNetworkMock).setPsk(any(byte[].class));
+        doAnswer(new AnswerWithArguments() {
+            public void answer(ISupplicantStaNetwork.getPskCallback cb)
+                    throws RemoteException {
+                cb.onValues(mStatusSuccess, mSupplicantVariables.psk);
+            }
+        }).when(mISupplicantStaNetworkMock)
+                .getPsk(any(ISupplicantStaNetwork.getPskCallback.class));
 
         /** WEP keys **/
         doAnswer(new AnswerWithArguments() {
@@ -1234,6 +1292,7 @@ public class SupplicantStaNetworkHalTest {
         public String idStr;
         public int updateIdentifier;
         public String pskPassphrase;
+        public byte[] psk;
         public ArrayList<Byte>[] wepKey = new ArrayList[4];
         public int wepTxKeyIdx;
         public int eapMethod = -1;

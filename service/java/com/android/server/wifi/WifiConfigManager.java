@@ -34,7 +34,7 @@ import android.net.wifi.WifiEnterpriseConfig;
 import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
 import android.net.wifi.WifiScanner;
-import android.os.RemoteException;
+import android.os.Process;
 import android.os.UserHandle;
 import android.os.UserManager;
 import android.provider.Settings;
@@ -48,8 +48,10 @@ import com.android.internal.R;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.server.LocalServices;
 import com.android.server.wifi.WifiConfigStoreLegacy.WifiConfigStoreDataLegacy;
+import com.android.server.wifi.hotspot2.PasspointManager;
 import com.android.server.wifi.util.ScanResultUtil;
 import com.android.server.wifi.util.TelephonyUtil;
+import com.android.server.wifi.util.WifiPermissionsUtil;
 import com.android.server.wifi.util.WifiPermissionsWrapper;
 
 import org.xmlpull.v1.XmlPullParserException;
@@ -209,7 +211,6 @@ public class WifiConfigManager {
      * List of external dependencies for WifiConfigManager.
      */
     private final Context mContext;
-    private final FrameworkFacade mFacade;
     private final Clock mClock;
     private final UserManager mUserManager;
     private final BackupManagerProxy mBackupManagerProxy;
@@ -217,6 +218,7 @@ public class WifiConfigManager {
     private final WifiKeyStore mWifiKeyStore;
     private final WifiConfigStore mWifiConfigStore;
     private final WifiConfigStoreLegacy mWifiConfigStoreLegacy;
+    private final WifiPermissionsUtil mWifiPermissionsUtil;
     private final WifiPermissionsWrapper mWifiPermissionsWrapper;
     /**
      * Local log used for debugging any WifiConfigManager issues.
@@ -300,14 +302,14 @@ public class WifiConfigManager {
      * Create new instance of WifiConfigManager.
      */
     WifiConfigManager(
-            Context context, FrameworkFacade facade, Clock clock, UserManager userManager,
+            Context context, Clock clock, UserManager userManager,
             TelephonyManager telephonyManager, WifiKeyStore wifiKeyStore,
             WifiConfigStore wifiConfigStore, WifiConfigStoreLegacy wifiConfigStoreLegacy,
+            WifiPermissionsUtil wifiPermissionsUtil,
             WifiPermissionsWrapper wifiPermissionsWrapper,
             NetworkListStoreData networkListStoreData,
             DeletedEphemeralSsidsStoreData deletedEphemeralSsidsStoreData) {
         mContext = context;
-        mFacade = facade;
         mClock = clock;
         mUserManager = userManager;
         mBackupManagerProxy = new BackupManagerProxy();
@@ -315,6 +317,7 @@ public class WifiConfigManager {
         mWifiKeyStore = wifiKeyStore;
         mWifiConfigStore = wifiConfigStore;
         mWifiConfigStoreLegacy = wifiConfigStoreLegacy;
+        mWifiPermissionsUtil = wifiPermissionsUtil;
         mWifiPermissionsWrapper = wifiPermissionsWrapper;
 
         mConfiguredNetworks = new ConfigurationMap(userManager);
@@ -604,24 +607,6 @@ public class WifiConfigManager {
     }
 
     /**
-     * Checks if the app has the permission to override Wi-Fi network configuration or not.
-     *
-     * @param uid uid of the app.
-     * @return true if the app does have the permission, false otherwise.
-     */
-    public boolean checkConfigOverridePermission(int uid) {
-        try {
-            int permission =
-                    mFacade.checkUidPermission(
-                            android.Manifest.permission.OVERRIDE_WIFI_CONFIG, uid);
-            return (permission == PackageManager.PERMISSION_GRANTED);
-        } catch (RemoteException e) {
-            Log.e(TAG, "Error checking for permission " + e);
-            return false;
-        }
-    }
-
-    /**
      * Checks if |uid| has permission to modify the provided configuration.
      *
      * @param config         WifiConfiguration object corresponding to the network to be modified.
@@ -645,7 +630,7 @@ public class WifiConfigManager {
         // Check if the |uid| holds the |OVERRIDE_CONFIG_WIFI| permission if the caller asks us to
         // bypass the lockdown checks.
         if (ignoreLockdown) {
-            return checkConfigOverridePermission(uid);
+            return mWifiPermissionsUtil.checkConfigOverridePermission(uid);
         }
 
         // Check if device has DPM capability. If it has and |dpmi| is still null, then we
@@ -660,13 +645,13 @@ public class WifiConfigManager {
         final boolean isConfigEligibleForLockdown = dpmi != null && dpmi.isActiveAdminWithPolicy(
                 config.creatorUid, DeviceAdminInfo.USES_POLICY_DEVICE_OWNER);
         if (!isConfigEligibleForLockdown) {
-            return isCreator || checkConfigOverridePermission(uid);
+            return isCreator || mWifiPermissionsUtil.checkConfigOverridePermission(uid);
         }
 
         final ContentResolver resolver = mContext.getContentResolver();
         final boolean isLockdownFeatureEnabled = Settings.Global.getInt(resolver,
                 Settings.Global.WIFI_DEVICE_OWNER_CONFIGS_LOCKDOWN, 0) != 0;
-        return !isLockdownFeatureEnabled && checkConfigOverridePermission(uid);
+        return !isLockdownFeatureEnabled && mWifiPermissionsUtil.checkConfigOverridePermission(uid);
     }
 
     /**
@@ -2311,8 +2296,7 @@ public class WifiConfigManager {
         if (mVerboseLoggingEnabled) localLog("resetSimNetworks");
         for (WifiConfiguration config : getInternalConfiguredNetworks()) {
             if (TelephonyUtil.isSimConfig(config)) {
-                String currentIdentity = TelephonyUtil.getSimIdentity(mTelephonyManager,
-                        config.enterpriseConfig.getEapMethod());
+                String currentIdentity = TelephonyUtil.getSimIdentity(mTelephonyManager, config);
                 // Update the loaded config
                 config.enterpriseConfig.setIdentity(currentIdentity);
                 config.enterpriseConfig.setAnonymousIdentity("");
@@ -2483,6 +2467,21 @@ public class WifiConfigManager {
     }
 
     /**
+     * Helper function to add quotes for user's who lost the quotes during migration using the HIDL
+     * interface.
+     * TODO(b/36008106): This is a temporary fix and needs to be removed.
+     * @param config WifiConfiguration object corresponding to the network.
+     */
+    private void addMissingPskPassphraseQuotes(WifiConfiguration config) {
+        // Add quotes back for ASCII psk passphrase, leave them as is for the hex raw psk.
+        if (!TextUtils.isEmpty(config.preSharedKey) && !config.preSharedKey.startsWith("\"")
+                && !(config.preSharedKey.length() == 64
+                && config.preSharedKey.matches("[0-9A-Fa-f]*"))) {
+            config.preSharedKey = "\"" + config.preSharedKey + "\"";
+        }
+    }
+
+    /**
      * Helper function to populate the internal (in-memory) data from the retrieved shared store
      * (file) data.
      *
@@ -2495,6 +2494,7 @@ public class WifiConfigManager {
             if (mVerboseLoggingEnabled) {
                 Log.v(TAG, "Adding network from shared store " + configuration.configKey());
             }
+            addMissingPskPassphraseQuotes(configuration);
             mConfiguredNetworks.put(configuration);
         }
     }
@@ -2514,6 +2514,7 @@ public class WifiConfigManager {
             if (mVerboseLoggingEnabled) {
                 Log.v(TAG, "Adding network from user store " + configuration.configKey());
             }
+            addMissingPskPassphraseQuotes(configuration);
             mConfiguredNetworks.put(configuration);
         }
         for (String ssid : deletedEphemeralSSIDs) {
@@ -2566,6 +2567,14 @@ public class WifiConfigManager {
         Log.d(TAG, "Reading from legacy store completed");
         loadInternalData(storeData.getConfigurations(), new ArrayList<WifiConfiguration>(),
                 storeData.getDeletedEphemeralSSIDs());
+
+        // Setup user store for the current user in case it have not setup yet, so that data
+        // owned by the current user will be backed to the user store.
+        if (mDeferredUserUnlockRead) {
+            mWifiConfigStore.setUserStore(WifiConfigStore.createUserFile(mCurrentUserId));
+            mDeferredUserUnlockRead = false;
+        }
+
         if (!saveToStore(true)) {
             return false;
         }
@@ -2594,6 +2603,14 @@ public class WifiConfigManager {
             }
             return true;
         }
+        // If the user unlock comes in before we load from store, which means the user store have
+        // not been setup yet for the current user.  Setup the user store before the read so that
+        // configurations for the current user will also being loaded.
+        if (mDeferredUserUnlockRead) {
+            Log.i(TAG, "Handling user unlock before loading from store.");
+            mWifiConfigStore.setUserStore(WifiConfigStore.createUserFile(mCurrentUserId));
+            mDeferredUserUnlockRead = false;
+        }
         try {
             mWifiConfigStore.read();
         } catch (IOException e) {
@@ -2606,13 +2623,6 @@ public class WifiConfigManager {
         loadInternalData(mNetworkListStoreData.getSharedConfigurations(),
                 mNetworkListStoreData.getUserConfigurations(),
                 mDeletedEphemeralSsidsStoreData.getSsidList());
-        // If the user unlock comes in before we load from store, we defer the handling until
-        // the load from store is triggered.
-        if (mDeferredUserUnlockRead) {
-            Log.i(TAG, "Handling user unlock after loading from store.");
-            handleUserUnlockOrSwitch(mCurrentUserId);
-            mDeferredUserUnlockRead = false;
-        }
         return true;
     }
 
@@ -2653,23 +2663,48 @@ public class WifiConfigManager {
     public boolean saveToStore(boolean forceWrite) {
         ArrayList<WifiConfiguration> sharedConfigurations = new ArrayList<>();
         ArrayList<WifiConfiguration> userConfigurations = new ArrayList<>();
+        // List of network IDs for legacy Passpoint configuration to be removed.
+        List<Integer> legacyPasspointNetId = new ArrayList<>();
         for (WifiConfiguration config : mConfiguredNetworks.valuesForAllUsers()) {
-            // Don't persist ephemeral and passpoint networks to store.
-            if (!config.ephemeral && !config.isPasspoint()) {
-                // We push all shared networks & private networks not belonging to the current
-                // user to the shared store. Ideally, private networks for other users should
-                // not even be in memory,
-                // But, this logic is in place to deal with store migration from N to O
-                // because all networks were previously stored in a central file. We cannot
-                // write these private networks to the user specific store until the corresponding
-                // user logs in.
-                if (config.shared || !WifiConfigurationUtil.doesUidBelongToAnyProfile(
-                        config.creatorUid, mUserManager.getProfiles(mCurrentUserId))) {
-                    sharedConfigurations.add(config);
-                } else {
-                    userConfigurations.add(config);
-                }
+            // Ignore ephemeral and temporary Passpoint networks.  Temporary Passpoint networks
+            // are created by {@link PasspointNetworkEvaluator} using WIFI_UID.
+            if (config.ephemeral || (config.isPasspoint()
+                    && config.creatorUid == Process.WIFI_UID)) {
+                continue;
             }
+
+            // Legacy Passpoint configuration represented by WifiConfiguration is created by an
+            // actual user, so migrate the configurations owned by the current user to
+            // {@link PasspointManager}.
+            if (config.isPasspoint() && WifiConfigurationUtil.doesUidBelongToAnyProfile(
+                        config.creatorUid, mUserManager.getProfiles(mCurrentUserId))) {
+                legacyPasspointNetId.add(config.networkId);
+                // Migrate the legacy Passpoint configuration and add it to PasspointManager.
+                if (!PasspointManager.addLegacyPasspointConfig(config)) {
+                    Log.e(TAG, "Failed to migrate legacy Passpoint config: " + config.FQDN);
+                }
+                // This will prevent adding |config| to the |sharedConfigurations|.
+                continue;
+            }
+
+            // We push all shared networks & private networks not belonging to the current
+            // user to the shared store. Ideally, private networks for other users should
+            // not even be in memory,
+            // But, this logic is in place to deal with store migration from N to O
+            // because all networks were previously stored in a central file. We cannot
+            // write these private networks to the user specific store until the corresponding
+            // user logs in.
+            if (config.shared || !WifiConfigurationUtil.doesUidBelongToAnyProfile(
+                    config.creatorUid, mUserManager.getProfiles(mCurrentUserId))) {
+                sharedConfigurations.add(config);
+            } else {
+                userConfigurations.add(config);
+            }
+        }
+
+        // Remove the configurations for migrated Passpoint configurations.
+        for (int networkId : legacyPasspointNetId) {
+            mConfiguredNetworks.remove(networkId);
         }
 
         // Setup store data for write.
@@ -2725,7 +2760,8 @@ public class WifiConfigManager {
                 DeviceAdminInfo.USES_POLICY_PROFILE_OWNER);
         final boolean isUidDeviceOwner = dpmi != null && dpmi.isActiveAdminWithPolicy(uid,
                 DeviceAdminInfo.USES_POLICY_DEVICE_OWNER);
-        final boolean hasConfigOverridePermission = checkConfigOverridePermission(uid);
+        final boolean hasConfigOverridePermission =
+                mWifiPermissionsUtil.checkConfigOverridePermission(uid);
         // If |uid| corresponds to the device owner, allow all modifications.
         if (isUidDeviceOwner || isUidProfileOwner || hasConfigOverridePermission) {
             return true;

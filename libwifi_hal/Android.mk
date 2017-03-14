@@ -100,6 +100,7 @@ endif
 # ============================================================
 include $(CLEAR_VARS)
 LOCAL_MODULE := libwifi-hal
+LOCAL_PROPRIETARY_MODULE := true
 LOCAL_CFLAGS := $(wifi_hal_cflags)
 LOCAL_C_INCLUDES := $(LOCAL_PATH)/include
 LOCAL_EXPORT_C_INCLUDE_DIRS := \
@@ -112,7 +113,8 @@ LOCAL_SHARED_LIBRARIES := \
     libnl \
     libutils
 LOCAL_SRC_FILES := \
-    driver_tool.cpp
+    driver_tool.cpp \
+    hal_tool.cpp
 LOCAL_WHOLE_STATIC_LIBRARIES := $(LIB_WIFI_HAL) libwifi-hal-common
 include $(BUILD_SHARED_LIBRARY)
 

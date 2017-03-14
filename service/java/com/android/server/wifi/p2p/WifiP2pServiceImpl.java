@@ -576,8 +576,8 @@ public class WifiP2pServiceImpl extends IWifiP2pManager.Stub {
         private UserAuthorizingJoinState mUserAuthorizingJoinState = new UserAuthorizingJoinState();
         private OngoingGroupRemovalState mOngoingGroupRemovalState = new OngoingGroupRemovalState();
 
-        private WifiNative mWifiNative = WifiNative.getP2pNativeInterface();
-        private WifiMonitor mWifiMonitor = WifiMonitor.getInstance();
+        private WifiNative mWifiNative = WifiInjector.getInstance().getP2pWifiNative();
+        private WifiMonitor mWifiMonitor = WifiInjector.getInstance().getWifiMonitor();
         private final WifiP2pDeviceList mPeers = new WifiP2pDeviceList();
         // WifiInjector is lazy initialized in P2p Service
         private WifiInjector mWifiInjector;
@@ -593,7 +593,7 @@ public class WifiP2pServiceImpl extends IWifiP2pManager.Stub {
                     @Override
                     public void onDeleteGroup(int netId) {
                         if (DBG) logd("called onDeleteGroup() netId=" + netId);
-                        mWifiNative.removeNetwork(netId);
+                        mWifiNative.removeP2pNetwork(netId);
                         mWifiNative.saveConfig();
                         sendP2pPersistentGroupsChangedBroadcast();
                     }
@@ -1063,7 +1063,7 @@ public class WifiP2pServiceImpl extends IWifiP2pManager.Stub {
                         } catch (IllegalStateException ie) {
                             loge("Unable to change interface settings: " + ie);
                         }
-                        mWifiMonitor.startMonitoring(mWifiNative.getInterfaceName());
+                        mWifiMonitor.startMonitoring(mWifiNative.getInterfaceName(), false);
                         transitionTo(mP2pEnablingState);
                         break;
                     default:
@@ -2560,68 +2560,16 @@ public class WifiP2pServiceImpl extends IWifiP2pManager.Stub {
          *                and send broadcast message with fresh list
          */
         private void updatePersistentNetworks(boolean reload) {
-            String listStr = mWifiNative.listNetworks();
-            if (listStr == null) return;
-
-            boolean isSaveRequired = false;
-            String[] lines = listStr.split("\n");
-            if (lines == null) return;
-
             if (reload) mGroups.clear();
 
-            // Skip the first line, which is a header
-            for (int i = 1; i < lines.length; i++) {
-                String[] result = lines[i].split("\t");
-                if (result == null || result.length < 4) {
-                    continue;
+            // Save in all cases, including when reload was requested, but
+            // no network has been found.
+            if (mWifiNative.p2pListNetworks(mGroups) || reload) {
+                for (WifiP2pGroup group : mGroups.getGroupList()) {
+                    if (mThisDevice.deviceAddress.equals(group.getOwner().deviceAddress)) {
+                        group.setOwner(mThisDevice);
+                    }
                 }
-                // network-id | ssid | bssid | flags
-                int netId = -1;
-                String ssid = result[1];
-                String bssid = result[2];
-                String flags = result[3];
-                try {
-                    netId = Integer.parseInt(result[0]);
-                } catch (NumberFormatException e) {
-                    e.printStackTrace();
-                    continue;
-                }
-
-                if (flags.indexOf("[CURRENT]") != -1) {
-                    continue;
-                }
-                if (flags.indexOf("[P2P-PERSISTENT]") == -1) {
-                    // The unused profile is sometimes remained when the p2p group formation
-                    // is failed. So, we clean up the p2p group here.
-                    if (DBG) logd("clean up the unused persistent group. netId=" + netId);
-                    mWifiNative.removeNetwork(netId);
-                    isSaveRequired = true;
-                    continue;
-                }
-
-                if (mGroups.contains(netId)) {
-                    continue;
-                }
-
-                WifiP2pGroup group = new WifiP2pGroup();
-                group.setNetworkId(netId);
-                group.setNetworkName(ssid);
-                String mode = mWifiNative.getNetworkVariable(netId, "mode");
-                if (mode != null && mode.equals("3")) {
-                    group.setIsGroupOwner(true);
-                }
-                if (bssid.equalsIgnoreCase(mThisDevice.deviceAddress)) {
-                    group.setOwner(mThisDevice);
-                } else {
-                    WifiP2pDevice device = new WifiP2pDevice();
-                    device.deviceAddress = bssid;
-                    group.setOwner(device);
-                }
-                mGroups.add(group);
-                isSaveRequired = true;
-            }
-
-            if (reload || isSaveRequired) {
                 mWifiNative.saveConfig();
                 sendP2pPersistentGroupsChangedBroadcast();
             }
@@ -2763,7 +2711,7 @@ public class WifiP2pServiceImpl extends IWifiP2pManager.Stub {
          * @return p2p client list. if not found, return null.
          */
         private String[] getClientList(int netId) {
-            String p2pClients = mWifiNative.getNetworkVariable(netId, "p2p_client_list");
+            String p2pClients = mWifiNative.getP2pClientList(netId);
             if (p2pClients == null) {
                 return null;
             }
@@ -2808,8 +2756,7 @@ public class WifiP2pServiceImpl extends IWifiP2pManager.Stub {
             if (modifiedClientList.length() == 0) {
                 modifiedClientList.append("\"\"");
             }
-            mWifiNative.setNetworkVariable(netId,
-                    "p2p_client_list", modifiedClientList.toString());
+            mWifiNative.setP2pClientList(netId, modifiedClientList.toString());
             mWifiNative.saveConfig();
             return true;
         }
@@ -2887,17 +2834,16 @@ public class WifiP2pServiceImpl extends IWifiP2pManager.Stub {
         }
 
         private void initializeP2pSettings() {
-            mWifiNative.setPersistentReconnect(true);
             mThisDevice.deviceName = getPersistedDeviceName();
-            mWifiNative.setDeviceName(mThisDevice.deviceName);
+            mWifiNative.setP2pDeviceName(mThisDevice.deviceName);
             // DIRECT-XY-DEVICENAME (XY is randomly generated)
             mWifiNative.setP2pSsidPostfix("-" + mThisDevice.deviceName);
-            mWifiNative.setDeviceType(mThisDevice.primaryDeviceType);
+            mWifiNative.setP2pDeviceType(mThisDevice.primaryDeviceType);
             // Supplicant defaults to using virtual display with display
             // which refers to a remote display. Use physical_display
             mWifiNative.setConfigMethods("virtual_push_button physical_display keypad");
             // STA has higher priority over P2P
-            mWifiNative.setConcurrencyPriority("sta");
+            mWifiNative.setConcurrencyPriority(true);
 
             mThisDevice.deviceAddress = mWifiNative.p2pGetDeviceAddress();
             updateThisDevice(WifiP2pDevice.AVAILABLE);

@@ -19,6 +19,7 @@ package com.android.server.wifi;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 
@@ -41,8 +42,6 @@ import org.junit.Before;
 import org.junit.Test;
 import org.mockito.ArgumentCaptor;
 
-import java.lang.reflect.Constructor;
-
 /**
  * Unit tests for {@link com.android.server.wifi.WifiMonitor}.
  */
@@ -60,10 +59,7 @@ public class WifiMonitorTest {
 
     @Before
     public void setUp() throws Exception {
-        final Constructor<WifiMonitor> wifiMonitorConstructor =
-                WifiMonitor.class.getDeclaredConstructor();
-        wifiMonitorConstructor.setAccessible(true);
-        mWifiMonitor = spy(wifiMonitorConstructor.newInstance());
+        mWifiMonitor = new WifiMonitor(mock(WifiInjector.class));
         mLooper = new TestLooper();
         mHandlerSpy = spy(new Handler(mLooper.getLooper()));
         mWifiMonitor.setMonitoring(WLAN_IFACE_NAME, true);
@@ -295,6 +291,37 @@ public class WifiMonitorTest {
     }
 
     /**
+     * Broadcast Scan results event test.
+     */
+    @Test
+    public void testBroadcastScanResultsEvent() {
+        mWifiMonitor.registerHandler(
+                WLAN_IFACE_NAME, WifiMonitor.SCAN_RESULTS_EVENT, mHandlerSpy);
+        mWifiMonitor.broadcastScanResultEvent(WLAN_IFACE_NAME);
+        mLooper.dispatchAll();
+
+        ArgumentCaptor<Message> messageCaptor = ArgumentCaptor.forClass(Message.class);
+        verify(mHandlerSpy).handleMessage(messageCaptor.capture());
+        assertEquals(WifiMonitor.SCAN_RESULTS_EVENT, messageCaptor.getValue().what);
+    }
+
+    /**
+     * Broadcast Scan failed event test.
+     */
+    @Test
+    public void testBroadcastScanFailedEvent() {
+        mWifiMonitor.registerHandler(
+                WLAN_IFACE_NAME, WifiMonitor.SCAN_FAILED_EVENT, mHandlerSpy);
+        mWifiMonitor.broadcastScanFailedEvent(WLAN_IFACE_NAME);
+        mLooper.dispatchAll();
+
+        ArgumentCaptor<Message> messageCaptor = ArgumentCaptor.forClass(Message.class);
+        verify(mHandlerSpy).handleMessage(messageCaptor.capture());
+
+        assertEquals(WifiMonitor.SCAN_FAILED_EVENT, messageCaptor.getValue().what);
+    }
+
+    /**
      * Broadcast authentication failure test.
      */
     @Test
@@ -309,7 +336,9 @@ public class WifiMonitorTest {
         verify(mHandlerSpy).handleMessage(messageCaptor.capture());
         assertEquals(WifiMonitor.AUTHENTICATION_FAILURE_EVENT, messageCaptor.getValue().what);
         assertEquals(reason, messageCaptor.getValue().arg2);
+
     }
+
 
     /**
      * Broadcast association rejection test.
@@ -320,12 +349,13 @@ public class WifiMonitorTest {
                 WLAN_IFACE_NAME, WifiMonitor.ASSOCIATION_REJECTION_EVENT, mHandlerSpy);
         int status = 5;
         String bssid = BSSID;
-        mWifiMonitor.broadcastAssociationRejectionEvent(WLAN_IFACE_NAME, status, bssid);
+        mWifiMonitor.broadcastAssociationRejectionEvent(WLAN_IFACE_NAME, status, false, bssid);
         mLooper.dispatchAll();
 
         ArgumentCaptor<Message> messageCaptor = ArgumentCaptor.forClass(Message.class);
         verify(mHandlerSpy).handleMessage(messageCaptor.capture());
         assertEquals(WifiMonitor.ASSOCIATION_REJECTION_EVENT, messageCaptor.getValue().what);
+        assertEquals(0, messageCaptor.getValue().arg1);
         assertEquals(status, messageCaptor.getValue().arg2);
         assertEquals(bssid, (String) messageCaptor.getValue().obj);
     }

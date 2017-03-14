@@ -32,9 +32,16 @@ import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.ArrayUtils;
 import com.android.server.wifi.util.NativeUtil;
 
+import org.json.JSONException;
+import org.json.JSONObject;
+
+import java.io.UnsupportedEncodingException;
+import java.net.URLDecoder;
+import java.net.URLEncoder;
 import java.util.ArrayList;
 import java.util.BitSet;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -57,16 +64,16 @@ public class SupplicantStaNetworkHal {
 
     /**
      * Regex pattern for extracting the GSM sim authentication response params from a string.
-     * Matches a strings like the following: "[:kc:<kc_value>:sres:<sres_value>]";
+     * Matches a strings like the following: "[:<kc_value>:<sres_value>]";
      */
     private static final Pattern GSM_AUTH_RESPONSE_PARAMS_PATTERN =
-            Pattern.compile(":kc:([0-9a-fA-F]+):sres:([0-9a-fA-F]+)");
+            Pattern.compile(":([0-9a-fA-F]+):([0-9a-fA-F]+)");
     /**
      * Regex pattern for extracting the UMTS sim authentication response params from a string.
-     * Matches a strings like the following: ":ik:<ik_value>:ck:<ck_value>:res:<res_value>";
+     * Matches a strings like the following: ":<ik_value>:<ck_value>:<res_value>";
      */
     private static final Pattern UMTS_AUTH_RESPONSE_PARAMS_PATTERN =
-            Pattern.compile("^:ik:([0-9a-fA-F]+):ck:([0-9a-fA-F]+):res:([0-9a-fA-F]+)$");
+            Pattern.compile("^:([0-9a-fA-F]+):([0-9a-fA-F]+):([0-9a-fA-F]+)$");
     /**
      * Regex pattern for extracting the UMTS sim auts response params from a string.
      * Matches a strings like the following: ":<auts_value>";
@@ -95,6 +102,7 @@ public class SupplicantStaNetworkHal {
     private int mGroupCipherMask;
     private int mPairwiseCipherMask;
     private String mPskPassphrase;
+    private byte[] mPsk;
     private ArrayList<Byte> mWepKey;
     private int mWepTxKeyIdx;
     private boolean mRequirePmf;
@@ -182,13 +190,15 @@ public class SupplicantStaNetworkHal {
         for (int i = 0; i < 4; i++) {
             config.wepKeys[i] = null;
             if (getWepKey(i) && !ArrayUtils.isEmpty(mWepKey)) {
-                config.wepKeys[i] = NativeUtil.stringFromByteArrayList(mWepKey);
+                config.wepKeys[i] = NativeUtil.bytesToHexOrQuotedAsciiString(mWepKey);
             }
         }
         /** PSK pass phrase */
         config.preSharedKey = null;
         if (getPskPassphrase() && !TextUtils.isEmpty(mPskPassphrase)) {
-            config.preSharedKey = mPskPassphrase;
+            config.preSharedKey = NativeUtil.addEnclosingQuotes(mPskPassphrase);
+        } else if (getPsk() && !ArrayUtils.isEmpty(mPsk)) {
+            config.preSharedKey = NativeUtil.hexStringFromByteArray(mPsk);
         }
         /** allowedKeyManagement */
         if (getKeyMgmt()) {
@@ -217,7 +227,7 @@ public class SupplicantStaNetworkHal {
         }
         /** metadata: idstr */
         if (getIdStr() && !TextUtils.isEmpty(mIdStr)) {
-            Map<String, String> metadata = WifiNative.parseNetworkExtra(mIdStr);
+            Map<String, String> metadata = parseNetworkExtra(mIdStr);
             networkExtras.putAll(metadata);
         } else {
             Log.e(TAG, "getIdStr failed");
@@ -250,20 +260,28 @@ public class SupplicantStaNetworkHal {
                 return false;
             }
         }
-        /** Pre Shared Key */
-        if (config.preSharedKey != null
-                && !setPskPassphrase(NativeUtil.removeEnclosingQuotes(config.preSharedKey))) {
-            Log.e(TAG, "failed to set psk");
-            return false;
+        /** Pre Shared Key. This can either be quoted ASCII passphrase or hex string for raw psk */
+        if (config.preSharedKey != null) {
+            if (config.preSharedKey.startsWith("\"")) {
+                if (!setPskPassphrase(NativeUtil.removeEnclosingQuotes(config.preSharedKey))) {
+                    Log.e(TAG, "failed to set psk passphrase");
+                    return false;
+                }
+            } else {
+                if (!setPsk(NativeUtil.hexStringToByteArray(config.preSharedKey))) {
+                    Log.e(TAG, "failed to set psk");
+                    return false;
+                }
+            }
         }
+
         /** Wep Keys */
         boolean hasSetKey = false;
         if (config.wepKeys != null) {
             for (int i = 0; i < config.wepKeys.length; i++) {
-                // Prevent client screw-up by passing in a WifiConfiguration we gave it
-                // by preventing "*" as a key.
-                if (config.wepKeys[i] != null && !config.wepKeys[i].equals("*")) {
-                    if (!setWepKey(i, NativeUtil.stringToByteArrayList(config.wepKeys[i]))) {
+                if (config.wepKeys[i] != null) {
+                    if (!setWepKey(
+                            i, NativeUtil.hexOrQuotedAsciiStringToBytes(config.wepKeys[i]))) {
                         Log.e(TAG, "failed to set wep_key " + i);
                         return false;
                     }
@@ -331,7 +349,7 @@ public class SupplicantStaNetworkHal {
         }
         metadata.put(ID_STRING_KEY_CONFIG_KEY, config.configKey());
         metadata.put(ID_STRING_KEY_CREATOR_UID, Integer.toString(config.creatorUid));
-        if (!setIdStr(WifiNative.createNetworkExtra(metadata))) {
+        if (!setIdStr(createNetworkExtra(metadata))) {
             Log.e(TAG, "failed to set id string");
             return false;
         }
@@ -1079,6 +1097,20 @@ public class SupplicantStaNetworkHal {
         }
     }
     /** See ISupplicantStaNetwork.hal for documentation */
+    private boolean setPsk(byte[] psk) {
+        synchronized (mLock) {
+            final String methodStr = "setPsk";
+            if (!checkISupplicantStaNetworkAndLogFailure(methodStr)) return false;
+            try {
+                SupplicantStatus status =  mISupplicantStaNetwork.setPsk(psk);
+                return checkStatusAndLogFailure(status, methodStr);
+            } catch (RemoteException e) {
+                handleRemoteException(e, methodStr);
+                return false;
+            }
+        }
+    }
+    /** See ISupplicantStaNetwork.hal for documentation */
     private boolean setWepKey(int keyIdx, java.util.ArrayList<Byte> wepKey) {
         synchronized (mLock) {
             final String methodStr = "setWepKey";
@@ -1553,6 +1585,28 @@ public class SupplicantStaNetworkHal {
                     statusOk.value = status.code == SupplicantStatusCode.SUCCESS;
                     if (statusOk.value) {
                         this.mPskPassphrase = pskValue;
+                    } else {
+                        checkStatusAndLogFailure(status, methodStr);
+                    }
+                });
+                return statusOk.value;
+            } catch (RemoteException e) {
+                handleRemoteException(e, methodStr);
+                return false;
+            }
+        }
+    }
+    /** See ISupplicantStaNetwork.hal for documentation */
+    private boolean getPsk() {
+        synchronized (mLock) {
+            final String methodStr = "getPsk";
+            if (!checkISupplicantStaNetworkAndLogFailure(methodStr)) return false;
+            try {
+                MutableBoolean statusOk = new MutableBoolean(false);
+                mISupplicantStaNetwork.getPsk((SupplicantStatus status, byte[] pskValue) -> {
+                    statusOk.value = status.code == SupplicantStatusCode.SUCCESS;
+                    if (statusOk.value) {
+                        this.mPsk = pskValue;
                     } else {
                         checkStatusAndLogFailure(status, methodStr);
                     }
@@ -2320,6 +2374,57 @@ public class SupplicantStaNetworkHal {
         return modifiedFlags;
     }
 
+    /**
+     * Creates the JSON encoded network extra using the map of string key, value pairs.
+     */
+    public static String createNetworkExtra(Map<String, String> values) {
+        final String encoded;
+        try {
+            encoded = URLEncoder.encode(new JSONObject(values).toString(), "UTF-8");
+        } catch (NullPointerException e) {
+            Log.e(TAG, "Unable to serialize networkExtra: " + e.toString());
+            return null;
+        } catch (UnsupportedEncodingException e) {
+            Log.e(TAG, "Unable to serialize networkExtra: " + e.toString());
+            return null;
+        }
+        return encoded;
+    }
+
+    /**
+     * Parse the network extra JSON encoded string to a map of string key, value pairs.
+     */
+    public static Map<String, String> parseNetworkExtra(String encoded) {
+        if (TextUtils.isEmpty(encoded)) {
+            return null;
+        }
+        try {
+            // This method reads a JSON dictionary that was written by setNetworkExtra(). However,
+            // on devices that upgraded from Marshmallow, it may encounter a legacy value instead -
+            // an FQDN stored as a plain string. If such a value is encountered, the JSONObject
+            // constructor will thrown a JSONException and the method will return null.
+            final JSONObject json = new JSONObject(URLDecoder.decode(encoded, "UTF-8"));
+            final Map<String, String> values = new HashMap<>();
+            final Iterator<?> it = json.keys();
+            while (it.hasNext()) {
+                final String key = (String) it.next();
+                final Object value = json.get(key);
+                if (value instanceof String) {
+                    values.put(key, (String) value);
+                }
+            }
+            return values;
+        } catch (UnsupportedEncodingException e) {
+            Log.e(TAG, "Unable to deserialize networkExtra: " + e.toString());
+            return null;
+        } catch (JSONException e) {
+            // This is not necessarily an error. This exception will also occur if we encounter a
+            // legacy FQDN stored as a plain string. We want to return null in this case as no JSON
+            // dictionary of extras was found.
+            return null;
+        }
+    }
+
     private static class Mutable<E> {
         public E value;
 
@@ -2367,9 +2472,9 @@ public class SupplicantStaNetworkHal {
                 ISupplicantStaNetworkCallback.NetworkRequestEapSimUmtsAuthParams params) {
             logCallback("onNetworkEapSimUmtsAuthRequest");
             synchronized (mLock) {
-                String autnHex = NativeUtil.hexStringFromByteArray(params.autn);
                 String randHex = NativeUtil.hexStringFromByteArray(params.rand);
-                String[] data = {autnHex, randHex};
+                String autnHex = NativeUtil.hexStringFromByteArray(params.autn);
+                String[] data = {randHex, autnHex};
                 mWifiMonitor.broadcastNetworkUmtsAuthRequestEvent(
                         mIfaceName, mFramewokNetworkId, mSsid, data);
             }

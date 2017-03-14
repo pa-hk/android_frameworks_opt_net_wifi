@@ -30,6 +30,7 @@ import android.text.TextUtils;
 
 import java.net.InetAddress;
 import java.security.cert.X509Certificate;
+import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -60,10 +61,10 @@ public class WifiConfigurationTestUtil {
     public static final int TEST_NETWORK_ID = -1;
     public static final int TEST_UID = 5;
     public static final String TEST_SSID = "WifiConfigurationTestUtilSSID";
-    public static final String TEST_PSK = "WifiConfigurationTestUtilPsk";
+    public static final String TEST_PSK = "\"WifiConfigurationTestUtilPsk\"";
     public static final String[] TEST_WEP_KEYS =
-            {"WifiConfigurationTestUtilWep1", "WifiConfigurationTestUtilWep2",
-                    "WifiConfigurationTestUtilWep3", "WifiConfigurationTestUtilWep3"};
+            {"\"WifiConfigurationTestUtilWep1\"", "\"WifiConfigurationTestUtilWep2\"",
+                    "45342312ab", "45342312ab45342312ab34ac12"};
     public static final int TEST_WEP_TX_KEY_INDEX = 1;
     public static final String TEST_FQDN = "WifiConfigurationTestUtilFQDN";
     public static final String TEST_PROVIDER_FRIENDLY_NAME =
@@ -279,6 +280,15 @@ public class WifiConfigurationTestUtil {
         return configuration;
     }
 
+    public static WifiConfiguration createEapNetwork(int eapMethod, int phase2Method) {
+        WifiConfiguration configuration =
+                generateWifiConfig(TEST_NETWORK_ID, TEST_UID, createNewSSID(), true, true,
+                        null, null, SECURITY_EAP);
+        configuration.enterpriseConfig.setEapMethod(eapMethod);
+        configuration.enterpriseConfig.setPhase2Method(phase2Method);
+        return configuration;
+    }
+
     public static WifiConfiguration createPasspointNetwork() {
         WifiConfiguration configuration =
                 generateWifiConfig(TEST_NETWORK_ID, TEST_UID, createNewSSID(), true, true,
@@ -429,6 +439,7 @@ public class WifiConfigurationTestUtil {
         assertEquals(expected.status, actual.status);
         assertEquals(expected.FQDN, actual.FQDN);
         assertEquals(expected.providerFriendlyName, actual.providerFriendlyName);
+        assertTrue(Arrays.equals(expected.roamingConsortiumIds, actual.roamingConsortiumIds));
         assertEquals(expected.linkedConfigurations, actual.linkedConfigurations);
         assertEquals(expected.defaultGwMacAddress, actual.defaultGwMacAddress);
         assertEquals(expected.validatedInternetAccess, actual.validatedInternetAccess);
@@ -566,6 +577,10 @@ public class WifiConfigurationTestUtil {
                 actual.getFieldValue(WifiEnterpriseConfig.DOM_SUFFIX_MATCH_KEY));
         assertEquals(expected.getFieldValue(WifiEnterpriseConfig.CA_PATH_KEY),
                 actual.getFieldValue(WifiEnterpriseConfig.CA_PATH_KEY));
+        assertEquals(expected.getFieldValue(WifiEnterpriseConfig.REALM_KEY),
+                actual.getFieldValue(WifiEnterpriseConfig.REALM_KEY));
+        assertEquals(expected.getFieldValue(WifiEnterpriseConfig.PLMN_KEY),
+                actual.getFieldValue(WifiEnterpriseConfig.PLMN_KEY));
         assertEquals(expected.getEapMethod(), actual.getEapMethod());
         assertEquals(expected.getPhase2Method(), actual.getPhase2Method());
     }

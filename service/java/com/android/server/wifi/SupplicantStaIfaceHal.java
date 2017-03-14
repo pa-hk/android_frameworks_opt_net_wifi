@@ -43,7 +43,9 @@ import android.net.IpConfiguration;
 import android.net.wifi.SupplicantState;
 import android.net.wifi.WifiConfiguration;
 import android.net.wifi.WifiSsid;
+import android.os.HwRemoteBinder;
 import android.os.RemoteException;
+import android.text.TextUtils;
 import android.util.Log;
 import android.util.SparseArray;
 
@@ -72,7 +74,6 @@ import java.util.regex.Pattern;
  */
 public class SupplicantStaIfaceHal {
     private static final String TAG = "SupplicantStaIfaceHal";
-    private static final String SERVICE_MANAGER_NAME = "manager";
     /**
      * Regex pattern for extracting the wps device type bytes.
      * Matches a strings like the following: "<categ>-<OUI>-<subcateg>";
@@ -80,18 +81,52 @@ public class SupplicantStaIfaceHal {
     private static final Pattern WPS_DEVICE_TYPE_PATTERN =
             Pattern.compile("^(\\d{1,2})-([0-9a-fA-F]{8})-(\\d{1,2})$");
 
+    private final Object mLock = new Object();
     private boolean mVerboseLoggingEnabled = false;
-    private IServiceManager mIServiceManager = null;
+
     // Supplicant HAL interface objects
+    private IServiceManager mIServiceManager = null;
     private ISupplicant mISupplicant;
     private ISupplicantStaIface mISupplicantStaIface;
     private ISupplicantStaIfaceCallback mISupplicantStaIfaceCallback;
+    private final IServiceNotification mServiceNotificationCallback =
+            new IServiceNotification.Stub() {
+        public void onRegistration(String fqName, String name, boolean preexisting) {
+            synchronized (mLock) {
+                if (mVerboseLoggingEnabled) {
+                    Log.i(TAG, "IServiceNotification.onRegistration for: " + fqName
+                            + ", " + name + " preexisting=" + preexisting);
+                }
+                if (!initSupplicantService() || !initSupplicantStaIface()) {
+                    Log.e(TAG, "initalizing ISupplicantIfaces failed.");
+                    supplicantServiceDiedHandler();
+                } else {
+                    Log.i(TAG, "Completed initialization of ISupplicant interfaces.");
+                }
+            }
+        }
+    };
+    private final HwRemoteBinder.DeathRecipient mServiceManagerDeathRecipient =
+            cookie -> {
+                Log.w(TAG, "IServiceManager died: cookie=" + cookie);
+                synchronized (mLock) {
+                    supplicantServiceDiedHandler();
+                    mIServiceManager = null; // Will need to register a new ServiceNotification
+                }
+            };
+    private final HwRemoteBinder.DeathRecipient mSupplicantDeathRecipient =
+            cookie -> {
+                Log.w(TAG, "ISupplicant/ISupplicantStaIface died: cookie=" + cookie);
+                synchronized (mLock) {
+                    supplicantServiceDiedHandler();
+                }
+            };
+
     private String mIfaceName;
     // Currently configured network in wpa_supplicant
     private SupplicantStaNetworkHal mCurrentNetwork;
     // Currently configured network's framework network Id.
     private int mFrameworkNetworkId = WifiConfiguration.INVALID_NETWORK_ID;
-    private final Object mLock = new Object();
     private final Context mContext;
     private final WifiMonitor mWifiMonitor;
 
@@ -108,6 +143,22 @@ public class SupplicantStaIfaceHal {
      */
     void enableVerboseLogging(boolean enable) {
         mVerboseLoggingEnabled = enable;
+    }
+
+    private boolean linkToServiceManagerDeath() {
+        if (mIServiceManager == null) return false;
+        try {
+            if (!mIServiceManager.linkToDeath(mServiceManagerDeathRecipient, 0)) {
+                Log.wtf(TAG, "Error on linkToDeath on IServiceManager");
+                supplicantServiceDiedHandler();
+                mIServiceManager = null; // Will need to register a new ServiceNotification
+                return false;
+            }
+        } catch (RemoteException e) {
+            Log.e(TAG, "IServiceManager.linkToDeath exception", e);
+            return false;
+        }
+        return true;
     }
 
     /**
@@ -131,38 +182,13 @@ public class SupplicantStaIfaceHal {
                     Log.e(TAG, "Failed to get HIDL Service Manager");
                     return false;
                 }
-                if (!mIServiceManager.linkToDeath(cookie -> {
-                    Log.wtf(TAG, "IServiceManager died: cookie=" + cookie);
-                    synchronized (mLock) {
-                        supplicantServiceDiedHandler();
-                        mIServiceManager = null; // Will need to register a new ServiceNotification
-                    }
-                }, 0)) {
-                    Log.wtf(TAG, "Error on linkToDeath on IServiceManager");
-                    supplicantServiceDiedHandler();
-                    mIServiceManager = null; // Will need to register a new ServiceNotification
+                if (!linkToServiceManagerDeath()) {
                     return false;
                 }
-                IServiceNotification serviceNotificationCb = new IServiceNotification.Stub() {
-                    public void onRegistration(String fqName, String name, boolean preexisting) {
-                        synchronized (mLock) {
-                            if (mVerboseLoggingEnabled) {
-                                Log.i(TAG, "IServiceNotification.onRegistration for: " + fqName
-                                        + ", " + name + " preexisting=" + preexisting);
-                            }
-                            if (!initSupplicantService() || !initSupplicantStaIface()) {
-                                Log.e(TAG, "initalizing ISupplicantIfaces failed.");
-                                supplicantServiceDiedHandler();
-                            } else {
-                                Log.i(TAG, "Completed initialization of ISupplicant interfaces.");
-                            }
-                        }
-                    }
-                };
                 /* TODO(b/33639391) : Use the new ISupplicant.registerForNotifications() once it
                    exists */
-                if (!mIServiceManager.registerForNotifications(ISupplicant.kInterfaceName,
-                        "", serviceNotificationCb)) {
+                if (!mIServiceManager.registerForNotifications(
+                        ISupplicant.kInterfaceName, "", mServiceNotificationCallback)) {
                     Log.e(TAG, "Failed to register for notifications to "
                             + ISupplicant.kInterfaceName);
                     mIServiceManager = null; // Will need to register a new ServiceNotification
@@ -177,6 +203,21 @@ public class SupplicantStaIfaceHal {
         }
     }
 
+    private boolean linkToSupplicantDeath() {
+        if (mISupplicant == null) return false;
+        try {
+            if (!mISupplicant.linkToDeath(mSupplicantDeathRecipient, 0)) {
+                Log.wtf(TAG, "Error on linkToDeath on ISupplicant");
+                supplicantServiceDiedHandler();
+                return false;
+            }
+        } catch (RemoteException e) {
+            Log.e(TAG, "ISupplicant.linkToDeath exception", e);
+            return false;
+        }
+        return true;
+    }
+
     private boolean initSupplicantService() {
         synchronized (mLock) {
             try {
@@ -189,6 +230,24 @@ public class SupplicantStaIfaceHal {
                 Log.e(TAG, "Got null ISupplicant service. Stopping supplicant HIDL startup");
                 return false;
             }
+            if (!linkToSupplicantDeath()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean linkToSupplicantStaIfaceDeath() {
+        if (mISupplicantStaIface == null) return false;
+        try {
+            if (!mISupplicantStaIface.linkToDeath(mSupplicantDeathRecipient, 0)) {
+                Log.wtf(TAG, "Error on linkToDeath on ISupplicantStaIface");
+                supplicantServiceDiedHandler();
+                return false;
+            }
+        } catch (RemoteException e) {
+            Log.e(TAG, "ISupplicantStaIface.linkToDeath exception", e);
+            return false;
         }
         return true;
     }
@@ -241,6 +300,9 @@ public class SupplicantStaIfaceHal {
             }
             mISupplicantStaIface = getStaIfaceMockable(supplicantIface.value);
             mIfaceName = ifaceName.value;
+            if (!linkToSupplicantStaIfaceDeath()) {
+                return false;
+            }
             if (!registerCallback(mISupplicantStaIfaceCallback)) {
                 return false;
             }
@@ -274,7 +336,7 @@ public class SupplicantStaIfaceHal {
      * Wrapper functions to access static HAL methods, created to be mockable in unit tests
      */
     protected IServiceManager getServiceManagerMockable() throws RemoteException {
-        return IServiceManager.getService(SERVICE_MANAGER_NAME);
+        return IServiceManager.getService();
     }
 
     protected ISupplicant getSupplicantMockable() throws RemoteException {
@@ -405,9 +467,16 @@ public class SupplicantStaIfaceHal {
             }
             WifiConfiguration config = new WifiConfiguration();
             Map<String, String> networkExtra = new HashMap<>();
-            if (!network.loadWifiConfiguration(config, networkExtra)) {
-                Log.e(TAG, "Failed to load wifi configuration for network with ID: " + networkId);
-                return false;
+            boolean loadSuccess = false;
+            try {
+                loadSuccess = network.loadWifiConfiguration(config, networkExtra);
+            } catch (IllegalArgumentException e) {
+                Log.wtf(TAG, "Exception while loading config params: " + config, e);
+            }
+            if (!loadSuccess) {
+                Log.e(TAG, "Failed to load wifi configuration for network with ID: " + networkId
+                        + ". Skipping...");
+                continue;
             }
             // Set the default IP assignments.
             config.setIpAssignment(IpConfiguration.IpAssignment.DHCP);
@@ -1216,6 +1285,7 @@ public class SupplicantStaIfaceHal {
      * @return true if request is sent successfully, false otherwise.
      */
     public boolean setCountryCode(String codeStr) {
+        if (TextUtils.isEmpty(codeStr)) return false;
         return setCountryCode(NativeUtil.stringToByteArray(codeStr));
     }
 
@@ -1242,6 +1312,7 @@ public class SupplicantStaIfaceHal {
      * @return true if request is sent successfully, false otherwise.
      */
     public boolean startWpsRegistrar(String bssidStr, String pin) {
+        if (TextUtils.isEmpty(bssidStr) || TextUtils.isEmpty(pin)) return false;
         return startWpsRegistrar(NativeUtil.macAddressToByteArray(bssidStr), pin);
     }
 
@@ -1267,6 +1338,7 @@ public class SupplicantStaIfaceHal {
      * @return true if request is sent successfully, false otherwise.
      */
     public boolean startWpsPbc(String bssidStr) {
+        if (TextUtils.isEmpty(bssidStr)) return false;
         return startWpsPbc(NativeUtil.macAddressToByteArray(bssidStr));
     }
 
@@ -1292,6 +1364,7 @@ public class SupplicantStaIfaceHal {
      * @return true if request is sent successfully, false otherwise.
      */
     public boolean startWpsPinKeypad(String pin) {
+        if (TextUtils.isEmpty(pin)) return false;
         synchronized (mLock) {
             final String methodStr = "startWpsPinKeypad";
             if (!checkSupplicantStaIfaceAndLogFailure(methodStr)) return false;
@@ -1312,6 +1385,7 @@ public class SupplicantStaIfaceHal {
      * @return new pin generated on success, null otherwise.
      */
     public String startWpsPinDisplay(String bssidStr) {
+        if (TextUtils.isEmpty(bssidStr)) return null;
         return startWpsPinDisplay(NativeUtil.macAddressToByteArray(bssidStr));
     }
 
@@ -1751,12 +1825,12 @@ public class SupplicantStaIfaceHal {
         }
 
         @Override
-        public void onAssociationRejected(byte[/* 6 */] bssid, int statusCode) {
+        public void onAssociationRejected(byte[/* 6 */] bssid, int statusCode, boolean timedOut) {
             logCallback("onAssociationRejected");
             synchronized (mLock) {
                 // TODO(b/35464954): Need to figure out when to trigger
                 // |WifiMonitor.AUTHENTICATION_FAILURE_REASON_WRONG_PSWD|
-                mWifiMonitor.broadcastAssociationRejectionEvent(mIfaceName, statusCode,
+                mWifiMonitor.broadcastAssociationRejectionEvent(mIfaceName, statusCode, timedOut,
                         NativeUtil.macAddressFromByteArray(bssid));
             }
         }
