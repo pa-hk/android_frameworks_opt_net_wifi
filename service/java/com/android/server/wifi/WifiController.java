@@ -1332,7 +1332,7 @@ public class WifiController extends StateMachine {
                             }
                         } else {
                             mWifiStateMachine.setHostApRunning(null, false);
-                            mPendingState = mStaEnabledState;
+                            mPendingState = mDeviceActiveState;
                         }
                     }
                     break;
