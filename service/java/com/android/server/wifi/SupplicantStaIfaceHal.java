@@ -1334,11 +1334,10 @@ public class SupplicantStaIfaceHal {
     /**
      * Start WPS pin display operation with the specified peer.
      *
-     * @param bssidStr BSSID of the peer.
+     * @param bssidStr BSSID of the peer. Use empty bssid to indicate wildcard.
      * @return true if request is sent successfully, false otherwise.
      */
     public boolean startWpsPbc(String bssidStr) {
-        if (TextUtils.isEmpty(bssidStr)) return false;
         return startWpsPbc(NativeUtil.macAddressToByteArray(bssidStr));
     }
 
@@ -1381,11 +1380,10 @@ public class SupplicantStaIfaceHal {
     /**
      * Start WPS pin display operation with the specified peer.
      *
-     * @param bssidStr BSSID of the peer.
+     * @param bssidStr BSSID of the peer. Use empty bssid to indicate wildcard.
      * @return new pin generated on success, null otherwise.
      */
     public String startWpsPinDisplay(String bssidStr) {
-        if (TextUtils.isEmpty(bssidStr)) return null;
         return startWpsPinDisplay(NativeUtil.macAddressToByteArray(bssidStr));
     }
 
@@ -1440,6 +1438,21 @@ public class SupplicantStaIfaceHal {
             if (!checkSupplicantStaIfaceAndLogFailure(methodStr)) return false;
             try {
                 SupplicantStatus status = mISupplicantStaIface.setExternalSim(useExternalSim);
+                return checkStatusAndLogFailure(status, methodStr);
+            } catch (RemoteException e) {
+                handleRemoteException(e, methodStr);
+                return false;
+            }
+        }
+    }
+
+    /** See ISupplicant.hal for documentation */
+    public boolean enableAutoReconnect(boolean enable) {
+        synchronized (mLock) {
+            final String methodStr = "enableAutoReconnect";
+            if (!checkSupplicantAndLogFailure(methodStr)) return false;
+            try {
+                SupplicantStatus status = mISupplicantStaIface.enableAutoReconnect(enable);
                 return checkStatusAndLogFailure(status, methodStr);
             } catch (RemoteException e) {
                 handleRemoteException(e, methodStr);
@@ -1678,6 +1691,9 @@ public class SupplicantStaIfaceHal {
     }
 
     private class SupplicantStaIfaceHalCallback extends ISupplicantStaIfaceCallback.Stub {
+        private static final int WLAN_REASON_IE_IN_4WAY_DIFFERS = 17; // IEEE 802.11i
+        private boolean mStateIsFourway = false; // Used to help check for PSK password mismatch
+
         /**
          * Parses the provided payload into an ANQP element.
          *
@@ -1755,6 +1771,7 @@ public class SupplicantStaIfaceHal {
                     mWifiMonitor.broadcastNetworkConnectionEvent(
                             mIfaceName, mFrameworkNetworkId, bssidStr);
                 }
+                mStateIsFourway = (newState == ISupplicantStaIfaceCallback.State.FOURWAY_HANDSHAKE);
             }
         }
 
@@ -1818,6 +1835,16 @@ public class SupplicantStaIfaceHal {
         public void onDisconnected(byte[/* 6 */] bssid, boolean locallyGenerated, int reasonCode) {
             logCallback("onDisconnected");
             synchronized (mLock) {
+                if (mVerboseLoggingEnabled) {
+                    Log.e(TAG, "onDisconnected 4way=" + mStateIsFourway
+                            + " locallyGenerated=" + locallyGenerated
+                            + " reasonCode=" + reasonCode);
+                }
+                if (mStateIsFourway
+                        && (!locallyGenerated || reasonCode != WLAN_REASON_IE_IN_4WAY_DIFFERS)) {
+                    mWifiMonitor.broadcastAuthenticationFailureEvent(
+                            mIfaceName, WifiMonitor.AUTHENTICATION_FAILURE_REASON_WRONG_PSWD);
+                }
                 mWifiMonitor.broadcastNetworkDisconnectionEvent(
                         mIfaceName, locallyGenerated ? 1 : 0, reasonCode,
                         NativeUtil.macAddressFromByteArray(bssid));
@@ -1828,8 +1855,6 @@ public class SupplicantStaIfaceHal {
         public void onAssociationRejected(byte[/* 6 */] bssid, int statusCode, boolean timedOut) {
             logCallback("onAssociationRejected");
             synchronized (mLock) {
-                // TODO(b/35464954): Need to figure out when to trigger
-                // |WifiMonitor.AUTHENTICATION_FAILURE_REASON_WRONG_PSWD|
                 mWifiMonitor.broadcastAssociationRejectionEvent(mIfaceName, statusCode, timedOut,
                         NativeUtil.macAddressFromByteArray(bssid));
             }

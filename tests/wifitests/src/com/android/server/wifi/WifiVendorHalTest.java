@@ -449,19 +449,19 @@ public class WifiVendorHalTest {
         mWifiLog = spy(mWifiLog);
         mWifiVendorHal.mLog = mWifiLog;
         mWifiVendorHal.mVerboseLog = mWifiLog;
-        assertFalse(mWifiVendorHal.getScanCapabilities(new WifiNative.ScanCapabilities()));
+        assertFalse(mWifiVendorHal.getBgScanCapabilities(new WifiNative.ScanCapabilities()));
         verify(mWifiLog).err("% returns %");
     }
 
     /**
-     * Test that getApfCapabilities is hooked up to the HAL correctly
+     * Test that getBgScanCapabilities is hooked up to the HAL correctly
      *
      * A call before the vendor HAL is started should return a non-null result with version 0
      *
      * A call after the HAL is started should return the mocked values.
      */
     @Test
-    public void testGetScanCapabilities() throws Exception {
+    public void testGetBgScanCapabilities() throws Exception {
         StaBackgroundScanCapabilities capabilities = new StaBackgroundScanCapabilities();
         capabilities.maxCacheSize = 12;
         capabilities.maxBuckets = 34;
@@ -478,9 +478,9 @@ public class WifiVendorHalTest {
 
         WifiNative.ScanCapabilities result = new WifiNative.ScanCapabilities();
 
-        assertFalse(mWifiVendorHal.getScanCapabilities(result));  // should fail - not started
+        assertFalse(mWifiVendorHal.getBgScanCapabilities(result));  // should fail - not started
         assertTrue(mWifiVendorHal.startVendorHalSta());           // Start the vendor hal
-        assertTrue(mWifiVendorHal.getScanCapabilities(result));   // should succeed
+        assertTrue(mWifiVendorHal.getBgScanCapabilities(result));   // should succeed
 
         assertEquals(12, result.max_scan_cache_size);
         assertEquals(34, result.max_scan_buckets);
@@ -631,7 +631,8 @@ public class WifiVendorHalTest {
         randomizePacketStats(r, stats.iface.wmeBkPktStats);
         randomizePacketStats(r, stats.iface.wmeViPktStats);
         randomizePacketStats(r, stats.iface.wmeVoPktStats);
-        randomizeRadioStats(r, stats.radio);
+        randomizeRadioStats(r, stats.radios);
+
         stats.timeStampInMs = 42; // currently dropped in conversion
 
         String expected = numbersOnly(stats.toString());
@@ -641,11 +642,11 @@ public class WifiVendorHalTest {
         String actual = numbersOnly(converted.toString());
 
         // Do the required fixups to the both expected and actual
-        expected = rmValue(expected, stats.radio.rxTimeInMs);
-        expected = rmValue(expected, stats.radio.onTimeInMsForScan);
+        expected = rmValue(expected, stats.radios.get(0).rxTimeInMs);
+        expected = rmValue(expected, stats.radios.get(0).onTimeInMsForScan);
 
-        actual = rmValue(actual, stats.radio.rxTimeInMs);
-        actual = rmValue(actual, stats.radio.onTimeInMsForScan);
+        actual = rmValue(actual, stats.radios.get(0).rxTimeInMs);
+        actual = rmValue(actual, stats.radios.get(0).onTimeInMsForScan);
         actual = actual + "42 ";
 
         // The remaining fields should agree
@@ -677,15 +678,17 @@ public class WifiVendorHalTest {
    /**
      * Populate radio stats with non-negative random values
      */
-    private static void randomizeRadioStats(Random r, StaLinkLayerRadioStats rstats) {
-        rstats.onTimeInMs = r.nextInt() & 0xFFFFFF;
-        rstats.txTimeInMs = r.nextInt() & 0xFFFFFF;
+    private static void randomizeRadioStats(Random r, ArrayList<StaLinkLayerRadioStats> rstats) {
+        StaLinkLayerRadioStats rstat = new StaLinkLayerRadioStats();
+        rstat.onTimeInMs = r.nextInt() & 0xFFFFFF;
+        rstat.txTimeInMs = r.nextInt() & 0xFFFFFF;
         for (int i = 0; i < 4; i++) {
             Integer v = r.nextInt() & 0xFFFFFF;
-            rstats.txTimeInMsPerLevel.add(v);
+            rstat.txTimeInMsPerLevel.add(v);
         }
-        rstats.rxTimeInMs = r.nextInt() & 0xFFFFFF;
-        rstats.onTimeInMsForScan = r.nextInt() & 0xFFFFFF;
+        rstat.rxTimeInMs = r.nextInt() & 0xFFFFFF;
+        rstat.onTimeInMsForScan = r.nextInt() & 0xFFFFFF;
+        rstats.add(rstat);
     }
 
     /**
@@ -1575,8 +1578,8 @@ public class WifiVendorHalTest {
 
         int cmdId = mWifiVendorHal.mScan.cmdId;
 
-        mWifiVendorHal.stopScan();
-        mWifiVendorHal.stopScan(); // second call should not do anything
+        mWifiVendorHal.stopBgScan();
+        mWifiVendorHal.stopBgScan(); // second call should not do anything
         verify(mIWifiStaIface).stopBackgroundScan(cmdId); // Should be called just once
     }
 
@@ -1593,8 +1596,8 @@ public class WifiVendorHalTest {
 
         int cmdId = mWifiVendorHal.mScan.cmdId;
 
-        mWifiVendorHal.pauseScan();
-        mWifiVendorHal.restartScan();
+        mWifiVendorHal.pauseBgScan();
+        mWifiVendorHal.restartBgScan();
         verify(mIWifiStaIface).stopBackgroundScan(cmdId); // Should be called just once
         verify(mIWifiStaIface, times(2)).startBackgroundScan(eq(cmdId), any());
     }
@@ -1738,7 +1741,7 @@ public class WifiVendorHalTest {
         bucketSettings.period_ms = 16000;
         bucketSettings.report_events = WifiScanner.REPORT_EVENT_AFTER_EACH_SCAN;
         settings.buckets = new WifiNative.BucketSettings[] {bucketSettings};
-        assertTrue(mWifiVendorHal.startScan(settings, eventHandler));
+        assertTrue(mWifiVendorHal.startBgScan(settings, eventHandler));
     }
 
     // Create a pair of HIDL scan result and its corresponding framework scan result for

@@ -671,6 +671,16 @@ public class WifiNative {
     }
 
     /**
+     * Enable/Disable auto reconnect functionality in wpa_supplicant.
+     *
+     * @param enable true to enable auto reconnecting, false to disable.
+     * @return true if request is sent successfully, false otherwise.
+     */
+    public boolean enableStaAutoReconnect(boolean enable) {
+        return mSupplicantStaIfaceHal.enableAutoReconnect(enable);
+    }
+
+    /**
      * Migrate all the configured networks from wpa_supplicant.
      *
      * @param configs       Map of configuration key to configuration objects corresponding to all
@@ -1346,8 +1356,8 @@ public class WifiNative {
      * @param capabilities object to be filled in
      * @return true for success. false for failure
      */
-    public boolean getScanCapabilities(ScanCapabilities capabilities) {
-        return mWifiVendorHal.getScanCapabilities(capabilities);
+    public boolean getBgScanCapabilities(ScanCapabilities capabilities) {
+        return mWifiVendorHal.getBgScanCapabilities(capabilities);
     }
 
     public static class ChannelSettings {
@@ -1496,36 +1506,36 @@ public class WifiNative {
      * @param eventHandler to call with the results
      * @return true for success
      */
-    public boolean startScan(ScanSettings settings, ScanEventHandler eventHandler) {
-        return mWifiVendorHal.startScan(settings, eventHandler);
+    public boolean startBgScan(ScanSettings settings, ScanEventHandler eventHandler) {
+        return mWifiVendorHal.startBgScan(settings, eventHandler);
     }
 
     /**
      * Stops any ongoing backgound scan
      */
-    public void stopScan() {
-        mWifiVendorHal.stopScan();
+    public void stopBgScan() {
+        mWifiVendorHal.stopBgScan();
     }
 
     /**
      * Pauses an ongoing backgound scan
      */
-    public void pauseScan() {
-        mWifiVendorHal.pauseScan();
+    public void pauseBgScan() {
+        mWifiVendorHal.pauseBgScan();
     }
 
     /**
      * Restarts a paused scan
      */
-    public void restartScan() {
-        mWifiVendorHal.restartScan();
+    public void restartBgScan() {
+        mWifiVendorHal.restartBgScan();
     }
 
     /**
      * Gets the latest scan results received.
      */
-    public WifiScanner.ScanData[] getScanResults(boolean flush) {
-        return mWifiVendorHal.getScanResults();
+    public WifiScanner.ScanData[] getBgScanResults() {
+        return mWifiVendorHal.getBgScanResults();
     }
 
     public static interface HotlistEventHandler {

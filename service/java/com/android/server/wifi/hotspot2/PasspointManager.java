@@ -16,19 +16,20 @@
 
 package com.android.server.wifi.hotspot2;
 
-import static android.net.wifi.WifiManager.EXTRA_PASSPOINT_ICON_BSSID;
-import static android.net.wifi.WifiManager.EXTRA_PASSPOINT_ICON_DATA;
-import static android.net.wifi.WifiManager.EXTRA_PASSPOINT_ICON_FILE;
-import static android.net.wifi.WifiManager.EXTRA_PASSPOINT_WNM_BSSID;
-import static android.net.wifi.WifiManager.EXTRA_PASSPOINT_WNM_DELAY;
-import static android.net.wifi.WifiManager.EXTRA_PASSPOINT_WNM_ESS;
-import static android.net.wifi.WifiManager.EXTRA_PASSPOINT_WNM_METHOD;
-import static android.net.wifi.WifiManager.EXTRA_PASSPOINT_WNM_URL;
-import static android.net.wifi.WifiManager.PASSPOINT_ICON_RECEIVED_ACTION;
-import static android.net.wifi.WifiManager.PASSPOINT_WNM_FRAME_RECEIVED_ACTION;
+import static android.net.wifi.WifiManager.ACTION_PASSPOINT_DEAUTH_IMMINENT;
+import static android.net.wifi.WifiManager.ACTION_PASSPOINT_ICON;
+import static android.net.wifi.WifiManager.ACTION_PASSPOINT_SUBSCRIPTION_REMEDIATION;
+import static android.net.wifi.WifiManager.EXTRA_BSSID_LONG;
+import static android.net.wifi.WifiManager.EXTRA_DELAY;
+import static android.net.wifi.WifiManager.EXTRA_ESS;
+import static android.net.wifi.WifiManager.EXTRA_ICON_INFO;
+import static android.net.wifi.WifiManager.EXTRA_SUBSCRIPTION_REMEDIATION_METHOD;
+import static android.net.wifi.WifiManager.EXTRA_URL;
 
 import android.content.Context;
 import android.content.Intent;
+import android.net.wifi.IconInfo;
+import android.net.wifi.ScanResult;
 import android.net.wifi.WifiConfiguration;
 import android.net.wifi.WifiEnterpriseConfig;
 import android.net.wifi.hotspot2.PasspointConfiguration;
@@ -39,13 +40,14 @@ import android.util.Pair;
 
 import com.android.server.wifi.Clock;
 import com.android.server.wifi.SIMAccessor;
-import com.android.server.wifi.ScanDetail;
 import com.android.server.wifi.WifiConfigManager;
 import com.android.server.wifi.WifiConfigStore;
 import com.android.server.wifi.WifiKeyStore;
 import com.android.server.wifi.WifiNative;
 import com.android.server.wifi.hotspot2.anqp.ANQPElement;
 import com.android.server.wifi.hotspot2.anqp.Constants;
+import com.android.server.wifi.util.InformationElementUtil;
+import com.android.server.wifi.util.ScanResultUtil;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -103,57 +105,49 @@ public class PasspointManager {
         public void onANQPResponse(long bssid,
                 Map<Constants.ANQPElementType, ANQPElement> anqpElements) {
             // Notify request manager for the completion of a request.
-            ScanDetail scanDetail =
+            ANQPNetworkKey anqpKey =
                     mAnqpRequestManager.onRequestCompleted(bssid, anqpElements != null);
-            if (anqpElements == null || scanDetail == null) {
+            if (anqpElements == null || anqpKey == null) {
                 // Query failed or the request wasn't originated from us (not tracked by the
                 // request manager). Nothing to be done.
                 return;
             }
 
             // Add new entry to the cache.
-            NetworkDetail networkDetail = scanDetail.getNetworkDetail();
-            ANQPNetworkKey anqpKey = ANQPNetworkKey.buildKey(networkDetail.getSSID(),
-                    networkDetail.getBSSID(), networkDetail.getHESSID(),
-                    networkDetail.getAnqpDomainID());
             mAnqpCache.addEntry(anqpKey, anqpElements);
-
-            // Update ANQP elements in the ScanDetail.
-            scanDetail.propagateANQPInfo(anqpElements);
         }
 
         @Override
         public void onIconResponse(long bssid, String fileName, byte[] data) {
-            Intent intent = new Intent(PASSPOINT_ICON_RECEIVED_ACTION);
+            Intent intent = new Intent(ACTION_PASSPOINT_ICON);
             intent.addFlags(Intent.FLAG_RECEIVER_REGISTERED_ONLY_BEFORE_BOOT);
-            intent.putExtra(EXTRA_PASSPOINT_ICON_BSSID, bssid);
-            intent.putExtra(EXTRA_PASSPOINT_ICON_FILE, fileName);
-            if (data != null) {
-                intent.putExtra(EXTRA_PASSPOINT_ICON_DATA, data);
-            }
-            mContext.sendBroadcastAsUser(intent, UserHandle.ALL);
+            intent.putExtra(EXTRA_BSSID_LONG, bssid);
+            intent.putExtra(EXTRA_ICON_INFO, new IconInfo(fileName, data));
+            mContext.sendBroadcastAsUser(intent, UserHandle.ALL,
+                    android.Manifest.permission.ACCESS_WIFI_STATE);
         }
 
         @Override
         public void onWnmFrameReceived(WnmData event) {
             // %012x HS20-SUBSCRIPTION-REMEDIATION "%u %s", osu_method, url
             // %012x HS20-DEAUTH-IMMINENT-NOTICE "%u %u %s", code, reauth_delay, url
-            Intent intent = new Intent(PASSPOINT_WNM_FRAME_RECEIVED_ACTION);
-            intent.addFlags(Intent.FLAG_RECEIVER_REGISTERED_ONLY_BEFORE_BOOT);
-
-            intent.putExtra(EXTRA_PASSPOINT_WNM_BSSID, event.getBssid());
-            intent.putExtra(EXTRA_PASSPOINT_WNM_URL, event.getUrl());
-
+            Intent intent;
             if (event.isDeauthEvent()) {
-                intent.putExtra(EXTRA_PASSPOINT_WNM_ESS, event.isEss());
-                intent.putExtra(EXTRA_PASSPOINT_WNM_DELAY, event.getDelay());
+                intent = new Intent(ACTION_PASSPOINT_DEAUTH_IMMINENT);
+                intent.addFlags(Intent.FLAG_RECEIVER_REGISTERED_ONLY_BEFORE_BOOT);
+                intent.putExtra(EXTRA_BSSID_LONG, event.getBssid());
+                intent.putExtra(EXTRA_URL, event.getUrl());
+                intent.putExtra(EXTRA_ESS, event.isEss());
+                intent.putExtra(EXTRA_DELAY, event.getDelay());
             } else {
-                intent.putExtra(EXTRA_PASSPOINT_WNM_METHOD, event.getMethod());
-                // TODO(zqiu): set the passpoint matching status with the respect to the
-                // current connected network (e.g. HomeProvider, RoamingProvider, None,
-                // Declined).
+                intent = new Intent(ACTION_PASSPOINT_SUBSCRIPTION_REMEDIATION);
+                intent.addFlags(Intent.FLAG_RECEIVER_REGISTERED_ONLY_BEFORE_BOOT);
+                intent.putExtra(EXTRA_BSSID_LONG, event.getBssid());
+                intent.putExtra(EXTRA_SUBSCRIPTION_REMEDIATION_METHOD, event.getMethod());
+                intent.putExtra(EXTRA_URL, event.getUrl());
             }
-            mContext.sendBroadcastAsUser(intent, UserHandle.ALL);
+            mContext.sendBroadcastAsUser(intent, UserHandle.ALL,
+                    android.Manifest.permission.ACCESS_WIFI_STATE);
         }
     }
 
@@ -282,44 +276,57 @@ public class PasspointManager {
     }
 
     /**
-     * Find the providers that can provide service through the given AP, which means the
-     * providers contained credential to authenticate with the given AP.
+     * Find the best provider that can provide service through the given AP, which means the
+     * provider contained credential to authenticate with the given AP.
      *
-     * An empty list will returned in the case when no match is found.
+     * Here is the current precedence of the matching rule in descending order:
+     * 1. Home Provider
+     * 2. Roaming Provider
      *
-     * @param scanDetail The detail information of the AP
-     * @return List of {@link PasspointProvider}
+     * A {code null} will be returned if no matching is found.
+     *
+     * @param scanResult The scan result associated with the AP
+     * @return A pair of {@link PasspointProvider} and match status.
      */
-    public List<Pair<PasspointProvider, PasspointMatch>> matchProvider(ScanDetail scanDetail) {
+    public Pair<PasspointProvider, PasspointMatch> matchProvider(ScanResult scanResult) {
         // Nothing to be done if no Passpoint provider is installed.
         if (mProviders.isEmpty()) {
-            return new ArrayList<Pair<PasspointProvider, PasspointMatch>>();
+            return null;
         }
 
+        // Retrieve the relevant information elements, mainly Roaming Consortium IE and Hotspot 2.0
+        // Vendor Specific IE.
+        InformationElementUtil.RoamingConsortium roamingConsortium =
+                InformationElementUtil.getRoamingConsortiumIE(scanResult.informationElements);
+        InformationElementUtil.Vsa vsa = InformationElementUtil.getHS2VendorSpecificIE(
+                scanResult.informationElements);
+
         // Lookup ANQP data in the cache.
-        NetworkDetail networkDetail = scanDetail.getNetworkDetail();
-        ANQPNetworkKey anqpKey = ANQPNetworkKey.buildKey(networkDetail.getSSID(),
-                networkDetail.getBSSID(), networkDetail.getHESSID(),
-                networkDetail.getAnqpDomainID());
+        long bssid = Utils.parseMac(scanResult.BSSID);
+        ANQPNetworkKey anqpKey = ANQPNetworkKey.buildKey(scanResult.SSID, bssid, scanResult.hessid,
+                vsa.anqpDomainID);
         ANQPData anqpEntry = mAnqpCache.getEntry(anqpKey);
 
         if (anqpEntry == null) {
-            mAnqpRequestManager.requestANQPElements(networkDetail.getBSSID(), scanDetail,
-                    networkDetail.getAnqpOICount() > 0,
-                    networkDetail.getHSRelease() == NetworkDetail.HSRelease.R2);
-            return new ArrayList<Pair<PasspointProvider, PasspointMatch>>();
+            mAnqpRequestManager.requestANQPElements(bssid, anqpKey,
+                    roamingConsortium.anqpOICount > 0,
+                    vsa.hsRelease  == NetworkDetail.HSRelease.R2);
+            return null;
         }
 
-        List<Pair<PasspointProvider, PasspointMatch>> results = new ArrayList<>();
+        Pair<PasspointProvider, PasspointMatch> bestMatch = null;
         for (Map.Entry<String, PasspointProvider> entry : mProviders.entrySet()) {
             PasspointProvider provider = entry.getValue();
             PasspointMatch matchStatus = provider.match(anqpEntry.getElements());
-            if (matchStatus == PasspointMatch.HomeProvider
-                    || matchStatus == PasspointMatch.RoamingProvider) {
-                results.add(new Pair<PasspointProvider, PasspointMatch>(provider, matchStatus));
+            if (matchStatus == PasspointMatch.HomeProvider) {
+                bestMatch = Pair.create(provider, matchStatus);
+                break;
+            }
+            if (matchStatus == PasspointMatch.RoamingProvider && bestMatch == null) {
+                bestMatch = Pair.create(provider, matchStatus);
             }
         }
-        return results;
+        return bestMatch;
     }
 
     /**
@@ -381,6 +388,51 @@ public class PasspointManager {
      */
     public boolean queryPasspointIcon(long bssid, String fileName) {
         return mHandler.requestIcon(bssid, fileName);
+    }
+
+    /**
+     * Lookup the ANQP elements associated with the given AP from the cache. An empty map
+     * will be returned if no match found in the cache.
+     *
+     * @param scanResult The scan result associated with the AP
+     * @return Map of ANQP elements
+     */
+    public Map<Constants.ANQPElementType, ANQPElement> getANQPElements(ScanResult scanResult) {
+        // Retrieve the Hotspot 2.0 Vendor Specific IE.
+        InformationElementUtil.Vsa vsa =
+                InformationElementUtil.getHS2VendorSpecificIE(scanResult.informationElements);
+
+        // Lookup ANQP data in the cache.
+        long bssid = Utils.parseMac(scanResult.BSSID);
+        ANQPData anqpEntry = mAnqpCache.getEntry(ANQPNetworkKey.buildKey(
+                scanResult.SSID, bssid, scanResult.hessid, vsa.anqpDomainID));
+        if (anqpEntry != null) {
+            return anqpEntry.getElements();
+        }
+        return new HashMap<Constants.ANQPElementType, ANQPElement>();
+    }
+
+    /**
+     * Match the given WiFi AP to an installed Passpoint provider.  A {@link WifiConfiguration}
+     * will be generated and returned if a match is found.  The returned {@link WifiConfiguration}
+     * will contained all the necessary credentials for connecting to the given WiFi AP.
+     *
+     * A {code null} will be returned if no matching provider is found.
+     *
+     * @param scanResult The scan result of the given AP
+     * @return {@link WifiConfiguration}
+     */
+    public WifiConfiguration getMatchingWifiConfig(ScanResult scanResult) {
+        if (scanResult == null) {
+            return null;
+        }
+        Pair<PasspointProvider, PasspointMatch> matchedProvider = matchProvider(scanResult);
+        if (matchedProvider == null) {
+            return null;
+        }
+        WifiConfiguration config = matchedProvider.first.getWifiConfig();
+        config.SSID = ScanResultUtil.createQuotedSSID(scanResult.SSID);
+        return config;
     }
 
     /**

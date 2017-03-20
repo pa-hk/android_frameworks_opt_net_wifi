@@ -16,13 +16,19 @@
 
 package com.android.server.wifi.hotspot2;
 
-import static android.net.wifi.WifiManager.EXTRA_PASSPOINT_ICON_BSSID;
-import static android.net.wifi.WifiManager.EXTRA_PASSPOINT_ICON_DATA;
-import static android.net.wifi.WifiManager.EXTRA_PASSPOINT_ICON_FILE;
-import static android.net.wifi.WifiManager.PASSPOINT_ICON_RECEIVED_ACTION;
+import static android.net.wifi.WifiManager.ACTION_PASSPOINT_DEAUTH_IMMINENT;
+import static android.net.wifi.WifiManager.ACTION_PASSPOINT_ICON;
+import static android.net.wifi.WifiManager.ACTION_PASSPOINT_SUBSCRIPTION_REMEDIATION;
+import static android.net.wifi.WifiManager.EXTRA_BSSID_LONG;
+import static android.net.wifi.WifiManager.EXTRA_DELAY;
+import static android.net.wifi.WifiManager.EXTRA_ESS;
+import static android.net.wifi.WifiManager.EXTRA_ICON_INFO;
+import static android.net.wifi.WifiManager.EXTRA_SUBSCRIPTION_REMEDIATION_METHOD;
+import static android.net.wifi.WifiManager.EXTRA_URL;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.anyBoolean;
@@ -39,6 +45,8 @@ import static org.mockito.MockitoAnnotations.initMocks;
 import android.content.Context;
 import android.content.Intent;
 import android.net.wifi.EAPConstants;
+import android.net.wifi.IconInfo;
+import android.net.wifi.ScanResult;
 import android.net.wifi.WifiConfiguration;
 import android.net.wifi.WifiEnterpriseConfig;
 import android.net.wifi.hotspot2.PasspointConfiguration;
@@ -53,7 +61,6 @@ import com.android.server.wifi.Clock;
 import com.android.server.wifi.FakeKeys;
 import com.android.server.wifi.IMSIParameter;
 import com.android.server.wifi.SIMAccessor;
-import com.android.server.wifi.ScanDetail;
 import com.android.server.wifi.WifiConfigManager;
 import com.android.server.wifi.WifiConfigStore;
 import com.android.server.wifi.WifiKeyStore;
@@ -61,6 +68,7 @@ import com.android.server.wifi.WifiNative;
 import com.android.server.wifi.hotspot2.anqp.ANQPElement;
 import com.android.server.wifi.hotspot2.anqp.Constants.ANQPElementType;
 import com.android.server.wifi.hotspot2.anqp.DomainNameElement;
+import com.android.server.wifi.util.ScanResultUtil;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -88,9 +96,12 @@ public class PasspointManagerTest {
     private static final IMSIParameter TEST_IMSI_PARAM = IMSIParameter.build(TEST_IMSI);
 
     private static final String TEST_SSID = "TestSSID";
-    private static final long TEST_BSSID = 0x1234L;
+    private static final long TEST_BSSID = 0x112233445566L;
+    private static final String TEST_BSSID_STRING = "11:22:33:44:55:66";
     private static final long TEST_HESSID = 0x5678L;
-    private static final int TEST_ANQP_DOMAIN_ID = 1;
+    private static final int TEST_ANQP_DOMAIN_ID = 0;
+    private static final ANQPNetworkKey TEST_ANQP_KEY = ANQPNetworkKey.buildKey(
+            TEST_SSID, TEST_BSSID, TEST_HESSID, TEST_ANQP_DOMAIN_ID);
 
     @Mock Context mContext;
     @Mock WifiNative mWifiNative;
@@ -128,24 +139,22 @@ public class PasspointManagerTest {
     }
 
     /**
-     * Verify PASSPOINT_ICON_RECEIVED_ACTION broadcast intent.
+     * Verify {@link WifiManager#ACTION_PASSPOINT_ICON} broadcast intent.
      * @param bssid BSSID of the AP
      * @param fileName Name of the icon file
      * @param data icon data byte array
      */
     private void verifyIconIntent(long bssid, String fileName, byte[] data) {
         ArgumentCaptor<Intent> intent = ArgumentCaptor.forClass(Intent.class);
-        verify(mContext).sendBroadcastAsUser(intent.capture(), eq(UserHandle.ALL));
-        assertEquals(PASSPOINT_ICON_RECEIVED_ACTION, intent.getValue().getAction());
-        assertTrue(intent.getValue().getExtras().containsKey(EXTRA_PASSPOINT_ICON_BSSID));
-        assertEquals(bssid, intent.getValue().getExtras().getLong(EXTRA_PASSPOINT_ICON_BSSID));
-        assertTrue(intent.getValue().getExtras().containsKey(EXTRA_PASSPOINT_ICON_FILE));
-        assertEquals(fileName, intent.getValue().getExtras().getString(EXTRA_PASSPOINT_ICON_FILE));
-        if (data != null) {
-            assertTrue(intent.getValue().getExtras().containsKey(EXTRA_PASSPOINT_ICON_DATA));
-            assertEquals(data,
-                         intent.getValue().getExtras().getByteArray(EXTRA_PASSPOINT_ICON_DATA));
-        }
+        verify(mContext).sendBroadcastAsUser(intent.capture(), eq(UserHandle.ALL),
+                eq(android.Manifest.permission.ACCESS_WIFI_STATE));
+        assertEquals(ACTION_PASSPOINT_ICON, intent.getValue().getAction());
+        assertTrue(intent.getValue().getExtras().containsKey(EXTRA_BSSID_LONG));
+        assertEquals(bssid, intent.getValue().getExtras().getLong(EXTRA_BSSID_LONG));
+        assertTrue(intent.getValue().getExtras().containsKey(EXTRA_ICON_INFO));
+        IconInfo expectedInfo = new IconInfo(fileName, data);
+        assertEquals(new IconInfo(fileName, data),
+                (IconInfo) intent.getValue().getExtras().getParcelable(EXTRA_ICON_INFO));
     }
 
     /**
@@ -235,20 +244,16 @@ public class PasspointManagerTest {
     }
 
     /**
-     * Helper function for creating a mock ScanDetail.
+     * Helper function for creating a ScanResult for testing.
      *
-     * @return {@link ScanDetail}
+     * @return {@link ScanResult}
      */
-    private ScanDetail createMockScanDetail() {
-        NetworkDetail networkDetail = mock(NetworkDetail.class);
-        when(networkDetail.getSSID()).thenReturn(TEST_SSID);
-        when(networkDetail.getBSSID()).thenReturn(TEST_BSSID);
-        when(networkDetail.getHESSID()).thenReturn(TEST_HESSID);
-        when(networkDetail.getAnqpDomainID()).thenReturn(TEST_ANQP_DOMAIN_ID);
-
-        ScanDetail scanDetail = mock(ScanDetail.class);
-        when(scanDetail.getNetworkDetail()).thenReturn(networkDetail);
-        return scanDetail;
+    private ScanResult createTestScanResult() {
+        ScanResult scanResult = new ScanResult();
+        scanResult.SSID = TEST_SSID;
+        scanResult.BSSID = TEST_BSSID_STRING;
+        scanResult.hessid = TEST_HESSID;
+        return scanResult;
     }
 
     /**
@@ -263,13 +268,9 @@ public class PasspointManagerTest {
         anqpElementMap.put(ANQPElementType.ANQPDomName,
                 new DomainNameElement(Arrays.asList(new String[] {"test.com"})));
 
-        ScanDetail scanDetail = createMockScanDetail();
-        ANQPNetworkKey anqpKey = ANQPNetworkKey.buildKey(TEST_SSID, TEST_BSSID, TEST_HESSID,
-                TEST_ANQP_DOMAIN_ID);
-        when(mAnqpRequestManager.onRequestCompleted(TEST_BSSID, true)).thenReturn(scanDetail);
+        when(mAnqpRequestManager.onRequestCompleted(TEST_BSSID, true)).thenReturn(TEST_ANQP_KEY);
         mCallbacks.onANQPResponse(TEST_BSSID, anqpElementMap);
-        verify(mAnqpCache).addEntry(anqpKey, anqpElementMap);
-        verify(scanDetail).propagateANQPInfo(anqpElementMap);
+        verify(mAnqpCache).addEntry(TEST_ANQP_KEY, anqpElementMap);
     }
 
     /**
@@ -296,11 +297,7 @@ public class PasspointManagerTest {
      */
     @Test
     public void anqpResponseFailure() throws Exception {
-        ANQPNetworkKey anqpKey = ANQPNetworkKey.buildKey(TEST_SSID, TEST_BSSID, TEST_HESSID,
-                TEST_ANQP_DOMAIN_ID);
-
-        ScanDetail scanDetail = createMockScanDetail();
-        when(mAnqpRequestManager.onRequestCompleted(TEST_BSSID, false)).thenReturn(scanDetail);
+        when(mAnqpRequestManager.onRequestCompleted(TEST_BSSID, false)).thenReturn(TEST_ANQP_KEY);
         mCallbacks.onANQPResponse(TEST_BSSID, null);
         verify(mAnqpCache, never()).addEntry(any(ANQPNetworkKey.class), anyMap());
 
@@ -327,6 +324,61 @@ public class PasspointManagerTest {
     public void iconResponseFailure() throws Exception {
         mCallbacks.onIconResponse(BSSID, ICON_FILENAME, null);
         verifyIconIntent(BSSID, ICON_FILENAME, null);
+    }
+
+    /**
+     * Validate the broadcast intent {@link WifiManager#ACTION_PASSPOINT_DEAUTH_IMMINENT} when
+     * Deauth Imminent WNM frame is received.
+     *
+     * @throws Exception
+     */
+    @Test
+    public void onDeauthImminentReceived() throws Exception {
+        String reasonUrl = "test.com";
+        int delay = 123;
+        boolean ess = true;
+
+        mCallbacks.onWnmFrameReceived(new WnmData(BSSID, reasonUrl, ess, delay));
+        // Verify the broadcast intent.
+        ArgumentCaptor<Intent> intent = ArgumentCaptor.forClass(Intent.class);
+        verify(mContext).sendBroadcastAsUser(intent.capture(), eq(UserHandle.ALL),
+                eq(android.Manifest.permission.ACCESS_WIFI_STATE));
+        assertEquals(ACTION_PASSPOINT_DEAUTH_IMMINENT, intent.getValue().getAction());
+        assertTrue(intent.getValue().getExtras().containsKey(EXTRA_BSSID_LONG));
+        assertEquals(BSSID, intent.getValue().getExtras().getLong(EXTRA_BSSID_LONG));
+        assertTrue(intent.getValue().getExtras().containsKey(EXTRA_ESS));
+        assertEquals(ess, intent.getValue().getExtras().getBoolean(EXTRA_ESS));
+        assertTrue(intent.getValue().getExtras().containsKey(EXTRA_DELAY));
+        assertEquals(delay, intent.getValue().getExtras().getInt(EXTRA_DELAY));
+        assertTrue(intent.getValue().getExtras().containsKey(EXTRA_URL));
+        assertEquals(reasonUrl, intent.getValue().getExtras().getString(EXTRA_URL));
+    }
+
+    /**
+     * Validate the broadcast intent {@link WifiManager#ACTION_PASSPOINT_SUBSCRIPTION_REMEDIATION}
+     * when Subscription Remediation WNM frame is received.
+     *
+     * @throws Exception
+     */
+    @Test
+    public void onSubscriptionRemediationReceived() throws Exception {
+        int serverMethod = 1;
+        String serverUrl = "testUrl";
+
+        mCallbacks.onWnmFrameReceived(new WnmData(BSSID, serverUrl, serverMethod));
+        // Verify the broadcast intent.
+        ArgumentCaptor<Intent> intent = ArgumentCaptor.forClass(Intent.class);
+        verify(mContext).sendBroadcastAsUser(intent.capture(), eq(UserHandle.ALL),
+                eq(android.Manifest.permission.ACCESS_WIFI_STATE));
+        assertEquals(ACTION_PASSPOINT_SUBSCRIPTION_REMEDIATION, intent.getValue().getAction());
+        assertTrue(intent.getValue().getExtras().containsKey(EXTRA_BSSID_LONG));
+        assertEquals(BSSID, intent.getValue().getExtras().getLong(EXTRA_BSSID_LONG));
+        assertTrue(intent.getValue().getExtras().containsKey(
+                EXTRA_SUBSCRIPTION_REMEDIATION_METHOD));
+        assertEquals(serverMethod, intent.getValue().getExtras().getInt(
+                EXTRA_SUBSCRIPTION_REMEDIATION_METHOD));
+        assertTrue(intent.getValue().getExtras().containsKey(EXTRA_URL));
+        assertEquals(serverUrl, intent.getValue().getExtras().getString(EXTRA_URL));
     }
 
     /**
@@ -502,19 +554,17 @@ public class PasspointManagerTest {
     }
 
     /**
-     * Verify that an empty list will be returned when no providers are installed.
+     * Verify that a {code null} will be returned when no providers are installed.
      *
      * @throws Exception
      */
     @Test
     public void matchProviderWithNoProvidersInstalled() throws Exception {
-        List<Pair<PasspointProvider, PasspointMatch>> result =
-                mManager.matchProvider(createMockScanDetail());
-        assertTrue(result.isEmpty());
+        assertNull(mManager.matchProvider(createTestScanResult()));
     }
 
     /**
-     * Verify that an empty list will be returned when ANQP entry doesn't exist in the cache.
+     * Verify that a {code null} be returned when ANQP entry doesn't exist in the cache.
      *
      * @throws Exception
      */
@@ -522,20 +572,15 @@ public class PasspointManagerTest {
     public void matchProviderWithAnqpCacheMissed() throws Exception {
         addTestProvider();
 
-        ANQPNetworkKey anqpKey = ANQPNetworkKey.buildKey(TEST_SSID, TEST_BSSID, TEST_HESSID,
-                TEST_ANQP_DOMAIN_ID);
-        when(mAnqpCache.getEntry(anqpKey)).thenReturn(null);
-        List<Pair<PasspointProvider, PasspointMatch>> result =
-                mManager.matchProvider(createMockScanDetail());
+        when(mAnqpCache.getEntry(TEST_ANQP_KEY)).thenReturn(null);
+        assertNull(mManager.matchProvider(createTestScanResult()));
         // Verify that a request for ANQP elements is initiated.
-        verify(mAnqpRequestManager).requestANQPElements(eq(TEST_BSSID), any(ScanDetail.class),
+        verify(mAnqpRequestManager).requestANQPElements(eq(TEST_BSSID), any(ANQPNetworkKey.class),
                 anyBoolean(), anyBoolean());
-        assertTrue(result.isEmpty());
     }
 
     /**
-     * Verify that the returned list will contained an expected provider when a HomeProvider
-     * is matched.
+     * Verify that the expected provider will be returned when a HomeProvider is matched.
      *
      * @throws Exception
      */
@@ -543,20 +588,17 @@ public class PasspointManagerTest {
     public void matchProviderAsHomeProvider() throws Exception {
         PasspointProvider provider = addTestProvider();
         ANQPData entry = new ANQPData(mClock, null);
-        ANQPNetworkKey anqpKey = ANQPNetworkKey.buildKey(TEST_SSID, TEST_BSSID, TEST_HESSID,
-                TEST_ANQP_DOMAIN_ID);
 
-        when(mAnqpCache.getEntry(anqpKey)).thenReturn(entry);
+        when(mAnqpCache.getEntry(TEST_ANQP_KEY)).thenReturn(entry);
         when(provider.match(anyMap())).thenReturn(PasspointMatch.HomeProvider);
-        List<Pair<PasspointProvider, PasspointMatch>> result =
-                mManager.matchProvider(createMockScanDetail());
-        assertEquals(1, result.size());
-        assertEquals(PasspointMatch.HomeProvider, result.get(0).second);
+        Pair<PasspointProvider, PasspointMatch> result =
+                mManager.matchProvider(createTestScanResult());
+        assertEquals(PasspointMatch.HomeProvider, result.second);
+        assertEquals(TEST_FQDN, result.first.getConfig().getHomeSp().getFqdn());
     }
 
     /**
-     * Verify that the returned list will contained an expected provider when a RoamingProvider
-     * is matched.
+     * Verify that the expected provider will be returned when a RoamingProvider is matched.
      *
      * @throws Exception
      */
@@ -564,20 +606,17 @@ public class PasspointManagerTest {
     public void matchProviderAsRoamingProvider() throws Exception {
         PasspointProvider provider = addTestProvider();
         ANQPData entry = new ANQPData(mClock, null);
-        ANQPNetworkKey anqpKey = ANQPNetworkKey.buildKey(TEST_SSID, TEST_BSSID, TEST_HESSID,
-                TEST_ANQP_DOMAIN_ID);
 
-        when(mAnqpCache.getEntry(anqpKey)).thenReturn(entry);
+        when(mAnqpCache.getEntry(TEST_ANQP_KEY)).thenReturn(entry);
         when(provider.match(anyMap())).thenReturn(PasspointMatch.RoamingProvider);
-        List<Pair<PasspointProvider, PasspointMatch>> result =
-                mManager.matchProvider(createMockScanDetail());
-        assertEquals(1, result.size());
-        assertEquals(PasspointMatch.RoamingProvider, result.get(0).second);
-        assertEquals(TEST_FQDN, provider.getConfig().getHomeSp().getFqdn());
+        Pair<PasspointProvider, PasspointMatch> result =
+                mManager.matchProvider(createTestScanResult());
+        assertEquals(PasspointMatch.RoamingProvider, result.second);
+        assertEquals(TEST_FQDN, result.first.getConfig().getHomeSp().getFqdn());
     }
 
     /**
-     * Verify that an empty list will be returned when there is no matching provider.
+     * Verify that a {code null} will be returned when there is no matching provider.
      *
      * @throws Exception
      */
@@ -585,14 +624,10 @@ public class PasspointManagerTest {
     public void matchProviderWithNoMatch() throws Exception {
         PasspointProvider provider = addTestProvider();
         ANQPData entry = new ANQPData(mClock, null);
-        ANQPNetworkKey anqpKey = ANQPNetworkKey.buildKey(TEST_SSID, TEST_BSSID, TEST_HESSID,
-                TEST_ANQP_DOMAIN_ID);
 
-        when(mAnqpCache.getEntry(anqpKey)).thenReturn(entry);
+        when(mAnqpCache.getEntry(TEST_ANQP_KEY)).thenReturn(entry);
         when(provider.match(anyMap())).thenReturn(PasspointMatch.None);
-        List<Pair<PasspointProvider, PasspointMatch>> result =
-                mManager.matchProvider(createMockScanDetail());
-        assertEquals(0, result.size());
+        assertNull(mManager.matchProvider(createTestScanResult()));
     }
 
     /**
@@ -604,6 +639,98 @@ public class PasspointManagerTest {
     public void sweepCache() throws Exception {
         mManager.sweepCache();
         verify(mAnqpCache).sweep();
+    }
+
+    /**
+     * Verify that an empty map will be returned if ANQP elements are not cached for the given AP.
+     *
+     * @throws Exception
+     */
+    @Test
+    public void getANQPElementsWithNoMatchFound() throws Exception {
+        when(mAnqpCache.getEntry(TEST_ANQP_KEY)).thenReturn(null);
+        assertTrue(mManager.getANQPElements(createTestScanResult()).isEmpty());
+    }
+
+    /**
+     * Verify that an expected ANQP elements will be returned if ANQP elements are cached for the
+     * given AP.
+     *
+     * @throws Exception
+     */
+    @Test
+    public void getANQPElementsWithMatchFound() throws Exception {
+        Map<ANQPElementType, ANQPElement> anqpElementMap = new HashMap<>();
+        anqpElementMap.put(ANQPElementType.ANQPDomName,
+                new DomainNameElement(Arrays.asList(new String[] {"test.com"})));
+        ANQPData entry = new ANQPData(mClock, anqpElementMap);
+
+        when(mAnqpCache.getEntry(TEST_ANQP_KEY)).thenReturn(entry);
+        assertEquals(anqpElementMap, mManager.getANQPElements(createTestScanResult()));
+    }
+
+    /**
+     * Verify that an expected {@link WifiConfiguration} will be returned when a {@link ScanResult}
+     * is matched to a home provider.
+     *
+     * @throws Exception
+     */
+    @Test
+    public void getMatchingWifiConfigForHomeProviderAP() throws Exception {
+        PasspointProvider provider = addTestProvider();
+        ANQPData entry = new ANQPData(mClock, null);
+
+        when(mAnqpCache.getEntry(TEST_ANQP_KEY)).thenReturn(entry);
+        when(provider.match(anyMap())).thenReturn(PasspointMatch.HomeProvider);
+        when(provider.getWifiConfig()).thenReturn(new WifiConfiguration());
+        WifiConfiguration config = mManager.getMatchingWifiConfig(createTestScanResult());
+        assertEquals(ScanResultUtil.createQuotedSSID(TEST_SSID), config.SSID);
+    }
+
+    /**
+     * Verify that an expected {@link WifiConfiguration} will be returned when a {@link ScanResult}
+     * is matched to a roaming provider.
+     *
+     * @throws Exception
+     */
+    @Test
+    public void getMatchingWifiConfigForRoamingProviderAP() throws Exception {
+        PasspointProvider provider = addTestProvider();
+        ANQPData entry = new ANQPData(mClock, null);
+
+        when(mAnqpCache.getEntry(TEST_ANQP_KEY)).thenReturn(entry);
+        when(provider.match(anyMap())).thenReturn(PasspointMatch.RoamingProvider);
+        when(provider.getWifiConfig()).thenReturn(new WifiConfiguration());
+        WifiConfiguration config = mManager.getMatchingWifiConfig(createTestScanResult());
+        assertEquals(ScanResultUtil.createQuotedSSID(TEST_SSID), config.SSID);
+    }
+
+    /**
+     * Verify that a {code null} will be returned when a {@link ScanResult} doesn't match any
+     * provider.
+     *
+     * @throws Exception
+     */
+    @Test
+    public void getMatchingWifiConfigWithNoMatchingProvider() throws Exception {
+        PasspointProvider provider = addTestProvider();
+        ANQPData entry = new ANQPData(mClock, null);
+
+        when(mAnqpCache.getEntry(TEST_ANQP_KEY)).thenReturn(entry);
+        when(provider.match(anyMap())).thenReturn(PasspointMatch.None);
+        assertNull(mManager.getMatchingWifiConfig(createTestScanResult()));
+        verify(provider, never()).getWifiConfig();
+    }
+
+    /**
+     * Verify that a {@code null} will returned when trying to get a matching
+     * {@link WifiConfiguration} a {@code null} {@link ScanResult}.
+     *
+     * @throws Exception
+     */
+    @Test
+    public void getMatchingWifiConfigWithNullScanResult() throws Exception {
+        assertNull(mManager.getMatchingWifiConfig(null));
     }
 
     /**

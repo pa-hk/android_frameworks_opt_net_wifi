@@ -926,6 +926,61 @@ public class SupplicantStaIfaceHalTest {
     }
 
     /**
+     * Tests the handling of incorrect network passwords.
+     */
+    @Test
+    public void testAuthFailurePassword() throws Exception {
+        executeAndValidateInitializationSequence();
+        assertNotNull(mISupplicantStaIfaceCallback);
+
+        int reasonCode = 3;
+        mISupplicantStaIfaceCallback.onDisconnected(
+                NativeUtil.macAddressToByteArray(BSSID), true, reasonCode);
+        verify(mWifiMonitor, times(0)).broadcastAuthenticationFailureEvent(any(), anyInt());
+
+        mISupplicantStaIfaceCallback.onDisconnected(
+                NativeUtil.macAddressToByteArray(BSSID), false, reasonCode);
+        verify(mWifiMonitor, times(0)).broadcastAuthenticationFailureEvent(any(), anyInt());
+
+        mISupplicantStaIfaceCallback.onStateChanged(
+                ISupplicantStaIfaceCallback.State.FOURWAY_HANDSHAKE,
+                NativeUtil.macAddressToByteArray(BSSID),
+                SUPPLICANT_NETWORK_ID,
+                NativeUtil.decodeSsid(SUPPLICANT_SSID));
+        mISupplicantStaIfaceCallback.onDisconnected(
+                NativeUtil.macAddressToByteArray(BSSID), true, reasonCode);
+        mISupplicantStaIfaceCallback.onDisconnected(
+                NativeUtil.macAddressToByteArray(BSSID), false, reasonCode);
+
+        verify(mWifiMonitor, times(2)).broadcastAuthenticationFailureEvent(eq(WLAN_IFACE_NAME),
+                eq(WifiMonitor.AUTHENTICATION_FAILURE_REASON_WRONG_PSWD));
+
+    }
+
+     /**
+      * Tests the handling of incorrect network passwords, edge case.
+      *
+      * If the disconnect reason is "IE in 4way differs", do not call it a password mismatch.
+      */
+    @Test
+    public void testIeDiffers() throws Exception {
+        executeAndValidateInitializationSequence();
+        assertNotNull(mISupplicantStaIfaceCallback);
+
+        int reasonCode = 17; // IEEE 802.11i WLAN_REASON_IE_IN_4WAY_DIFFERS
+
+        mISupplicantStaIfaceCallback.onStateChanged(
+                ISupplicantStaIfaceCallback.State.FOURWAY_HANDSHAKE,
+                NativeUtil.macAddressToByteArray(BSSID),
+                SUPPLICANT_NETWORK_ID,
+                NativeUtil.decodeSsid(SUPPLICANT_SSID));
+        mISupplicantStaIfaceCallback.onDisconnected(
+                NativeUtil.macAddressToByteArray(BSSID), true, reasonCode);
+        verify(mWifiMonitor, times(0)).broadcastAuthenticationFailureEvent(any(), anyInt());
+    }
+
+
+    /**
      * Tests the handling of association rejection notification.
      */
     @Test
@@ -1126,6 +1181,29 @@ public class SupplicantStaIfaceHalTest {
 
         assertTrue(mDut.startWpsRegistrar("45:23:12:12:12:98", "562535"));
         verify(mISupplicantStaIfaceMock).startWpsRegistrar(any(byte[].class), anyString());
+    }
+
+    /**
+     * Tests the start of wps PBC.
+     */
+    @Test
+    public void testStartWpsPbc() throws Exception {
+        when(mISupplicantStaIfaceMock.startWpsPbc(any(byte[].class))).thenReturn(mStatusSuccess);
+        String bssid = "45:23:12:12:12:98";
+        byte[] bssidBytes = {0x45, 0x23, 0x12, 0x12, 0x12, (byte) 0x98};
+        byte[] anyBssidBytes = {0, 0, 0, 0, 0, 0};
+
+        // Fail before initialization is performed.
+        assertFalse(mDut.startWpsPbc(bssid));
+        verify(mISupplicantStaIfaceMock, never()).startWpsPbc(any(byte[].class));
+
+        executeAndValidateInitializationSequence();
+
+        assertTrue(mDut.startWpsPbc(bssid));
+        verify(mISupplicantStaIfaceMock).startWpsPbc(eq(bssidBytes));
+
+        assertTrue(mDut.startWpsPbc(null));
+        verify(mISupplicantStaIfaceMock).startWpsPbc(eq(anyBssidBytes));
     }
 
     private void executeAndValidateHs20DeauthImminentCallback(boolean isEss) throws Exception {

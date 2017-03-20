@@ -37,6 +37,7 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
+import android.content.pm.ParceledListSlice;
 import android.database.ContentObserver;
 import android.net.ConnectivityManager;
 import android.net.DhcpInfo;
@@ -687,22 +688,39 @@ public class WifiServiceImpl extends IWifiManager.Stub {
     /**
      * see {@link WifiManager#getWifiApConfiguration()}
      * @return soft access point configuration
+     * @throws SecurityException if the caller does not have permission to retrieve the softap
+     * config
      */
     @Override
     public WifiConfiguration getWifiApConfiguration() {
         enforceAccessPermission();
-        mLog.trace("getWifiApConfiguration uid=%").c(Binder.getCallingUid()).flush();
+        int uid = Binder.getCallingUid();
+        // only allow Settings UI to get the saved SoftApConfig
+        if (!mWifiPermissionsUtil.checkConfigOverridePermission(uid)) {
+            // random apps should not be allowed to read the user specified config
+            throw new SecurityException("App not allowed to read or update stored WiFi Ap config "
+                    + "(uid = " + uid + ")");
+        }
+        mLog.trace("getWifiApConfiguration uid=%").c(uid).flush();
         return mWifiStateMachine.syncGetWifiApConfiguration();
     }
 
     /**
      * see {@link WifiManager#setWifiApConfiguration(WifiConfiguration)}
      * @param wifiConfig WifiConfiguration details for soft access point
+     * @throws SecurityException if the caller does not have permission to write the sotap config
      */
     @Override
     public void setWifiApConfiguration(WifiConfiguration wifiConfig) {
         enforceChangePermission();
-        mLog.trace("setWifiApConfiguration uid=%").c(Binder.getCallingUid()).flush();
+        int uid = Binder.getCallingUid();
+        // only allow Settings UI to write the stored SoftApConfig
+        if (!mWifiPermissionsUtil.checkConfigOverridePermission(uid)) {
+            // random apps should not be allowed to read the user specified config
+            throw new SecurityException("App not allowed to read or update stored WiFi AP config "
+                    + "(uid = " + uid + ")");
+        }
+        mLog.trace("setWifiApConfiguration uid=%").c(uid).flush();
         if (wifiConfig == null)
             return;
         if (isValid(wifiConfig)) {
@@ -852,16 +870,19 @@ public class WifiServiceImpl extends IWifiManager.Stub {
      * @return the list of configured networks
      */
     @Override
-    public List<WifiConfiguration> getConfiguredNetworks() {
+    public ParceledListSlice<WifiConfiguration> getConfiguredNetworks() {
         enforceAccessPermission();
         mLog.trace("getConfiguredNetworks uid=%").c(Binder.getCallingUid()).flush();
         if (mWifiStateMachineChannel != null) {
-            return mWifiStateMachine.syncGetConfiguredNetworks(Binder.getCallingUid(),
-                    mWifiStateMachineChannel);
+            List<WifiConfiguration> configs = mWifiStateMachine.syncGetConfiguredNetworks(
+                    Binder.getCallingUid(), mWifiStateMachineChannel);
+            if (configs != null) {
+                return new ParceledListSlice<WifiConfiguration>(configs);
+            }
         } else {
             Slog.e(TAG, "mWifiStateMachineChannel is not initialized");
-            return null;
         }
+        return null;
     }
 
     /**
@@ -869,16 +890,20 @@ public class WifiServiceImpl extends IWifiManager.Stub {
      * @return the list of configured networks with real preSharedKey
      */
     @Override
-    public List<WifiConfiguration> getPrivilegedConfiguredNetworks() {
+    public ParceledListSlice<WifiConfiguration> getPrivilegedConfiguredNetworks() {
         enforceReadCredentialPermission();
         enforceAccessPermission();
         mLog.trace("getPrivilegedConfiguredNetworks uid=%").c(Binder.getCallingUid()).flush();
         if (mWifiStateMachineChannel != null) {
-            return mWifiStateMachine.syncGetPrivilegedConfiguredNetwork(mWifiStateMachineChannel);
+            List<WifiConfiguration> configs =
+                    mWifiStateMachine.syncGetPrivilegedConfiguredNetwork(mWifiStateMachineChannel);
+            if (configs != null) {
+                return new ParceledListSlice<WifiConfiguration>(configs);
+            }
         } else {
             Slog.e(TAG, "mWifiStateMachineChannel is not initialized");
-            return null;
         }
+        return null;
     }
 
     /**
@@ -1173,18 +1198,9 @@ public class WifiServiceImpl extends IWifiManager.Stub {
                 " with persist set to " + persist);
         enforceConnectivityInternalPermission();
         mLog.trace("setCountryCode uid=%").c(Binder.getCallingUid()).flush();
-        // TODO b/35150708 Log list of channels when country code is updated
         final long token = Binder.clearCallingIdentity();
-        try {
-            if (mCountryCode.setCountryCode(countryCode, persist) && persist) {
-                // Save this country code to persistent storage
-                mFacade.setStringSetting(mContext,
-                        Settings.Global.WIFI_COUNTRY_CODE,
-                        countryCode);
-            }
-        } finally {
-            Binder.restoreCallingIdentity(token);
-        }
+        mCountryCode.setCountryCode(countryCode);
+        Binder.restoreCallingIdentity(token);
     }
 
      /**
@@ -1724,12 +1740,15 @@ public class WifiServiceImpl extends IWifiManager.Stub {
                 /* ignore - local call */
             }
             // Delete all Wifi SSIDs
-            List<WifiConfiguration> networks = getConfiguredNetworks();
-            if (networks != null) {
-                for (WifiConfiguration config : networks) {
-                    removeNetwork(config.networkId);
+            if (mWifiStateMachineChannel != null) {
+                List<WifiConfiguration> networks = mWifiStateMachine.syncGetConfiguredNetworks(
+                        Binder.getCallingUid(), mWifiStateMachineChannel);
+                if (networks != null) {
+                    for (WifiConfiguration config : networks) {
+                        removeNetwork(config.networkId);
+                    }
+                    saveConfiguration();
                 }
-                saveConfiguration();
             }
         }
     }
