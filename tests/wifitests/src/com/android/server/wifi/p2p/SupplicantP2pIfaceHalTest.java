@@ -13,13 +13,15 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.android.server.wifi;
+package com.android.server.wifi.p2p;
 
 import static org.junit.Assert.*;
 import static org.mockito.Matchers.*;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import android.app.test.MockAnswerUtil.AnswerWithArguments;
@@ -42,6 +44,7 @@ import android.net.wifi.p2p.WifiP2pManager;
 import android.net.wifi.p2p.nsd.WifiP2pServiceInfo;
 import android.os.IHwBinder;
 import android.os.RemoteException;
+import android.text.TextUtils;
 
 import com.android.server.wifi.util.NativeUtil;
 
@@ -560,34 +563,47 @@ public class SupplicantP2pIfaceHalTest {
                     ISupplicantP2pIface.connectCallback cb) throws RemoteException {
                 methods.add(method);
 
-                if (method == ISupplicantP2pIface.WpsProvisionMethod.DISPLAY) {
-                    // PIN is only required for PIN methods.
-                    assertEquals(pin, configPin);
+                if (method == ISupplicantP2pIface.WpsProvisionMethod.DISPLAY
+                        && TextUtils.isEmpty(pin)) {
+                    // Return the configPin for DISPLAY method if the pin was not provided.
+                    cb.onValues(mStatusSuccess, configPin);
+                } else {
+                    if (method != ISupplicantP2pIface.WpsProvisionMethod.PBC) {
+                        // PIN is only required for PIN methods.
+                        assertEquals(pin, configPin);
+                    }
+                    // For all the other cases, there is no generated pin.
+                    cb.onValues(mStatusSuccess, "");
                 }
-
-                // Return same pin as provided for test purposes.
-                cb.onValues(mStatusSuccess, pin);
             }
         })
         .when(mISupplicantP2pIfaceMock).connect(
                 eq(mPeerMacAddressBytes), anyInt(), anyString(), anyBoolean(), anyBoolean(),
                 anyInt(), any(ISupplicantP2pIface.connectCallback.class));
 
-        WifiP2pConfig config = createDummyP2pConfig(mPeerMacAddress, WpsInfo.DISPLAY, configPin);
+        WifiP2pConfig config = createDummyP2pConfig(mPeerMacAddress, WpsInfo.DISPLAY, "");
 
         // Default value when service is not initialized.
         assertNull(mDut.connect(config, false));
 
         executeAndValidateInitializationSequence(false, false, false);
+
         assertEquals(configPin, mDut.connect(config, false));
         assertTrue(methods.contains(ISupplicantP2pIface.WpsProvisionMethod.DISPLAY));
+        methods.clear();
 
-        config.wps.setup = WpsInfo.PBC;
-        assertNotNull(mDut.connect(config, false));
+        config = createDummyP2pConfig(mPeerMacAddress, WpsInfo.DISPLAY, configPin);
+        assertTrue(mDut.connect(config, false).isEmpty());
+        assertTrue(methods.contains(ISupplicantP2pIface.WpsProvisionMethod.DISPLAY));
+        methods.clear();
+
+        config = createDummyP2pConfig(mPeerMacAddress, WpsInfo.PBC, "");
+        assertTrue(mDut.connect(config, false).isEmpty());
         assertTrue(methods.contains(ISupplicantP2pIface.WpsProvisionMethod.PBC));
+        methods.clear();
 
-        config.wps.setup = WpsInfo.KEYPAD;
-        assertNotNull(mDut.connect(config, false));
+        config = createDummyP2pConfig(mPeerMacAddress, WpsInfo.KEYPAD, configPin);
+        assertTrue(mDut.connect(config, false).isEmpty());
         assertTrue(methods.contains(ISupplicantP2pIface.WpsProvisionMethod.KEYPAD));
     }
 
@@ -624,6 +640,11 @@ public class SupplicantP2pIfaceHalTest {
         // null pin not valid.
         config.wps.setup = WpsInfo.DISPLAY;
         config.wps.pin = null;
+        assertNull(mDut.connect(config, false));
+
+        // Pin should be empty for PBC.
+        config.wps.setup = WpsInfo.PBC;
+        config.wps.pin = "03455323";
         assertNull(mDut.connect(config, false));
     }
 
@@ -2259,6 +2280,168 @@ public class SupplicantP2pIfaceHalTest {
     }
 
     /**
+     * Sunny day scenario for setClientList()
+     */
+    @Test
+    public void testSetClientList() throws Exception {
+        int testNetworkId = 5;
+        final String client1 = mGroupOwnerMacAddress;
+        final String client2 = mPeerMacAddress;
+
+        executeAndValidateInitializationSequence(false, false, false);
+        doAnswer(new AnswerWithArguments() {
+            public void answer(final int networkId, ISupplicantP2pIface.getNetworkCallback cb) {
+                if (networkId == testNetworkId) {
+                    cb.onValues(mStatusSuccess, mISupplicantP2pNetworkMock);
+                } else {
+                    cb.onValues(mStatusFailure, null);
+                }
+                return;
+            }
+        }).when(mISupplicantP2pIfaceMock)
+                .getNetwork(anyInt(), any(ISupplicantP2pIface.getNetworkCallback.class));
+        when(mISupplicantP2pNetworkMock.setClientList(any(ArrayList.class)))
+                .thenReturn(mStatusSuccess);
+
+        String clientList = client1 + " " + client2;
+        assertTrue(mDut.setClientList(testNetworkId, clientList));
+        verify(mISupplicantP2pIfaceMock)
+                .getNetwork(anyInt(), any(ISupplicantP2pIface.getNetworkCallback.class));
+        ArgumentCaptor<ArrayList> capturedClients = ArgumentCaptor.forClass(ArrayList.class);
+        verify(mISupplicantP2pNetworkMock).setClientList(capturedClients.capture());
+
+        // Convert these to long to help with comparisons.
+        ArrayList<byte[]> clients = capturedClients.getValue();
+        ArrayList<Long> expectedClients = new ArrayList<Long>() {{
+                add(NativeUtil.macAddressToLong(mGroupOwnerMacAddressBytes));
+                add(NativeUtil.macAddressToLong(mPeerMacAddressBytes));
+            }};
+        ArrayList<Long> receivedClients = new ArrayList<Long>();
+        for (byte[] client : clients) {
+            receivedClients.add(NativeUtil.macAddressToLong(client));
+        }
+        assertEquals(expectedClients, receivedClients);
+    }
+
+    /**
+     * Failure scenario for setClientList() when getNetwork returns null.
+     */
+    @Test
+    public void testSetClientListFailureDueToGetNetwork() throws Exception {
+        int testNetworkId = 5;
+        final String client1 = mGroupOwnerMacAddress;
+        final String client2 = mPeerMacAddress;
+
+        executeAndValidateInitializationSequence(false, false, false);
+        doAnswer(new AnswerWithArguments() {
+            public void answer(final int networkId, ISupplicantP2pIface.getNetworkCallback cb) {
+                cb.onValues(mStatusFailure, null);
+                return;
+            }
+        }).when(mISupplicantP2pIfaceMock)
+                .getNetwork(anyInt(), any(ISupplicantP2pIface.getNetworkCallback.class));
+        when(mISupplicantP2pNetworkMock.setClientList(any(ArrayList.class)))
+                .thenReturn(mStatusSuccess);
+
+        String clientList = client1 + " " + client2;
+        assertFalse(mDut.setClientList(testNetworkId, clientList));
+        verify(mISupplicantP2pIfaceMock)
+                .getNetwork(anyInt(), any(ISupplicantP2pIface.getNetworkCallback.class));
+        verify(mISupplicantP2pNetworkMock, never()).setClientList(any(ArrayList.class));
+    }
+
+    /**
+     * Sunny day scenario for getClientList()
+     */
+    @Test
+    public void testGetClientList() throws Exception {
+        int testNetworkId = 5;
+        final String client1 = mGroupOwnerMacAddress;
+        final String client2 = mPeerMacAddress;
+
+        executeAndValidateInitializationSequence(false, false, false);
+        doAnswer(new AnswerWithArguments() {
+            public void answer(final int networkId, ISupplicantP2pIface.getNetworkCallback cb) {
+                if (networkId == testNetworkId) {
+                    cb.onValues(mStatusSuccess, mISupplicantP2pNetworkMock);
+                } else {
+                    cb.onValues(mStatusFailure, null);
+                }
+                return;
+            }
+        }).when(mISupplicantP2pIfaceMock)
+                .getNetwork(anyInt(), any(ISupplicantP2pIface.getNetworkCallback.class));
+        doAnswer(new AnswerWithArguments() {
+            public void answer(ISupplicantP2pNetwork.getClientListCallback cb) {
+                ArrayList<byte[]> clients = new ArrayList<byte[]>() {{
+                        add(mGroupOwnerMacAddressBytes);
+                        add(mPeerMacAddressBytes);
+                    }};
+                cb.onValues(mStatusSuccess, clients);
+                return;
+            }
+        }).when(mISupplicantP2pNetworkMock)
+                .getClientList(any(ISupplicantP2pNetwork.getClientListCallback.class));
+
+        String clientList = client1 + " " + client2;
+        assertEquals(clientList, mDut.getClientList(testNetworkId));
+        verify(mISupplicantP2pIfaceMock)
+                .getNetwork(anyInt(), any(ISupplicantP2pIface.getNetworkCallback.class));
+        verify(mISupplicantP2pNetworkMock)
+                .getClientList(any(ISupplicantP2pNetwork.getClientListCallback.class));
+    }
+
+    /**
+     * Failure scenario for getClientList() when getNetwork returns null.
+     */
+    @Test
+    public void testGetClientListFailureDueToGetNetwork() throws Exception {
+        int testNetworkId = 5;
+        final String client1 = mGroupOwnerMacAddress;
+        final String client2 = mPeerMacAddress;
+
+        executeAndValidateInitializationSequence(false, false, false);
+        doAnswer(new AnswerWithArguments() {
+            public void answer(final int networkId, ISupplicantP2pIface.getNetworkCallback cb) {
+                cb.onValues(mStatusFailure, null);
+                return;
+            }
+        }).when(mISupplicantP2pIfaceMock)
+                .getNetwork(anyInt(), any(ISupplicantP2pIface.getNetworkCallback.class));
+        doAnswer(new AnswerWithArguments() {
+            public void answer(ISupplicantP2pNetwork.getClientListCallback cb) {
+                ArrayList<byte[]> clients = new ArrayList<byte[]>() {{
+                        add(mGroupOwnerMacAddressBytes);
+                        add(mPeerMacAddressBytes);
+                    }};
+                cb.onValues(mStatusSuccess, clients);
+                return;
+            }
+        }).when(mISupplicantP2pNetworkMock)
+                .getClientList(any(ISupplicantP2pNetwork.getClientListCallback.class));
+
+        assertEquals(null, mDut.getClientList(testNetworkId));
+        verify(mISupplicantP2pIfaceMock)
+                .getNetwork(anyInt(), any(ISupplicantP2pIface.getNetworkCallback.class));
+        verify(mISupplicantP2pNetworkMock, never())
+                .getClientList(any(ISupplicantP2pNetwork.getClientListCallback.class));
+    }
+
+    /**
+     * Sunny day scenario for saveConfig()
+     */
+    @Test
+    public void testSaveConfig() throws Exception {
+        when(mISupplicantP2pIfaceMock.saveConfig()).thenReturn(mStatusSuccess);
+
+        // Should fail before initialization.
+        assertFalse(mDut.saveConfig());
+        executeAndValidateInitializationSequence(false, false, false);
+        assertTrue(mDut.saveConfig());
+        verify(mISupplicantP2pIfaceMock).saveConfig();
+    }
+
+    /**
      * Calls.initialize(), mocking various call back answers and verifying flow, asserting for the
      * expected result. Verifies if ISupplicantP2pIface manager is initialized or reset.
      * Each of the arguments will cause a different failure mode when set true.
@@ -2339,9 +2522,7 @@ public class SupplicantP2pIfaceHalTest {
         config.deviceAddress = peerAddress;
 
         config.wps.setup = wpsProvMethod;
-        if (wpsProvMethod == WpsInfo.DISPLAY) {
-            config.wps.pin = pin;
-        }
+        config.wps.pin = pin;
 
         return config;
     }

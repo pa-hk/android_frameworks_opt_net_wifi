@@ -32,6 +32,7 @@ import android.hardware.wifi.supplicant.V1_0.ISupplicantIface;
 import android.hardware.wifi.supplicant.V1_0.ISupplicantNetwork;
 import android.hardware.wifi.supplicant.V1_0.ISupplicantStaIface;
 import android.hardware.wifi.supplicant.V1_0.ISupplicantStaIfaceCallback;
+import android.hardware.wifi.supplicant.V1_0.ISupplicantStaIfaceCallback.BssidChangeReason;
 import android.hardware.wifi.supplicant.V1_0.ISupplicantStaNetwork;
 import android.hardware.wifi.supplicant.V1_0.IfaceType;
 import android.hardware.wifi.supplicant.V1_0.SupplicantStatus;
@@ -1732,18 +1733,6 @@ public class SupplicantStaIfaceHal {
             }
         }
 
-        /**
-         * Helper utility to convert the bssid bytes to long.
-         */
-        private Long toLongBssid(byte[] bssidBytes) {
-            try {
-                return ByteBufferReader.readInteger(
-                        ByteBuffer.wrap(bssidBytes), ByteOrder.BIG_ENDIAN, bssidBytes.length);
-            } catch (BufferUnderflowException | IllegalArgumentException e) {
-                return 0L;
-            }
-        }
-
         @Override
         public void onNetworkAdded(int id) {
             logCallback("onNetworkAdded");
@@ -1765,9 +1754,7 @@ public class SupplicantStaIfaceHal {
                 String bssidStr = NativeUtil.macAddressFromByteArray(bssid);
                 mWifiMonitor.broadcastSupplicantStateChangeEvent(
                         mIfaceName, mFrameworkNetworkId, wifiSsid, bssidStr, newSupplicantState);
-                if (newSupplicantState == SupplicantState.ASSOCIATED) {
-                    mWifiMonitor.broadcastAssociationSuccesfulEvent(mIfaceName, bssidStr);
-                } else if (newSupplicantState == SupplicantState.COMPLETED) {
+                if (newSupplicantState == SupplicantState.COMPLETED) {
                     mWifiMonitor.broadcastNetworkConnectionEvent(
                             mIfaceName, mFrameworkNetworkId, bssidStr);
                 }
@@ -1794,7 +1781,7 @@ public class SupplicantStaIfaceHal {
                 addAnqpElementToMap(elementsMap, HSConnCapability, hs20Data.connectionCapability);
                 addAnqpElementToMap(elementsMap, HSOSUProviders, hs20Data.osuProvidersList);
                 mWifiMonitor.broadcastAnqpDoneEvent(
-                        mIfaceName, new AnqpEvent(toLongBssid(bssid), elementsMap));
+                        mIfaceName, new AnqpEvent(NativeUtil.macAddressToLong(bssid), elementsMap));
             }
         }
 
@@ -1805,7 +1792,7 @@ public class SupplicantStaIfaceHal {
             synchronized (mLock) {
                 mWifiMonitor.broadcastIconDoneEvent(
                         mIfaceName,
-                        new IconEvent(toLongBssid(bssid), fileName, data.size(),
+                        new IconEvent(NativeUtil.macAddressToLong(bssid), fileName, data.size(),
                                 NativeUtil.byteArrayFromArrayList(data)));
             }
         }
@@ -1815,7 +1802,8 @@ public class SupplicantStaIfaceHal {
             logCallback("onHs20SubscriptionRemediation");
             synchronized (mLock) {
                 mWifiMonitor.broadcastWnmEvent(
-                        mIfaceName, new WnmData(toLongBssid(bssid), url, osuMethod));
+                        mIfaceName,
+                        new WnmData(NativeUtil.macAddressToLong(bssid), url, osuMethod));
             }
         }
 
@@ -1826,8 +1814,8 @@ public class SupplicantStaIfaceHal {
             synchronized (mLock) {
                 mWifiMonitor.broadcastWnmEvent(
                         mIfaceName,
-                        new WnmData(toLongBssid(bssid), url, reasonCode == WnmData.ESS,
-                                reAuthDelayInSec));
+                        new WnmData(NativeUtil.macAddressToLong(bssid), url,
+                                reasonCode == WnmData.ESS, reAuthDelayInSec));
             }
         }
 
@@ -1866,6 +1854,20 @@ public class SupplicantStaIfaceHal {
             synchronized (mLock) {
                 mWifiMonitor.broadcastAuthenticationFailureEvent(
                         mIfaceName, WifiMonitor.AUTHENTICATION_FAILURE_REASON_TIMEOUT);
+            }
+        }
+
+        @Override
+        public void onBssidChanged(byte reason, byte[/* 6 */] bssid) {
+            logCallback("onBssidChanged");
+            synchronized (mLock) {
+                if (reason == BssidChangeReason.ASSOC_START) {
+                    mWifiMonitor.broadcastTargetBssidEvent(
+                            mIfaceName, NativeUtil.macAddressFromByteArray(bssid));
+                } else if (reason == BssidChangeReason.ASSOC_COMPLETE) {
+                    mWifiMonitor.broadcastAssociatedBssidEvent(
+                            mIfaceName, NativeUtil.macAddressFromByteArray(bssid));
+                }
             }
         }
 
