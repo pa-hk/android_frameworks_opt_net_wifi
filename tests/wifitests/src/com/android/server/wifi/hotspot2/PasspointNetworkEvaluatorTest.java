@@ -17,6 +17,7 @@
 package com.android.server.wifi.hotspot2;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.any;
@@ -30,7 +31,10 @@ import static org.mockito.MockitoAnnotations.initMocks;
 
 import android.net.wifi.ScanResult;
 import android.net.wifi.WifiConfiguration;
+import android.net.wifi.hotspot2.PasspointConfiguration;
+import android.net.wifi.hotspot2.pps.HomeSp;
 import android.test.suitebuilder.annotation.SmallTest;
+import android.util.LocalLog;
 import android.util.Pair;
 
 import com.android.server.wifi.NetworkUpdateResult;
@@ -64,6 +68,7 @@ public class PasspointNetworkEvaluatorTest {
 
     @Mock PasspointManager mPasspointManager;
     @Mock WifiConfigManager mWifiConfigManager;
+    LocalLog mLocalLog;
     PasspointNetworkEvaluator mEvaluator;
 
     /**
@@ -86,6 +91,11 @@ public class PasspointNetworkEvaluatorTest {
      */
     private static PasspointProvider generateProvider(WifiConfiguration config) {
         PasspointProvider provider = mock(PasspointProvider.class);
+        PasspointConfiguration passpointConfig = new PasspointConfiguration();
+        HomeSp homeSp = new HomeSp();
+        homeSp.setFqdn(config.FQDN);
+        passpointConfig.setHomeSp(homeSp);
+        when(provider.getConfig()).thenReturn(passpointConfig);
         when(provider.getWifiConfig()).thenReturn(config);
         return provider;
     }
@@ -115,7 +125,9 @@ public class PasspointNetworkEvaluatorTest {
     @Before
     public void setUp() throws Exception {
         initMocks(this);
-        mEvaluator = new PasspointNetworkEvaluator(mPasspointManager, mWifiConfigManager, null);
+        mLocalLog = new LocalLog(512);
+        mEvaluator = new PasspointNetworkEvaluator(mPasspointManager, mWifiConfigManager,
+                mLocalLog);
     }
 
     /**
@@ -190,6 +202,7 @@ public class PasspointNetworkEvaluatorTest {
         verify(mWifiConfigManager).addOrUpdateNetwork(addedConfig.capture(), anyInt());
         assertEquals(ScanResultUtil.createQuotedSSID(TEST_SSID1), addedConfig.getValue().SSID);
         assertEquals(TEST_FQDN1, addedConfig.getValue().FQDN);
+        assertTrue(addedConfig.getValue().isHomeProviderNetwork);
         verify(mWifiConfigManager).enableNetwork(eq(TEST_NETWORK_ID), eq(false), anyInt());
         verify(mWifiConfigManager).setNetworkCandidateScanResult(
                 eq(TEST_NETWORK_ID), any(ScanResult.class), anyInt());
@@ -231,6 +244,7 @@ public class PasspointNetworkEvaluatorTest {
         verify(mWifiConfigManager).addOrUpdateNetwork(addedConfig.capture(), anyInt());
         assertEquals(ScanResultUtil.createQuotedSSID(TEST_SSID1), addedConfig.getValue().SSID);
         assertEquals(TEST_FQDN1, addedConfig.getValue().FQDN);
+        assertFalse(addedConfig.getValue().isHomeProviderNetwork);
         verify(mWifiConfigManager).enableNetwork(eq(TEST_NETWORK_ID), eq(false), anyInt());
         verify(mWifiConfigManager).setNetworkCandidateScanResult(
                 eq(TEST_NETWORK_ID), any(ScanResult.class), anyInt());
@@ -274,6 +288,7 @@ public class PasspointNetworkEvaluatorTest {
         verify(mWifiConfigManager).addOrUpdateNetwork(addedConfig.capture(), anyInt());
         assertEquals(ScanResultUtil.createQuotedSSID(TEST_SSID1), addedConfig.getValue().SSID);
         assertEquals(TEST_FQDN1, addedConfig.getValue().FQDN);
+        assertTrue(addedConfig.getValue().isHomeProviderNetwork);
         verify(mWifiConfigManager).enableNetwork(eq(TEST_NETWORK_ID), eq(false), anyInt());
         verify(mWifiConfigManager).setNetworkCandidateScanResult(
                 eq(TEST_NETWORK_ID), any(ScanResult.class), anyInt());

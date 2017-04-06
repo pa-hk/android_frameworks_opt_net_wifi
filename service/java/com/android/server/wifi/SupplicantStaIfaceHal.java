@@ -43,6 +43,7 @@ import android.hidl.manager.V1_0.IServiceNotification;
 import android.net.IpConfiguration;
 import android.net.wifi.SupplicantState;
 import android.net.wifi.WifiConfiguration;
+import android.net.wifi.WifiManager;
 import android.net.wifi.WifiSsid;
 import android.os.HwRemoteBinder;
 import android.os.RemoteException;
@@ -354,7 +355,7 @@ public class SupplicantStaIfaceHal {
      * @param config Config corresponding to the network.
      * @return SupplicantStaNetwork of the added network in wpa_supplicant.
      */
-    private SupplicantStaNetworkHal addNetwork(WifiConfiguration config) {
+    private SupplicantStaNetworkHal addNetworkAndSaveConfig(WifiConfiguration config) {
         logi("addSupplicantStaNetwork via HIDL");
         if (config == null) {
             loge("Cannot add NULL network!");
@@ -365,7 +366,13 @@ public class SupplicantStaIfaceHal {
             loge("Failed to add a network!");
             return null;
         }
-        if (!network.saveWifiConfiguration(config)) {
+        boolean saveSuccess = false;
+        try {
+            saveSuccess = network.saveWifiConfiguration(config);
+        } catch (IllegalArgumentException e) {
+            Log.e(TAG, "Exception while saving config params: " + config, e);
+        }
+        if (!saveSuccess) {
             loge("Failed to save variables for: " + config.configKey());
             if (!removeAllNetworks()) {
                 loge("Failed to remove all networks on failure.");
@@ -385,23 +392,17 @@ public class SupplicantStaIfaceHal {
      * 5. Select the new network in wpa_supplicant.
      *
      * @param config WifiConfiguration parameters for the provided network.
-     * @param shouldDisconnect whether to trigger a disconnection or not.
      * @return {@code true} if it succeeds, {@code false} otherwise
      */
-    public boolean connectToNetwork(WifiConfiguration config, boolean shouldDisconnect) {
+    public boolean connectToNetwork(WifiConfiguration config) {
         mFrameworkNetworkId = WifiConfiguration.INVALID_NETWORK_ID;
         mCurrentNetwork = null;
-        logd("connectToNetwork " + config.configKey()
-                + " (shouldDisconnect " + shouldDisconnect + ")");
-        if (shouldDisconnect && !disconnect()) {
-            loge("Failed to trigger disconnect");
-            return false;
-        }
+        logd("connectToNetwork " + config.configKey());
         if (!removeAllNetworks()) {
             loge("Failed to remove existing networks");
             return false;
         }
-        mCurrentNetwork = addNetwork(config);
+        mCurrentNetwork = addNetworkAndSaveConfig(config);
         if (mCurrentNetwork == null) {
             loge("Failed to add/save network configuration: " + config.configKey());
             return false;
@@ -430,7 +431,7 @@ public class SupplicantStaIfaceHal {
         if (mFrameworkNetworkId != config.networkId || mCurrentNetwork == null) {
             Log.w(TAG, "Cannot roam to a different network, initiate new connection. "
                     + "Current network ID: " + mFrameworkNetworkId);
-            return connectToNetwork(config, false);
+            return connectToNetwork(config);
         }
         String bssid = config.getNetworkSelectionStatus().getNetworkSelectionBSSID();
         logd("roamToNetwork" + config.configKey() + " (bssid " + bssid + ")");
@@ -760,21 +761,26 @@ public class SupplicantStaIfaceHal {
      * @return true if request is sent successfully, false otherwise.
      */
     public boolean setWpsDeviceType(String typeStr) {
-        Matcher match = WPS_DEVICE_TYPE_PATTERN.matcher(typeStr);
-        if (!match.find() || match.groupCount() != 3) {
-            Log.e(TAG, "Malformed WPS device type " + typeStr);
+        try {
+            Matcher match = WPS_DEVICE_TYPE_PATTERN.matcher(typeStr);
+            if (!match.find() || match.groupCount() != 3) {
+                Log.e(TAG, "Malformed WPS device type " + typeStr);
+                return false;
+            }
+            short categ = Short.parseShort(match.group(1));
+            byte[] oui = NativeUtil.hexStringToByteArray(match.group(2));
+            short subCateg = Short.parseShort(match.group(3));
+
+            byte[] bytes = new byte[8];
+            ByteBuffer byteBuffer = ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN);
+            byteBuffer.putShort(categ);
+            byteBuffer.put(oui);
+            byteBuffer.putShort(subCateg);
+            return setWpsDeviceType(bytes);
+        } catch (IllegalArgumentException e) {
+            Log.e(TAG, "Illegal argument " + typeStr, e);
             return false;
         }
-        short categ = Short.parseShort(match.group(1));
-        byte[] oui = NativeUtil.hexStringToByteArray(match.group(2));
-        short subCateg = Short.parseShort(match.group(3));
-
-        byte[] bytes = new byte[8];
-        ByteBuffer byteBuffer = ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN);
-        byteBuffer.putShort(categ);
-        byteBuffer.put(oui);
-        byteBuffer.putShort(subCateg);
-        return setWpsDeviceType(bytes);
     }
 
     private boolean setWpsDeviceType(byte[/* 8 */] type) {
@@ -984,7 +990,12 @@ public class SupplicantStaIfaceHal {
      * @return true if request is sent successfully, false otherwise.
      */
     public boolean initiateTdlsDiscover(String macAddress) {
-        return initiateTdlsDiscover(NativeUtil.macAddressToByteArray(macAddress));
+        try {
+            return initiateTdlsDiscover(NativeUtil.macAddressToByteArray(macAddress));
+        } catch (IllegalArgumentException e) {
+            Log.e(TAG, "Illegal argument " + macAddress, e);
+            return false;
+        }
     }
     /** See ISupplicantStaIface.hal for documentation */
     private boolean initiateTdlsDiscover(byte[/* 6 */] macAddress) {
@@ -1008,7 +1019,12 @@ public class SupplicantStaIfaceHal {
      * @return true if request is sent successfully, false otherwise.
      */
     public boolean initiateTdlsSetup(String macAddress) {
-        return initiateTdlsSetup(NativeUtil.macAddressToByteArray(macAddress));
+        try {
+            return initiateTdlsSetup(NativeUtil.macAddressToByteArray(macAddress));
+        } catch (IllegalArgumentException e) {
+            Log.e(TAG, "Illegal argument " + macAddress, e);
+            return false;
+        }
     }
     /** See ISupplicantStaIface.hal for documentation */
     private boolean initiateTdlsSetup(byte[/* 6 */] macAddress) {
@@ -1031,7 +1047,12 @@ public class SupplicantStaIfaceHal {
      * @return true if request is sent successfully, false otherwise.
      */
     public boolean initiateTdlsTeardown(String macAddress) {
-        return initiateTdlsTeardown(NativeUtil.macAddressToByteArray(macAddress));
+        try {
+            return initiateTdlsTeardown(NativeUtil.macAddressToByteArray(macAddress));
+        } catch (IllegalArgumentException e) {
+            Log.e(TAG, "Illegal argument " + macAddress, e);
+            return false;
+        }
     }
 
     /** See ISupplicantStaIface.hal for documentation */
@@ -1059,8 +1080,13 @@ public class SupplicantStaIfaceHal {
      */
     public boolean initiateAnqpQuery(String bssid, ArrayList<Short> infoElements,
                                      ArrayList<Integer> hs20SubTypes) {
-        return initiateAnqpQuery(
-                NativeUtil.macAddressToByteArray(bssid), infoElements, hs20SubTypes);
+        try {
+            return initiateAnqpQuery(
+                    NativeUtil.macAddressToByteArray(bssid), infoElements, hs20SubTypes);
+        } catch (IllegalArgumentException e) {
+            Log.e(TAG, "Illegal argument " + bssid, e);
+            return false;
+        }
     }
 
     /** See ISupplicantStaIface.hal for documentation */
@@ -1088,7 +1114,12 @@ public class SupplicantStaIfaceHal {
      * @return true if request is sent successfully, false otherwise.
      */
     public boolean initiateHs20IconQuery(String bssid, String fileName) {
-        return initiateHs20IconQuery(NativeUtil.macAddressToByteArray(bssid), fileName);
+        try {
+            return initiateHs20IconQuery(NativeUtil.macAddressToByteArray(bssid), fileName);
+        } catch (IllegalArgumentException e) {
+            Log.e(TAG, "Illegal argument " + bssid, e);
+            return false;
+        }
     }
 
     /** See ISupplicantStaIface.hal for documentation */
@@ -1169,17 +1200,29 @@ public class SupplicantStaIfaceHal {
         }
     }
 
-    public static final byte RX_FILTER_TYPE_V4_MULTICAST =
-            ISupplicantStaIface.RxFilterType.V6_MULTICAST;
-    public static final byte RX_FILTER_TYPE_V6_MULTICAST =
-            ISupplicantStaIface.RxFilterType.V6_MULTICAST;
     /**
      * Add an RX filter.
      *
-     * @param type one of {@link #RX_FILTER_TYPE_V4_MULTICAST} or
-     *        {@link #RX_FILTER_TYPE_V6_MULTICAST} values.
+     * @param type one of {@link WifiNative#RX_FILTER_TYPE_V4_MULTICAST}
+     *        {@link WifiNative#RX_FILTER_TYPE_V6_MULTICAST} values.
      * @return true if request is sent successfully, false otherwise.
      */
+    public boolean addRxFilter(int type) {
+        byte halType;
+        switch (type) {
+            case WifiNative.RX_FILTER_TYPE_V4_MULTICAST:
+                halType = ISupplicantStaIface.RxFilterType.V4_MULTICAST;
+                break;
+            case WifiNative.RX_FILTER_TYPE_V6_MULTICAST:
+                halType = ISupplicantStaIface.RxFilterType.V6_MULTICAST;
+                break;
+            default:
+                Log.e(TAG, "Invalid Rx Filter type: " + type);
+                return false;
+        }
+        return addRxFilter(halType);
+    }
+
     public boolean addRxFilter(byte type) {
         synchronized (mLock) {
             final String methodStr = "addRxFilter";
@@ -1197,10 +1240,26 @@ public class SupplicantStaIfaceHal {
     /**
      * Remove an RX filter.
      *
-     * @param type one of {@link #RX_FILTER_TYPE_V4_MULTICAST} or
-     *        {@link #RX_FILTER_TYPE_V6_MULTICAST} values.
+     * @param type one of {@link WifiNative#RX_FILTER_TYPE_V4_MULTICAST}
+     *        {@link WifiNative#RX_FILTER_TYPE_V6_MULTICAST} values.
      * @return true if request is sent successfully, false otherwise.
      */
+    public boolean removeRxFilter(int type) {
+        byte halType;
+        switch (type) {
+            case WifiNative.RX_FILTER_TYPE_V4_MULTICAST:
+                halType = ISupplicantStaIface.RxFilterType.V4_MULTICAST;
+                break;
+            case WifiNative.RX_FILTER_TYPE_V6_MULTICAST:
+                halType = ISupplicantStaIface.RxFilterType.V6_MULTICAST;
+                break;
+            default:
+                Log.e(TAG, "Invalid Rx Filter type: " + type);
+                return false;
+        }
+        return removeRxFilter(halType);
+    }
+
     public boolean removeRxFilter(byte type) {
         synchronized (mLock) {
             final String methodStr = "removeRxFilter";
@@ -1215,17 +1274,34 @@ public class SupplicantStaIfaceHal {
         }
     }
 
-    public static final byte BT_COEX_MODE_ENABLED = ISupplicantStaIface.BtCoexistenceMode.ENABLED;
-    public static final byte BT_COEX_MODE_DISABLED = ISupplicantStaIface.BtCoexistenceMode.DISABLED;
-    public static final byte BT_COEX_MODE_SENSE = ISupplicantStaIface.BtCoexistenceMode.SENSE;
     /**
      * Set Bt co existense mode.
      *
-     * @param mode one of the above {@link #BT_COEX_MODE_ENABLED}, {@link #BT_COEX_MODE_DISABLED}
-     *             or {@link #BT_COEX_MODE_SENSE} values.
+     * @param mode one of the above {@link WifiNative#BLUETOOTH_COEXISTENCE_MODE_DISABLED},
+     *             {@link WifiNative#BLUETOOTH_COEXISTENCE_MODE_ENABLED} or
+     *             {@link WifiNative#BLUETOOTH_COEXISTENCE_MODE_SENSE}.
      * @return true if request is sent successfully, false otherwise.
      */
-    public boolean setBtCoexistenceMode(byte mode) {
+    public boolean setBtCoexistenceMode(int mode) {
+        byte halMode;
+        switch (mode) {
+            case WifiNative.BLUETOOTH_COEXISTENCE_MODE_ENABLED:
+                halMode = ISupplicantStaIface.BtCoexistenceMode.ENABLED;
+                break;
+            case WifiNative.BLUETOOTH_COEXISTENCE_MODE_DISABLED:
+                halMode = ISupplicantStaIface.BtCoexistenceMode.DISABLED;
+                break;
+            case WifiNative.BLUETOOTH_COEXISTENCE_MODE_SENSE:
+                halMode = ISupplicantStaIface.BtCoexistenceMode.SENSE;
+                break;
+            default:
+                Log.e(TAG, "Invalid Bt Coex mode: " + mode);
+                return false;
+        }
+        return setBtCoexistenceMode(halMode);
+    }
+
+    private boolean setBtCoexistenceMode(byte mode) {
         synchronized (mLock) {
             final String methodStr = "setBtCoexistenceMode";
             if (!checkSupplicantStaIfaceAndLogFailure(methodStr)) return false;
@@ -1314,7 +1390,12 @@ public class SupplicantStaIfaceHal {
      */
     public boolean startWpsRegistrar(String bssidStr, String pin) {
         if (TextUtils.isEmpty(bssidStr) || TextUtils.isEmpty(pin)) return false;
-        return startWpsRegistrar(NativeUtil.macAddressToByteArray(bssidStr), pin);
+        try {
+            return startWpsRegistrar(NativeUtil.macAddressToByteArray(bssidStr), pin);
+        } catch (IllegalArgumentException e) {
+            Log.e(TAG, "Illegal argument " + bssidStr, e);
+            return false;
+        }
     }
 
     /** See ISupplicantStaIface.hal for documentation */
@@ -1339,7 +1420,12 @@ public class SupplicantStaIfaceHal {
      * @return true if request is sent successfully, false otherwise.
      */
     public boolean startWpsPbc(String bssidStr) {
-        return startWpsPbc(NativeUtil.macAddressToByteArray(bssidStr));
+        try {
+            return startWpsPbc(NativeUtil.macAddressToByteArray(bssidStr));
+        } catch (IllegalArgumentException e) {
+            Log.e(TAG, "Illegal argument " + bssidStr, e);
+            return false;
+        }
     }
 
     /** See ISupplicantStaIface.hal for documentation */
@@ -1385,7 +1471,12 @@ public class SupplicantStaIfaceHal {
      * @return new pin generated on success, null otherwise.
      */
     public String startWpsPinDisplay(String bssidStr) {
-        return startWpsPinDisplay(NativeUtil.macAddressToByteArray(bssidStr));
+        try {
+            return startWpsPinDisplay(NativeUtil.macAddressToByteArray(bssidStr));
+        } catch (IllegalArgumentException e) {
+            Log.e(TAG, "Illegal argument " + bssidStr, e);
+            return null;
+        }
     }
 
     /** See ISupplicantStaIface.hal for documentation */
@@ -1462,19 +1553,17 @@ public class SupplicantStaIfaceHal {
         }
     }
 
-    public static final int LOG_LEVEL_EXCESSIVE = ISupplicant.DebugLevel.EXCESSIVE;
-    public static final int LOG_LEVEL_MSGDUMP = ISupplicant.DebugLevel.MSGDUMP;
-    public static final int LOG_LEVEL_DEBUG = ISupplicant.DebugLevel.DEBUG;
-    public static final int LOG_LEVEL_INFO = ISupplicant.DebugLevel.INFO;
-    public static final int LOG_LEVEL_WARNING = ISupplicant.DebugLevel.WARNING;
-    public static final int LOG_LEVEL_ERROR = ISupplicant.DebugLevel.ERROR;
     /**
      * Set the debug log level for wpa_supplicant
-     * @param level One of the above {@link #LOG_LEVEL_EXCESSIVE} - {@link #LOG_LEVEL_ERROR} value.
+     *
+     * @param turnOnVerbose Whether to turn on verbose logging or not.
      * @return true if request is sent successfully, false otherwise.
      */
-    public boolean setLogLevel(int level) {
-        return setDebugParams(level, false, false);
+    public boolean setLogLevel(boolean turnOnVerbose) {
+        int logLevel = turnOnVerbose
+                ? ISupplicant.DebugLevel.DEBUG
+                : ISupplicant.DebugLevel.INFO;
+        return setDebugParams(logLevel, false, false);
     }
 
     /** See ISupplicant.hal for documentation */
@@ -1831,7 +1920,7 @@ public class SupplicantStaIfaceHal {
                 if (mStateIsFourway
                         && (!locallyGenerated || reasonCode != WLAN_REASON_IE_IN_4WAY_DIFFERS)) {
                     mWifiMonitor.broadcastAuthenticationFailureEvent(
-                            mIfaceName, WifiMonitor.AUTHENTICATION_FAILURE_REASON_WRONG_PSWD);
+                            mIfaceName, WifiManager.ERROR_AUTH_FAILURE_WRONG_PSWD);
                 }
                 mWifiMonitor.broadcastNetworkDisconnectionEvent(
                         mIfaceName, locallyGenerated ? 1 : 0, reasonCode,
@@ -1853,7 +1942,7 @@ public class SupplicantStaIfaceHal {
             logCallback("onAuthenticationTimeout");
             synchronized (mLock) {
                 mWifiMonitor.broadcastAuthenticationFailureEvent(
-                        mIfaceName, WifiMonitor.AUTHENTICATION_FAILURE_REASON_TIMEOUT);
+                        mIfaceName, WifiManager.ERROR_AUTH_FAILURE_TIMEOUT);
             }
         }
 
@@ -1876,7 +1965,7 @@ public class SupplicantStaIfaceHal {
             logCallback("onEapFailure");
             synchronized (mLock) {
                 mWifiMonitor.broadcastAuthenticationFailureEvent(
-                        mIfaceName, WifiMonitor.AUTHENTICATION_FAILURE_REASON_EAP_FAILURE);
+                        mIfaceName, WifiManager.ERROR_AUTH_FAILURE_EAP_FAILURE);
             }
         }
 

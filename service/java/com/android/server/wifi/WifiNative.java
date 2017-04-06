@@ -272,10 +272,7 @@ public class WifiNative {
      * @param turnOnVerbose Whether to turn on verbose logging or not.
      */
     public void setSupplicantLogLevel(boolean turnOnVerbose) {
-        int logLevel = turnOnVerbose
-                ? SupplicantStaIfaceHal.LOG_LEVEL_DEBUG
-                : SupplicantStaIfaceHal.LOG_LEVEL_INFO;
-        mSupplicantStaIfaceHal.setLogLevel(logLevel);
+        mSupplicantStaIfaceHal.setLogLevel(turnOnVerbose);
     }
 
     /**
@@ -314,6 +311,8 @@ public class WifiNative {
         return mSupplicantStaIfaceHal.getMacAddress();
     }
 
+    public static final int RX_FILTER_TYPE_V4_MULTICAST = 0;
+    public static final int RX_FILTER_TYPE_V6_MULTICAST = 1;
     /**
      * Start filtering out Multicast V4 packets
      * @return {@code true} if the operation succeeded, {@code false} otherwise
@@ -341,7 +340,7 @@ public class WifiNative {
     public boolean startFilteringMulticastV4Packets() {
         return mSupplicantStaIfaceHal.stopRxFilter()
                 && mSupplicantStaIfaceHal.removeRxFilter(
-                SupplicantStaIfaceHal.RX_FILTER_TYPE_V4_MULTICAST)
+                RX_FILTER_TYPE_V4_MULTICAST)
                 && mSupplicantStaIfaceHal.startRxFilter();
     }
 
@@ -352,7 +351,7 @@ public class WifiNative {
     public boolean stopFilteringMulticastV4Packets() {
         return mSupplicantStaIfaceHal.stopRxFilter()
                 && mSupplicantStaIfaceHal.addRxFilter(
-                SupplicantStaIfaceHal.RX_FILTER_TYPE_V4_MULTICAST)
+                RX_FILTER_TYPE_V4_MULTICAST)
                 && mSupplicantStaIfaceHal.startRxFilter();
     }
 
@@ -363,7 +362,7 @@ public class WifiNative {
     public boolean startFilteringMulticastV6Packets() {
         return mSupplicantStaIfaceHal.stopRxFilter()
                 && mSupplicantStaIfaceHal.removeRxFilter(
-                SupplicantStaIfaceHal.RX_FILTER_TYPE_V6_MULTICAST)
+                RX_FILTER_TYPE_V6_MULTICAST)
                 && mSupplicantStaIfaceHal.startRxFilter();
     }
 
@@ -374,16 +373,13 @@ public class WifiNative {
     public boolean stopFilteringMulticastV6Packets() {
         return mSupplicantStaIfaceHal.stopRxFilter()
                 && mSupplicantStaIfaceHal.addRxFilter(
-                SupplicantStaIfaceHal.RX_FILTER_TYPE_V6_MULTICAST)
+                RX_FILTER_TYPE_V6_MULTICAST)
                 && mSupplicantStaIfaceHal.startRxFilter();
     }
 
-    public static final int BLUETOOTH_COEXISTENCE_MODE_ENABLED  =
-            SupplicantStaIfaceHal.BT_COEX_MODE_ENABLED;
-    public static final int BLUETOOTH_COEXISTENCE_MODE_DISABLED =
-            SupplicantStaIfaceHal.BT_COEX_MODE_DISABLED;
-    public static final int BLUETOOTH_COEXISTENCE_MODE_SENSE    =
-            SupplicantStaIfaceHal.BT_COEX_MODE_SENSE;
+    public static final int BLUETOOTH_COEXISTENCE_MODE_ENABLED  = 0;
+    public static final int BLUETOOTH_COEXISTENCE_MODE_DISABLED = 1;
+    public static final int BLUETOOTH_COEXISTENCE_MODE_SENSE    = 2;
     /**
       * Sets the bluetooth coexistence mode.
       *
@@ -393,7 +389,7 @@ public class WifiNative {
       * @return Whether the mode was successfully set.
       */
     public boolean setBluetoothCoexistenceMode(int mode) {
-        return mSupplicantStaIfaceHal.setBtCoexistenceMode((byte) mode);
+        return mSupplicantStaIfaceHal.setBtCoexistenceMode(mode);
     }
 
     /**
@@ -673,19 +669,17 @@ public class WifiNative {
     /**
      * Add the provided network configuration to wpa_supplicant and initiate connection to it.
      * This method does the following:
-     * 1. Triggers disconnect command to wpa_supplicant (if |shouldDisconnect| is true).
-     * 2. Remove any existing network in wpa_supplicant.
-     * 3. Add a new network to wpa_supplicant.
-     * 4. Save the provided configuration to wpa_supplicant.
-     * 5. Select the new network in wpa_supplicant.
-     * 6. Triggers reconnect command to wpa_supplicant.
+     * 1. Remove any existing network in wpa_supplicant(This implicitly triggers disconnect).
+     * 2. Add a new network to wpa_supplicant.
+     * 3. Save the provided configuration to wpa_supplicant.
+     * 4. Select the new network in wpa_supplicant.
+     * 5. Triggers reconnect command to wpa_supplicant.
      *
      * @param configuration WifiConfiguration parameters for the provided network.
-     * @param shouldDisconnect whether to trigger a disconnection or not.
      * @return {@code true} if it succeeds, {@code false} otherwise
      */
-    public boolean connectToNetwork(WifiConfiguration configuration, boolean shouldDisconnect) {
-        return mSupplicantStaIfaceHal.connectToNetwork(configuration, shouldDisconnect);
+    public boolean connectToNetwork(WifiConfiguration configuration) {
+        return mSupplicantStaIfaceHal.connectToNetwork(configuration);
     }
 
     /**
@@ -775,18 +769,27 @@ public class WifiNative {
      *
      * @return Hex string corresponding to the WPS NFC token.
      */
-    public String getNfcWpsConfigurationToken(int netId) {
+    public String getCurrentNetworkWpsNfcConfigurationToken() {
         return mSupplicantStaIfaceHal.getCurrentNetworkWpsNfcConfigurationToken();
     }
     /********************************************************
      * Vendor HAL operations
      ********************************************************/
+    /**
+     * Callback to notify vendor HAL death.
+     */
+    public interface VendorHalDeathEventHandler {
+        /**
+         * Invoked when the vendor HAL dies.
+         */
+        void onDeath();
+    }
 
     /**
      * Initializes the vendor HAL. This is just used to initialize the {@link HalDeviceManager}.
      */
-    public boolean initializeVendorHal() {
-        return mWifiVendorHal.initialize();
+    public boolean initializeVendorHal(VendorHalDeathEventHandler handler) {
+        return mWifiVendorHal.initialize(handler);
     }
 
     /**
@@ -819,12 +822,6 @@ public class WifiNative {
         public int  max_ap_cache_per_scan;
         public int  max_rssi_sample_size;
         public int  max_scan_reporting_threshold;
-        public int  max_hotlist_bssids;
-        public int  max_significant_wifi_change_aps;
-        public int  max_bssid_history_entries;
-        public int  max_number_epno_networks;
-        public int  max_number_epno_networks_by_ssid;
-        public int  max_number_of_white_listed_ssid;
     }
 
     /**
@@ -1015,41 +1012,8 @@ public class WifiNative {
         return mWifiVendorHal.getBgScanResults();
     }
 
-    public static interface HotlistEventHandler {
-        void onHotlistApFound (ScanResult[] result);
-        void onHotlistApLost  (ScanResult[] result);
-    }
-
-    public boolean setHotlist(WifiScanner.HotlistSettings settings,
-            HotlistEventHandler eventHandler) {
-        Log.e(mTAG, "setHotlist not supported");
-        return false;
-    }
-
-    public void resetHotlist() {
-        Log.e(mTAG, "resetHotlist not supported");
-    }
-
-    public static interface SignificantWifiChangeEventHandler {
-        void onChangesFound(ScanResult[] result);
-    }
-
-    public boolean trackSignificantWifiChange(
-            WifiScanner.WifiChangeSettings settings, SignificantWifiChangeEventHandler handler) {
-        Log.e(mTAG, "trackSignificantWifiChange not supported");
-        return false;
-    }
-
-    public void untrackSignificantWifiChange() {
-        Log.e(mTAG, "untrackSignificantWifiChange not supported");
-    }
-
     public WifiLinkLayerStats getWifiLinkLayerStats(String iface) {
         return mWifiVendorHal.getWifiLinkLayerStats();
-    }
-
-    public void setWifiLinkLayerStats(String iface, int enable) {
-        // TODO(b//36087365) Remove this. Link layer stats is enabled when the HAL is started.
     }
 
     /**
@@ -1137,16 +1101,6 @@ public class WifiNative {
      */
     public boolean isGetChannelsForBandSupported() {
         return mWifiVendorHal.isGetChannelsForBandSupported();
-    }
-
-    /**
-     * Set DFS - actually, this is always on.
-     *
-     * @param dfsOn
-     * @return success indication
-     */
-    public boolean setDfsFlag(boolean dfsOn) {
-        return mWifiVendorHal.setDfsFlag(dfsOn);
     }
 
     /**

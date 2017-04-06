@@ -201,42 +201,45 @@ public class WifiServiceImpl extends IWifiManager.Stub {
                     ac.connect(mContext, this, msg.replyTo);
                     break;
                 }
-                /* Client commands are forwarded to state machine */
-                case WifiManager.CONNECT_NETWORK:
-                case WifiManager.SAVE_NETWORK: {
+                case WifiManager.CONNECT_NETWORK: {
                     WifiConfiguration config = (WifiConfiguration) msg.obj;
                     int networkId = msg.arg1;
-                    if (msg.what == WifiManager.SAVE_NETWORK) {
-                        Slog.d("WiFiServiceImpl ", "SAVE"
-                                + " nid=" + Integer.toString(networkId)
-                                + " uid=" + msg.sendingUid
-                                + " name="
-                                + mContext.getPackageManager().getNameForUid(msg.sendingUid));
-                    }
-                    if (msg.what == WifiManager.CONNECT_NETWORK) {
-                        Slog.d("WiFiServiceImpl ", "CONNECT "
-                                + " nid=" + Integer.toString(networkId)
-                                + " uid=" + msg.sendingUid
-                                + " name="
-                                + mContext.getPackageManager().getNameForUid(msg.sendingUid));
-                    }
-
+                    Slog.d("WiFiServiceImpl ", "CONNECT "
+                            + " nid=" + Integer.toString(networkId)
+                            + " uid=" + msg.sendingUid
+                            + " name="
+                            + mContext.getPackageManager().getNameForUid(msg.sendingUid));
                     if (config != null && isValid(config)) {
-                        if (DBG) Slog.d(TAG, "Connect with config" + config);
+                        if (DBG) Slog.d(TAG, "Connect with config " + config);
+                        /* Command is forwarded to state machine */
                         mWifiStateMachine.sendMessage(Message.obtain(msg));
                     } else if (config == null
                             && networkId != WifiConfiguration.INVALID_NETWORK_ID) {
-                        if (DBG) Slog.d(TAG, "Connect with networkId" + networkId);
+                        if (DBG) Slog.d(TAG, "Connect with networkId " + networkId);
                         mWifiStateMachine.sendMessage(Message.obtain(msg));
                     } else {
                         Slog.e(TAG, "ClientHandler.handleMessage ignoring invalid msg=" + msg);
-                        if (msg.what == WifiManager.CONNECT_NETWORK) {
-                            replyFailed(msg, WifiManager.CONNECT_NETWORK_FAILED,
-                                    WifiManager.INVALID_ARGS);
-                        } else {
-                            replyFailed(msg, WifiManager.SAVE_NETWORK_FAILED,
-                                    WifiManager.INVALID_ARGS);
-                        }
+                        replyFailed(msg, WifiManager.CONNECT_NETWORK_FAILED,
+                                WifiManager.INVALID_ARGS);
+                    }
+                    break;
+                }
+                case WifiManager.SAVE_NETWORK: {
+                    WifiConfiguration config = (WifiConfiguration) msg.obj;
+                    int networkId = msg.arg1;
+                    Slog.d("WiFiServiceImpl ", "SAVE"
+                            + " nid=" + Integer.toString(networkId)
+                            + " uid=" + msg.sendingUid
+                            + " name="
+                            + mContext.getPackageManager().getNameForUid(msg.sendingUid));
+                    if (config != null && isValid(config)) {
+                        if (DBG) Slog.d(TAG, "Save network with config " + config);
+                        /* Command is forwarded to state machine */
+                        mWifiStateMachine.sendMessage(Message.obtain(msg));
+                    } else {
+                        Slog.e(TAG, "ClientHandler.handleMessage ignoring invalid msg=" + msg);
+                        replyFailed(msg, WifiManager.SAVE_NETWORK_FAILED,
+                                WifiManager.INVALID_ARGS);
                     }
                     break;
                 }
@@ -438,22 +441,6 @@ public class WifiServiceImpl extends IWifiManager.Stub {
     }
 
     /**
-     * see {@link android.net.wifi.WifiManager#pingSupplicant()}
-     * @return {@code true} if the operation succeeds, {@code false} otherwise
-     */
-    @Override
-    public boolean pingSupplicant() {
-        enforceAccessPermission();
-        mLog.trace("pingSupplicant uid=%").c(Binder.getCallingUid()).flush();
-        if (mWifiStateMachineChannel != null) {
-            return mWifiStateMachine.syncPingSupplicant(mWifiStateMachineChannel);
-        } else {
-            Slog.e(TAG, "mWifiStateMachineChannel is not initialized");
-            return false;
-        }
-    }
-
-    /**
      * see {@link android.net.wifi.WifiManager#startScan}
      * and {@link android.net.wifi.WifiManager#startCustomizedScan}
      *
@@ -512,11 +499,12 @@ public class WifiServiceImpl extends IWifiManager.Stub {
     }
 
     @Override
-    public String getWpsNfcConfigurationToken(int netId) {
+    public String getCurrentNetworkWpsNfcConfigurationToken() {
         enforceConnectivityInternalPermission();
-        mLog.trace("getWpsNfcConfigurationToken uid=%").c(Binder.getCallingUid()).flush();
+        mLog.trace("getCurrentNetworkWpsNfcConfigurationToken uid=%")
+                .c(Binder.getCallingUid()).flush();
         // TODO Add private logging for netId b/33807876
-        return mWifiStateMachine.syncGetWpsNfcConfigurationToken(netId);
+        return mWifiStateMachine.syncGetCurrentNetworkWpsNfcConfigurationToken();
     }
 
     boolean mInIdleMode;
@@ -907,7 +895,8 @@ public class WifiServiceImpl extends IWifiManager.Stub {
     }
 
     /**
-     * Returns a WifiConfiguration matching this ScanResult
+     * Returns a WifiConfiguration for a Passpoint network matching this ScanResult.
+     *
      * @param scanResult scanResult that represents the BSSID
      * @return {@link WifiConfiguration} that matches this BSSID or null
      */
@@ -915,6 +904,10 @@ public class WifiServiceImpl extends IWifiManager.Stub {
     public WifiConfiguration getMatchingWifiConfig(ScanResult scanResult) {
         enforceAccessPermission();
         mLog.trace("getMatchingWifiConfig uid=%").c(Binder.getCallingUid()).flush();
+        if (!mContext.getResources().getBoolean(
+                com.android.internal.R.bool.config_wifi_hotspot2_enabled)) {
+            throw new UnsupportedOperationException("Passpoint not enabled");
+        }
         return mWifiStateMachine.syncGetMatchingWifiConfig(scanResult, mWifiStateMachineChannel);
     }
 
@@ -1101,6 +1094,10 @@ public class WifiServiceImpl extends IWifiManager.Stub {
     public boolean addOrUpdatePasspointConfiguration(PasspointConfiguration config) {
         enforceChangePermission();
         mLog.trace("addorUpdatePasspointConfiguration uid=%").c(Binder.getCallingUid()).flush();
+        if (!mContext.getResources().getBoolean(
+                com.android.internal.R.bool.config_wifi_hotspot2_enabled)) {
+            throw new UnsupportedOperationException("Passpoint not enabled");
+        }
         return mWifiStateMachine.syncAddOrUpdatePasspointConfig(mWifiStateMachineChannel, config);
     }
 
@@ -1114,6 +1111,10 @@ public class WifiServiceImpl extends IWifiManager.Stub {
     public boolean removePasspointConfiguration(String fqdn) {
         enforceChangePermission();
         mLog.trace("removePasspointConfiguration uid=%").c(Binder.getCallingUid()).flush();
+        if (!mContext.getResources().getBoolean(
+                com.android.internal.R.bool.config_wifi_hotspot2_enabled)) {
+            throw new UnsupportedOperationException("Passpoint not enabled");
+        }
         return mWifiStateMachine.syncRemovePasspointConfig(mWifiStateMachineChannel, fqdn);
     }
 
@@ -1128,6 +1129,10 @@ public class WifiServiceImpl extends IWifiManager.Stub {
     public List<PasspointConfiguration> getPasspointConfigurations() {
         enforceAccessPermission();
         mLog.trace("getPasspointConfigurations uid=%").c(Binder.getCallingUid()).flush();
+        if (!mContext.getResources().getBoolean(
+                com.android.internal.R.bool.config_wifi_hotspot2_enabled)) {
+            throw new UnsupportedOperationException("Passpoint not enabled");
+        }
         return mWifiStateMachine.syncGetPasspointConfigs(mWifiStateMachineChannel);
     }
 
@@ -1140,6 +1145,10 @@ public class WifiServiceImpl extends IWifiManager.Stub {
     public void queryPasspointIcon(long bssid, String fileName) {
         enforceAccessPermission();
         mLog.trace("queryPasspointIcon uid=%").c(Binder.getCallingUid()).flush();
+        if (!mContext.getResources().getBoolean(
+                com.android.internal.R.bool.config_wifi_hotspot2_enabled)) {
+            throw new UnsupportedOperationException("Passpoint not enabled");
+        }
         mWifiStateMachine.syncQueryPasspointIcon(mWifiStateMachineChannel, bssid, fileName);
     }
 

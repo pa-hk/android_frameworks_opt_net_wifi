@@ -33,6 +33,7 @@ import android.os.Looper;
 import android.os.SystemClock;
 import android.provider.Settings;
 import android.test.suitebuilder.annotation.SmallTest;
+import android.util.LocalLog;
 
 import com.android.internal.R;
 import com.android.server.wifi.WifiNetworkSelectorTestUtil.ScanDetailsAndWifiConfigs;
@@ -59,7 +60,9 @@ public class SavedNetworkEvaluatorTest {
         setupContext();
         setupResource();
         setupWifiConfigManager();
+        mLocalLog = new LocalLog(512);
 
+        when(mWifiConnectivityHelper.isFirmwareRoamingSupported()).thenReturn(false);
         when(mClock.getElapsedSinceBootMillis()).thenReturn(SystemClock.elapsedRealtime());
         when(mFrameworkFacade.getIntegerSetting(mContext,
                 Settings.Global.CURATE_SAVED_OPEN_NETWORKS, 0)).thenReturn(0);
@@ -83,7 +86,8 @@ public class SavedNetworkEvaluatorTest {
                 ArgumentCaptor.forClass(ContentObserver.class);
 
         mSavedNetworkEvaluator = new SavedNetworkEvaluator(mContext, mWifiConfigManager,
-                mClock, null, Looper.getMainLooper(), mFrameworkFacade);
+                mClock, mLocalLog, Looper.getMainLooper(), mFrameworkFacade,
+                mWifiConnectivityHelper);
         verify(mFrameworkFacade, times(2)).registerContentObserver(eq(mContext), any(Uri.class),
                 eq(false), observerCaptor.capture());
         // SavedNetworkEvaluator uses a single ContentObserver for two registrations, we only need
@@ -99,11 +103,13 @@ public class SavedNetworkEvaluatorTest {
 
     private SavedNetworkEvaluator mSavedNetworkEvaluator;
     @Mock private WifiConfigManager mWifiConfigManager;
+    @Mock private WifiConnectivityHelper mWifiConnectivityHelper;
     @Mock private Context mContext;
     @Mock private ContentResolver mContentResolver;
     @Mock private FrameworkFacade mFrameworkFacade;
     @Mock private Resources mResource;
     @Mock private Clock mClock;
+    private LocalLog mLocalLog;
     private int mThresholdMinimumRssi2G;
     private int mThresholdMinimumRssi5G;
     private int mThresholdQualifiedRssi2G;
@@ -111,7 +117,6 @@ public class SavedNetworkEvaluatorTest {
     private int mThresholdSaturatedRssi2G;
     private int mThresholdSaturatedRssi5G;
     private ContentObserver mContentObserver;
-    private static final String TAG = "Saved Network Evaluator Unit Test";
 
     private void setupContext() {
         when(mContext.getResources()).thenReturn(mResource);
@@ -121,10 +126,10 @@ public class SavedNetworkEvaluatorTest {
     private void setupResource() {
         when(mResource.getInteger(
                 R.integer.config_wifi_framework_wifi_score_good_rssi_threshold_5GHz))
-                .thenReturn(-70);
+                .thenReturn(-57);
         when(mResource.getInteger(
                 R.integer.config_wifi_framework_wifi_score_good_rssi_threshold_24GHz))
-                .thenReturn(-73);
+                .thenReturn(-60);
         when(mResource.getInteger(
                 R.integer.config_wifi_framework_wifi_score_low_rssi_threshold_5GHz))
                 .thenReturn(-70);
@@ -443,5 +448,141 @@ public class SavedNetworkEvaluatorTest {
         // currently connected BSSID bonus.
         ScanResult chosenScanResult = scanDetails.get(0).getScanResult();
         WifiConfigurationTestUtil.assertConfigurationEqual(savedConfigs[0], candidate);
+    }
+
+    /**
+     * Verify that the same BSSID award is applied to all the BSSIDs which are under the same
+     * network as the currently connected BSSID.
+     */
+    @Test
+    public void currentBssidAwardForAllBssidsWithinTheSameNetworkWhenFirmwareRoamingSupported() {
+        // Three BSSIDs are carefully setup there:
+        // BSSID_0 and BSSID_1 have the same SSID and security type, so they are considered under
+        // the same 2.4 GHz network. BSSID_1 RSSI is stronger than BSSID_0.
+        // BSSID_2 is under a 5GHz network different from BSSID_0 and BSSID_1. Its RSSI is
+        // slightly stronger than BSSID_1.
+        //
+        // When firmware roaming is not supported, BSSID_2 has higher score than BSSID_0 and
+        // BSSID_1.
+        // When firmware roaming is suported, BSSID_1 has higher score than BSSID_2 because the
+        // same BSSID award is now applied to both BSSID_0 and BSSID_1.
+        String[] ssids = {"\"test1\"", "\"test1\"", "\"test2\""};
+        String[] bssids = {"6c:f3:7f:ae:8c:f3", "6c:f3:7f:ae:8c:f4", "6c:f3:7f:ae:8c:f5"};
+        int[] freqs = {2470, 2437, 5200};
+        String[] caps = {"[WPA2-EAP-CCMP][ESS]", "[WPA2-EAP-CCMP][ESS]", "[WPA2-EAP-CCMP][ESS]"};
+        int[] levels = {mThresholdMinimumRssi2G + 2, mThresholdMinimumRssi2G + 5,
+                mThresholdMinimumRssi5G + 7};
+        int[] securities = {SECURITY_PSK, SECURITY_PSK, SECURITY_PSK};
+
+        ScanDetailsAndWifiConfigs scanDetailsAndConfigs =
+                WifiNetworkSelectorTestUtil.setupScanDetailsAndConfigStore(ssids, bssids,
+                    freqs, caps, levels, securities, mWifiConfigManager, mClock);
+        List<ScanDetail> scanDetails = scanDetailsAndConfigs.getScanDetails();
+        WifiConfiguration[] savedConfigs = scanDetailsAndConfigs.getWifiConfigs();
+
+        // Firmware roaming is not supported.
+        when(mWifiConnectivityHelper.isFirmwareRoamingSupported()).thenReturn(false);
+        // Simuluate we are connected to BSSID_0 already.
+        WifiConfiguration candidate = mSavedNetworkEvaluator.evaluateNetworks(scanDetails,
+                savedConfigs[0], bssids[0], true, false, null);
+        // Verify that BSSID_2 is chosen.
+        ScanResult chosenScanResult = scanDetails.get(2).getScanResult();
+        WifiConfigurationTestUtil.assertConfigurationEqual(savedConfigs[2], candidate);
+        WifiNetworkSelectorTestUtil.verifySelectedScanResult(mWifiConfigManager,
+                chosenScanResult, candidate);
+
+        // Firmware roaming is supported.
+        when(mWifiConnectivityHelper.isFirmwareRoamingSupported()).thenReturn(true);
+        // Simuluate we are connected to BSSID_0 already.
+        candidate = mSavedNetworkEvaluator.evaluateNetworks(scanDetails,
+                savedConfigs[0], bssids[0], true, false, null);
+        // Verify that BSSID_1 is chosen.
+        chosenScanResult = scanDetails.get(1).getScanResult();
+        WifiConfigurationTestUtil.assertConfigurationEqual(savedConfigs[1], candidate);
+        WifiNetworkSelectorTestUtil.verifySelectedScanResult(mWifiConfigManager,
+                chosenScanResult, candidate);
+    }
+
+    /**
+     * One 2.4GHz network and one 5GHz network have the same security type. Perform
+     * the following tests to verify that once across the RSSI saturation threshold
+     * stronger RSSI value doesn't increase network score.
+     *
+     * 1) Both 2.4GHz network and 5GHz network have the same RSSI value,
+     *    mThresholdQualifiedRssi2G, which is below the saturation threshold. 5GHz
+     *    network is chosen because of the 5G band award.
+     * 2) Bump up 2.4GHz network RSSI 20dBm higher. Verify that it helps the 2.4GHz network
+     *    score and it gets chosen over the 5GHz network.
+     * 3) Bring both 2.4GHz network and 5GHz network RSSI value to mThresholdSaturatedRssi2G.
+     *    Verify that 5GHz network is chosen because of the 5G band award.
+     * 4) Bump up 2.4GHz network RSSI to be 20dBm higher than mThresholdSaturatedRssi2G.
+     *    Verify that the incresed RSSI doesn't help 2.4GHz network score and 5GHz network
+     *    is still chosen.
+     */
+    @Test
+    public void saturatedRssiAddsNoWeightToNetwork() {
+        String[] ssids = {"\"test1\"", "\"test2\""};
+        String[] bssids = {"6c:f3:7f:ae:8c:f3", "6c:f3:7f:ae:8c:f4"};
+        int[] freqs = {2437, 5400};
+        String[] caps = {"[WPA2-EAP-CCMP][ESS]", "[WPA2-EAP-CCMP][ESS]"};
+        int[] securities = {SECURITY_PSK, SECURITY_PSK};
+
+        // 1) The RSSI of both networks is mThresholdQualifiedRssi2G
+        int[] levels = {mThresholdQualifiedRssi2G, mThresholdQualifiedRssi2G};
+        ScanDetailsAndWifiConfigs scanDetailsAndConfigs =
+                WifiNetworkSelectorTestUtil.setupScanDetailsAndConfigStore(ssids, bssids,
+                    freqs, caps, levels, securities, mWifiConfigManager, mClock);
+        List<ScanDetail> scanDetails = scanDetailsAndConfigs.getScanDetails();
+        WifiConfiguration[] savedConfigs = scanDetailsAndConfigs.getWifiConfigs();
+        WifiConfiguration candidate = mSavedNetworkEvaluator.evaluateNetworks(scanDetails,
+                null, null, false, false, null);
+        // Verify that 5GHz network is chosen because of 5G band award
+        ScanResult chosenScanResult = scanDetails.get(1).getScanResult();
+        WifiConfigurationTestUtil.assertConfigurationEqual(savedConfigs[1], candidate);
+        WifiNetworkSelectorTestUtil.verifySelectedScanResult(mWifiConfigManager,
+                chosenScanResult, candidate);
+
+        // 2) Bump up 2.4GHz network RSSI by 20dBm.
+        levels[0] = mThresholdQualifiedRssi2G + 20;
+        scanDetailsAndConfigs = WifiNetworkSelectorTestUtil.setupScanDetailsAndConfigStore(ssids,
+                bssids, freqs, caps, levels, securities, mWifiConfigManager, mClock);
+        scanDetails = scanDetailsAndConfigs.getScanDetails();
+        savedConfigs = scanDetailsAndConfigs.getWifiConfigs();
+        candidate = mSavedNetworkEvaluator.evaluateNetworks(scanDetails, null, null, false,
+                false, null);
+        // Verify that 2.4GHz network is chosen because of much higher RSSI value
+        chosenScanResult = scanDetails.get(0).getScanResult();
+        WifiConfigurationTestUtil.assertConfigurationEqual(savedConfigs[0], candidate);
+        WifiNetworkSelectorTestUtil.verifySelectedScanResult(mWifiConfigManager,
+                chosenScanResult, candidate);
+
+        // 3) Bring both 2.4GHz network and 5GHz network RSSI to mThresholdSaturatedRssi2G
+        levels[0] = levels[1] = mThresholdSaturatedRssi2G;
+        scanDetailsAndConfigs = WifiNetworkSelectorTestUtil.setupScanDetailsAndConfigStore(ssids,
+                bssids, freqs, caps, levels, securities, mWifiConfigManager, mClock);
+        scanDetails = scanDetailsAndConfigs.getScanDetails();
+        savedConfigs = scanDetailsAndConfigs.getWifiConfigs();
+        candidate = mSavedNetworkEvaluator.evaluateNetworks(scanDetails, null, null, false,
+                false, null);
+        // Verify that 5GHz network is chosen because of 5G band award
+        chosenScanResult = scanDetails.get(1).getScanResult();
+        WifiConfigurationTestUtil.assertConfigurationEqual(savedConfigs[1], candidate);
+        WifiNetworkSelectorTestUtil.verifySelectedScanResult(mWifiConfigManager,
+                chosenScanResult, candidate);
+
+        // 4) Bump 2.4GHz network RSSI to be 20dBm higher than mThresholdSaturatedRssi2G
+        levels[0] = mThresholdSaturatedRssi2G + 20;
+        scanDetailsAndConfigs = WifiNetworkSelectorTestUtil.setupScanDetailsAndConfigStore(ssids,
+                bssids, freqs, caps, levels, securities, mWifiConfigManager, mClock);
+        scanDetails = scanDetailsAndConfigs.getScanDetails();
+        savedConfigs = scanDetailsAndConfigs.getWifiConfigs();
+        candidate = mSavedNetworkEvaluator.evaluateNetworks(scanDetails, null, null, false,
+                false, null);
+        // Verify that the increased RSSI doesn't help 2.4GHz network and 5GHz network
+        // is still chosen
+        chosenScanResult = scanDetails.get(1).getScanResult();
+        WifiConfigurationTestUtil.assertConfigurationEqual(savedConfigs[1], candidate);
+        WifiNetworkSelectorTestUtil.verifySelectedScanResult(mWifiConfigManager,
+                chosenScanResult, candidate);
     }
 }

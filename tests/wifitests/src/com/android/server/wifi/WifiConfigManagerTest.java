@@ -35,6 +35,7 @@ import android.net.wifi.WifiEnterpriseConfig;
 import android.net.wifi.WifiManager;
 import android.net.wifi.WifiScanner;
 import android.net.wifi.WifiSsid;
+import android.os.Process;
 import android.os.UserHandle;
 import android.os.UserManager;
 import android.telephony.TelephonyManager;
@@ -165,7 +166,7 @@ public class WifiConfigManagerTest {
         }).when(mPackageManager).getPackageUidAsUser(anyString(), anyInt(), anyInt());
 
         when(mWifiKeyStore
-                .updateNetworkKeys(any(WifiConfiguration.class), any(WifiConfiguration.class)))
+                .updateNetworkKeys(any(WifiConfiguration.class), any()))
                 .thenReturn(true);
 
         when(mWifiConfigStore.areStoresPresent()).thenReturn(true);
@@ -476,6 +477,30 @@ public class WifiConfigManagerTest {
         assertTrue(mWifiConfigManager.getConfiguredNetworks().isEmpty());
     }
 
+    /**
+     * Verify that a Passpoint network that's added by an app with {@link #TEST_CREATOR_UID} can
+     * be removed by WiFi Service with {@link Process#WIFI_UID}.
+     *
+     * @throws Exception
+     */
+    @Test
+    public void testRemovePasspointNetworkAddedByOther() throws Exception {
+        WifiConfiguration passpointNetwork = WifiConfigurationTestUtil.createPasspointNetwork();
+
+        // Passpoint network is added using TEST_CREATOR_UID.
+        verifyAddPasspointNetworkToWifiConfigManager(passpointNetwork);
+        // Ensure that configured network list is not empty.
+        assertFalse(mWifiConfigManager.getConfiguredNetworks().isEmpty());
+
+        assertTrue(mWifiConfigManager.removeNetwork(passpointNetwork.networkId, Process.WIFI_UID));
+
+        // Verify keys are not being removed.
+        verify(mWifiKeyStore, never()).removeKeys(any(WifiEnterpriseConfig.class));
+        verifyNetworkRemoveBroadcast(passpointNetwork);
+        // Ensure that the write was not invoked for Passpoint network remove.
+        mContextConfigStoreMockOrder.verify(mWifiConfigStore, never()).write(anyBoolean());
+
+    }
     /**
      * Verifies the addition & update of multiple networks using
      * {@link WifiConfigManager#addOrUpdateNetwork(WifiConfiguration, int)} and the
@@ -1300,6 +1325,7 @@ public class WifiConfigManagerTest {
                 mWifiConfigManager.getConfiguredNetwork(result.getNetworkId());
         assertTrue("Updating network non-credentials config should not clear hasEverConnected.",
                 retrievedNetwork.getNetworkSelectionStatus().getHasEverConnected());
+        assertFalse(result.hasCredentialChanged());
     }
 
     /**
@@ -2455,47 +2481,6 @@ public class WifiConfigManagerTest {
         // Ensure that the read was invoked.
         mContextConfigStoreMockOrder.verify(mWifiConfigStore)
                 .switchUserStoreAndRead(any(WifiConfigStore.StoreFile.class));
-    }
-
-    /**
-     * Verifies the loading of networks using {@link WifiConfigManager#loadFromStore()}:
-     * - Adds quotes around unquoted ascii PSKs when loading form store.
-     * - Loads asciis quoted PSKs as they are.
-     * - Loads base64 encoded as they are.
-     */
-    @Test
-    public void testUnquotedAsciiPassphraseLoadFromStore() throws Exception {
-        WifiConfiguration pskNetworkWithNoQuotes = WifiConfigurationTestUtil.createPskNetwork();
-        pskNetworkWithNoQuotes.preSharedKey = "pskWithNoQuotes";
-        WifiConfiguration pskNetworkWithQuotes = WifiConfigurationTestUtil.createPskNetwork();
-        pskNetworkWithQuotes.preSharedKey = "\"pskWithQuotes\"";
-        WifiConfiguration pskNetworkWithHexString = WifiConfigurationTestUtil.createPskNetwork();
-        pskNetworkWithHexString.preSharedKey =
-                "945ef00c463c2a7c2496376b13263d1531366b46377179a4b17b393687450779";
-
-        List<WifiConfiguration> sharedNetworks = new ArrayList<WifiConfiguration>() {{
-                add(new WifiConfiguration(pskNetworkWithQuotes));
-                add(new WifiConfiguration(pskNetworkWithNoQuotes));
-                add(new WifiConfiguration(pskNetworkWithHexString));
-            }};
-        setupStoreDataForRead(sharedNetworks, new ArrayList<>(), new HashSet<String>());
-        assertTrue(mWifiConfigManager.loadFromStore());
-
-        verify(mWifiConfigStore).read();
-        verify(mWifiConfigStoreLegacy, never()).read();
-
-        List<WifiConfiguration> retrievedNetworks =
-                mWifiConfigManager.getConfiguredNetworksWithPasswords();
-
-        // The network with no quotes should now have quotes, the others should remain the same.
-        pskNetworkWithNoQuotes.preSharedKey = "\"pskWithNoQuotes\"";
-        List<WifiConfiguration> expectedNetworks = new ArrayList<WifiConfiguration>() {{
-                add(pskNetworkWithQuotes);
-                add(pskNetworkWithNoQuotes);
-                add(pskNetworkWithHexString);
-            }};
-        WifiConfigurationTestUtil.assertConfigurationsEqualForConfigStore(
-                expectedNetworks, retrievedNetworks);
     }
 
     /**
@@ -3806,6 +3791,7 @@ public class WifiConfigManagerTest {
                 mWifiConfigManager.getConfiguredNetwork(result.getNetworkId());
         assertFalse("Updating network credentials config should clear hasEverConnected.",
                 retrievedNetwork.getNetworkSelectionStatus().getHasEverConnected());
+        assertTrue(result.hasCredentialChanged());
     }
 
     /**

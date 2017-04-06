@@ -87,10 +87,6 @@ public class WificondScannerImpl extends WifiScannerImpl implements Handler.Call
     // Settings for the currently running scan, null if no scan active
     private LastScanSettings mLastScanSettings = null;
 
-    // Active hotlist settings
-    private WifiNative.HotlistEventHandler mHotlistHandler = null;
-    private ChangeBuffer mHotlistChangeBuffer = new ChangeBuffer();
-
     // Pno related info.
     private WifiNative.PnoSettings mPnoSettings = null;
     private WifiNative.PnoEventHandler mPnoEventHandler;
@@ -145,6 +141,8 @@ public class WificondScannerImpl extends WifiScannerImpl implements Handler.Call
         wifiMonitor.registerHandler(mWifiNative.getInterfaceName(),
                 WifiMonitor.SCAN_FAILED_EVENT, mEventHandler);
         wifiMonitor.registerHandler(mWifiNative.getInterfaceName(),
+                WifiMonitor.PNO_SCAN_RESULTS_EVENT, mEventHandler);
+        wifiMonitor.registerHandler(mWifiNative.getInterfaceName(),
                 WifiMonitor.SCAN_RESULTS_EVENT, mEventHandler);
     }
 
@@ -161,8 +159,6 @@ public class WificondScannerImpl extends WifiScannerImpl implements Handler.Call
             mPendingSingleScanEventHandler = null;
             stopHwPnoScan();
             stopBatchedScan();
-            resetHotlist();
-            untrackSignificantWifiChange();
             mLastScanSettings = null; // finally clear any active scan
         }
     }
@@ -174,8 +170,6 @@ public class WificondScannerImpl extends WifiScannerImpl implements Handler.Call
         capabilities.max_ap_cache_per_scan = MAX_APS_PER_SCAN;
         capabilities.max_rssi_sample_size = 8;
         capabilities.max_scan_reporting_threshold = SCAN_BUFFER_CAPACITY;
-        capabilities.max_hotlist_bssids = 0;
-        capabilities.max_significant_wifi_change_aps = 0;
         return true;
     }
 
@@ -200,8 +194,6 @@ public class WificondScannerImpl extends WifiScannerImpl implements Handler.Call
         synchronized (mSettingsLock) {
             mPendingSingleScanSettings = settings;
             mPendingSingleScanEventHandler = eventHandler;
-            // TODO(b/36276738): Remove this after we fix b/36231150.
-            Log.d(TAG, "processPendingScans in request of startSingleScan");
             processPendingScans();
             return true;
         }
@@ -269,8 +261,6 @@ public class WificondScannerImpl extends WifiScannerImpl implements Handler.Call
             mBackgroundScanPeriodPending = false;
             unscheduleScansLocked();
         }
-        // TODO(b/36276738): Remove this after we fix b/36231150.
-        Log.d(TAG, "processPendingScans in request of stopBatchedScan");
         processPendingScans();
     }
 
@@ -295,8 +285,6 @@ public class WificondScannerImpl extends WifiScannerImpl implements Handler.Call
                 mPendingBackgroundScanEventHandler.onScanPaused(results);
             }
         }
-        // TODO(b/36276738): Remove this after we fix b/36231150.
-        Log.d(TAG, "processPendingScans in request of pauseBatchedScan");
         processPendingScans();
     }
 
@@ -322,8 +310,6 @@ public class WificondScannerImpl extends WifiScannerImpl implements Handler.Call
     private void handleScanPeriod() {
         synchronized (mSettingsLock) {
             mBackgroundScanPeriodPending = true;
-            // TODO(b/36276738): Remove this after we fix b/36231150.
-            Log.d(TAG, "processPendingScans in request of handleScanPeriod");
             processPendingScans();
         }
     }
@@ -331,8 +317,6 @@ public class WificondScannerImpl extends WifiScannerImpl implements Handler.Call
     private void handleScanTimeout() {
         Log.e(TAG, "Timed out waiting for scan result from wificond");
         reportScanFailure();
-        // TODO(b/36276738): Remove this after we fix b/36231150.
-        Log.d(TAG, "processPendingScans in request of handleScanTimeout");
         processPendingScans();
     }
 
@@ -442,10 +426,11 @@ public class WificondScannerImpl extends WifiScannerImpl implements Handler.Call
                 boolean success = mWifiNative.scan(freqs, hiddenNetworkSSIDSet);
                 if (success) {
                     // TODO handle scan timeout
-                    // TODO(b/36276738): Change this to DBG log after we fix b/36231150.
-                    Log.d(TAG, "Starting wifi scan for freqs=" + freqs
-                            + ", background=" + newScanSettings.backgroundScanActive
-                            + ", single=" + newScanSettings.singleScanActive);
+                    if (DBG) {
+                        Log.d(TAG, "Starting wifi scan for freqs=" + freqs
+                                + ", background=" + newScanSettings.backgroundScanActive
+                                + ", single=" + newScanSettings.singleScanActive);
+                    }
                     mLastScanSettings = newScanSettings;
                     mAlarmManager.set(AlarmManager.ELAPSED_REALTIME_WAKEUP,
                             mClock.getElapsedSinceBootMillis() + SCAN_TIMEOUT_MS,
@@ -502,11 +487,14 @@ public class WificondScannerImpl extends WifiScannerImpl implements Handler.Call
                 reportScanFailure();
                 processPendingScans();
                 break;
+            case WifiMonitor.PNO_SCAN_RESULTS_EVENT:
+                mAlarmManager.cancel(mScanTimeoutListener);
+                pollLatestScanDataForPno();
+                processPendingScans();
+                break;
             case WifiMonitor.SCAN_RESULTS_EVENT:
                 mAlarmManager.cancel(mScanTimeoutListener);
                 pollLatestScanData();
-                // TODO(b/36276738): Remove this after we fix b/36231150.
-                Log.d(TAG, "processPendingScans in request of SCAN_RESULTS_EVENT");
                 processPendingScans();
                 break;
             default:
@@ -542,6 +530,46 @@ public class WificondScannerImpl extends WifiScannerImpl implements Handler.Call
         }
     }
 
+    private void pollLatestScanDataForPno() {
+        synchronized (mSettingsLock) {
+            if (mLastScanSettings == null) {
+                 // got a scan before we started scanning or after scan was canceled
+                return;
+            }
+            ArrayList<ScanDetail> nativeResults = mWifiNative.getScanResults();
+            List<ScanResult> hwPnoScanResults = new ArrayList<>();
+            int numFilteredScanResults = 0;
+            for (int i = 0; i < nativeResults.size(); ++i) {
+                ScanResult result = nativeResults.get(i).getScanResult();
+                long timestamp_ms = result.timestamp / 1000; // convert us -> ms
+                if (timestamp_ms > mLastScanSettings.startTime) {
+                    if (mLastScanSettings.hwPnoScanActive) {
+                        hwPnoScanResults.add(result);
+                    }
+                } else {
+                    numFilteredScanResults++;
+                }
+            }
+
+            if (numFilteredScanResults != 0) {
+                Log.d(TAG, "Filtering out " + numFilteredScanResults + " pno scan results.");
+            }
+
+            if (mLastScanSettings.hwPnoScanActive
+                    && mLastScanSettings.pnoScanEventHandler != null) {
+                ScanResult[] pnoScanResultsArray = new ScanResult[hwPnoScanResults.size()];
+                for (int i = 0; i < pnoScanResultsArray.length; ++i) {
+                    ScanResult result = nativeResults.get(i).getScanResult();
+                    pnoScanResultsArray[i] = hwPnoScanResults.get(i);
+                }
+                mLastScanSettings.pnoScanEventHandler.onPnoNetworkFound(pnoScanResultsArray);
+            }
+            // mLastScanSettings is for either single/batched scan or pno scan.
+            // We can safely set it to null when pno scan finishes.
+            mLastScanSettings = null;
+        }
+    }
+
     private void pollLatestScanData() {
         synchronized (mSettingsLock) {
             if (mLastScanSettings == null) {
@@ -553,7 +581,6 @@ public class WificondScannerImpl extends WifiScannerImpl implements Handler.Call
             ArrayList<ScanDetail> nativeResults = mWifiNative.getScanResults();
             List<ScanResult> singleScanResults = new ArrayList<>();
             List<ScanResult> backgroundScanResults = new ArrayList<>();
-            List<ScanResult> hwPnoScanResults = new ArrayList<>();
             int numFilteredScanResults = 0;
             for (int i = 0; i < nativeResults.size(); ++i) {
                 ScanResult result = nativeResults.get(i).getScanResult();
@@ -566,9 +593,6 @@ public class WificondScannerImpl extends WifiScannerImpl implements Handler.Call
                             && mLastScanSettings.singleScanFreqs.containsChannel(
                                     result.frequency)) {
                         singleScanResults.add(result);
-                    }
-                    if (mLastScanSettings.hwPnoScanActive) {
-                        hwPnoScanResults.add(result);
                     }
                 } else {
                     numFilteredScanResults++;
@@ -619,18 +643,6 @@ public class WificondScannerImpl extends WifiScannerImpl implements Handler.Call
                                 .onScanStatus(WifiNative.WIFI_SCAN_RESULTS_AVAILABLE);
                     }
                 }
-
-                if (mHotlistHandler != null) {
-                    int event = mHotlistChangeBuffer.processScan(backgroundScanResults);
-                    if ((event & ChangeBuffer.EVENT_FOUND) != 0) {
-                        mHotlistHandler.onHotlistApFound(
-                                mHotlistChangeBuffer.getLastResults(ChangeBuffer.EVENT_FOUND));
-                    }
-                    if ((event & ChangeBuffer.EVENT_LOST) != 0) {
-                        mHotlistHandler.onHotlistApLost(
-                                mHotlistChangeBuffer.getLastResults(ChangeBuffer.EVENT_LOST));
-                    }
-                }
             }
 
             if (mLastScanSettings.singleScanActive
@@ -648,15 +660,6 @@ public class WificondScannerImpl extends WifiScannerImpl implements Handler.Call
                         singleScanResults.toArray(new ScanResult[singleScanResults.size()]));
                 mLastScanSettings.singleScanEventHandler
                         .onScanStatus(WifiNative.WIFI_SCAN_RESULTS_AVAILABLE);
-            }
-
-            if (mLastScanSettings.hwPnoScanActive
-                    && mLastScanSettings.pnoScanEventHandler != null) {
-                ScanResult[] pnoScanResultsArray = new ScanResult[hwPnoScanResults.size()];
-                for (int i = 0; i < pnoScanResultsArray.length; ++i) {
-                    pnoScanResultsArray[i] = hwPnoScanResults.get(i);
-                }
-                mLastScanSettings.pnoScanEventHandler.onPnoNetworkFound(pnoScanResultsArray);
             }
 
             mLastScanSettings = null;
@@ -716,8 +719,6 @@ public class WificondScannerImpl extends WifiScannerImpl implements Handler.Call
             }
             mPnoEventHandler = eventHandler;
             mPnoSettings = settings;
-            // TODO(b/36276738): Remove this after we fix b/36231150.
-            Log.d(TAG, "processPendingScans in request of setHwPnoList");
 
             // For wificond based PNO, we start the scan immediately when we set pno list.
             processPendingScans();
@@ -750,39 +751,6 @@ public class WificondScannerImpl extends WifiScannerImpl implements Handler.Call
     public boolean shouldScheduleBackgroundScanForHwPno() {
         return false;
     }
-
-    @Override
-    public boolean setHotlist(WifiScanner.HotlistSettings settings,
-            WifiNative.HotlistEventHandler eventHandler) {
-        if (settings == null || eventHandler == null) {
-            return false;
-        }
-        synchronized (mSettingsLock) {
-            mHotlistHandler = eventHandler;
-            mHotlistChangeBuffer.setSettings(settings.bssidInfos, settings.apLostThreshold, 1);
-            return true;
-        }
-    }
-
-    @Override
-    public void resetHotlist() {
-        synchronized (mSettingsLock) {
-            mHotlistChangeBuffer.clearSettings();
-            mHotlistHandler = null;
-        }
-    }
-
-    /*
-     * Significant Wifi Change API is not implemented
-     */
-    @Override
-    public boolean trackSignificantWifiChange(WifiScanner.WifiChangeSettings settings,
-            WifiNative.SignificantWifiChangeEventHandler handler) {
-        return false;
-    }
-    @Override
-    public void untrackSignificantWifiChange() {}
-
 
     private static class LastScanSettings {
         public long startTime;
@@ -872,138 +840,6 @@ public class WificondScannerImpl extends WifiScannerImpl implements Handler.Call
 
         public WifiScanner.ScanData[] get() {
             return mBuffer.toArray(new WifiScanner.ScanData[mBuffer.size()]);
-        }
-    }
-
-    private static class ChangeBuffer {
-        public static int EVENT_NONE = 0;
-        public static int EVENT_LOST = 1;
-        public static int EVENT_FOUND = 2;
-
-        public static int STATE_FOUND = 0;
-
-        private WifiScanner.BssidInfo[] mBssidInfos = null;
-        private int mApLostThreshold;
-        private int mMinEvents;
-        private int[] mLostCount = null;
-        private ScanResult[] mMostRecentResult = null;
-        private int[] mPendingEvent = null;
-        private boolean mFiredEvents = false;
-
-        private static ScanResult findResult(List<ScanResult> results, String bssid) {
-            for (int i = 0; i < results.size(); ++i) {
-                if (bssid.equalsIgnoreCase(results.get(i).BSSID)) {
-                    return results.get(i);
-                }
-            }
-            return null;
-        }
-
-        public void setSettings(WifiScanner.BssidInfo[] bssidInfos, int apLostThreshold,
-                                int minEvents) {
-            mBssidInfos = bssidInfos;
-            if (apLostThreshold <= 0) {
-                mApLostThreshold = 1;
-            } else {
-                mApLostThreshold = apLostThreshold;
-            }
-            mMinEvents = minEvents;
-            if (bssidInfos != null) {
-                mLostCount = new int[bssidInfos.length];
-                Arrays.fill(mLostCount, mApLostThreshold); // default to lost
-                mMostRecentResult = new ScanResult[bssidInfos.length];
-                mPendingEvent = new int[bssidInfos.length];
-                mFiredEvents = false;
-            } else {
-                mLostCount = null;
-                mMostRecentResult = null;
-                mPendingEvent = null;
-            }
-        }
-
-        public void clearSettings() {
-            setSettings(null, 0, 0);
-        }
-
-        /**
-         * Get the most recent scan results for APs that triggered the given event on the last call
-         * to {@link #processScan}.
-         */
-        public ScanResult[] getLastResults(int event) {
-            ArrayList<ScanResult> results = new ArrayList<>();
-            for (int i = 0; i < mLostCount.length; ++i) {
-                if (mPendingEvent[i] == event) {
-                    results.add(mMostRecentResult[i]);
-                }
-            }
-            return results.toArray(new ScanResult[results.size()]);
-        }
-
-        /**
-         * Process the supplied scan results and determine if any events should be generated based
-         * on the configured settings
-         * @return The events that occurred
-         */
-        public int processScan(List<ScanResult> scanResults) {
-            if (mBssidInfos == null) {
-                return EVENT_NONE;
-            }
-
-            // clear events from last time
-            if (mFiredEvents) {
-                mFiredEvents = false;
-                for (int i = 0; i < mLostCount.length; ++i) {
-                    mPendingEvent[i] = EVENT_NONE;
-                }
-            }
-
-            int eventCount = 0;
-            int eventType = EVENT_NONE;
-            for (int i = 0; i < mLostCount.length; ++i) {
-                ScanResult result = findResult(scanResults, mBssidInfos[i].bssid);
-                int rssi = Integer.MIN_VALUE;
-                if (result != null) {
-                    mMostRecentResult[i] = result;
-                    rssi = result.level;
-                }
-
-                if (rssi < mBssidInfos[i].low) {
-                    if (mLostCount[i] < mApLostThreshold) {
-                        mLostCount[i]++;
-
-                        if (mLostCount[i] >= mApLostThreshold) {
-                            if (mPendingEvent[i] == EVENT_FOUND) {
-                                mPendingEvent[i] = EVENT_NONE;
-                            } else {
-                                mPendingEvent[i] = EVENT_LOST;
-                            }
-                        }
-                    }
-                } else {
-                    if (mLostCount[i] >= mApLostThreshold) {
-                        if (mPendingEvent[i] == EVENT_LOST) {
-                            mPendingEvent[i] = EVENT_NONE;
-                        } else {
-                            mPendingEvent[i] = EVENT_FOUND;
-                        }
-                    }
-                    mLostCount[i] = STATE_FOUND;
-                }
-                if (DBG) {
-                    Log.d(TAG, "ChangeBuffer BSSID: " + mBssidInfos[i].bssid + "=" + mLostCount[i]
-                            + ", " + mPendingEvent[i] + ", rssi=" + rssi);
-                }
-                if (mPendingEvent[i] != EVENT_NONE) {
-                    ++eventCount;
-                    eventType |= mPendingEvent[i];
-                }
-            }
-            if (DBG) Log.d(TAG, "ChangeBuffer events count=" + eventCount + ": " + eventType);
-            if (eventCount >= mMinEvents) {
-                mFiredEvents = true;
-                return eventType;
-            }
-            return EVENT_NONE;
         }
     }
 

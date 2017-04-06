@@ -34,6 +34,7 @@ import android.net.wifi.WifiEnterpriseConfig;
 import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
 import android.net.wifi.WifiScanner;
+import android.os.Process;
 import android.os.UserHandle;
 import android.os.UserManager;
 import android.provider.Settings;
@@ -613,6 +614,14 @@ public class WifiConfigManager {
      * @param ignoreLockdown Ignore the configuration lockdown checks for connection attempts.
      */
     private boolean canModifyNetwork(WifiConfiguration config, int uid, boolean ignoreLockdown) {
+        // Passpoint configurations are generated and managed by PasspointManager. They can be
+        // added by either PasspointNetworkEvaluator (for auto connection) or Settings app
+        // (for manual connection), and need to be removed once the connection is completed.
+        // Since it is "owned" by us, so always allow us to modify them.
+        if (config.isPasspoint() && uid == Process.WIFI_UID) {
+            return true;
+        }
+
         final DevicePolicyManagerInternal dpmi = LocalServices.getService(
                 DevicePolicyManagerInternal.class);
 
@@ -930,6 +939,13 @@ public class WifiConfigManager {
         }
 
         boolean newNetwork = (existingInternalConfig == null);
+        // This is needed to inform IpManager about any IP configuration changes.
+        boolean hasIpChanged =
+                newNetwork || WifiConfigurationUtil.hasIpChanged(
+                        existingInternalConfig, newInternalConfig);
+        boolean hasProxyChanged =
+                newNetwork || WifiConfigurationUtil.hasProxyChanged(
+                        existingInternalConfig, newInternalConfig);
         // Reset the |hasEverConnected| flag if the credential parameters changed in this update.
         boolean hasCredentialChanged =
                 newNetwork || WifiConfigurationUtil.hasCredentialChanged(
@@ -951,14 +967,8 @@ public class WifiConfigManager {
         // Stage the backup of the SettingsProvider package which backs this up.
         mBackupManagerProxy.notifyDataChanged();
 
-        // This is needed to inform IpManager about any IP configuration changes.
-        boolean hasIpChanged =
-                newNetwork || WifiConfigurationUtil.hasIpChanged(
-                        existingInternalConfig, newInternalConfig);
-        boolean hasProxyChanged =
-                newNetwork || WifiConfigurationUtil.hasProxyChanged(
-                        existingInternalConfig, newInternalConfig);
-        NetworkUpdateResult result = new NetworkUpdateResult(hasIpChanged, hasProxyChanged);
+        NetworkUpdateResult result =
+                new NetworkUpdateResult(hasIpChanged, hasProxyChanged, hasCredentialChanged);
         result.setIsNewNetwork(newNetwork);
         result.setNetworkId(newInternalConfig.networkId);
 
@@ -2466,21 +2476,6 @@ public class WifiConfigManager {
     }
 
     /**
-     * Helper function to add quotes for user's who lost the quotes during migration using the HIDL
-     * interface.
-     * TODO(b/36008106): This is a temporary fix and needs to be removed.
-     * @param config WifiConfiguration object corresponding to the network.
-     */
-    private void addMissingPskPassphraseQuotes(WifiConfiguration config) {
-        // Add quotes back for ASCII psk passphrase, leave them as is for the hex raw psk.
-        if (!TextUtils.isEmpty(config.preSharedKey) && !config.preSharedKey.startsWith("\"")
-                && !(config.preSharedKey.length() == 64
-                && config.preSharedKey.matches("[0-9A-Fa-f]*"))) {
-            config.preSharedKey = "\"" + config.preSharedKey + "\"";
-        }
-    }
-
-    /**
      * Helper function to populate the internal (in-memory) data from the retrieved shared store
      * (file) data.
      *
@@ -2493,7 +2488,6 @@ public class WifiConfigManager {
             if (mVerboseLoggingEnabled) {
                 Log.v(TAG, "Adding network from shared store " + configuration.configKey());
             }
-            addMissingPskPassphraseQuotes(configuration);
             mConfiguredNetworks.put(configuration);
         }
     }
@@ -2513,7 +2507,6 @@ public class WifiConfigManager {
             if (mVerboseLoggingEnabled) {
                 Log.v(TAG, "Adding network from user store " + configuration.configKey());
             }
-            addMissingPskPassphraseQuotes(configuration);
             mConfiguredNetworks.put(configuration);
         }
         for (String ssid : deletedEphemeralSSIDs) {

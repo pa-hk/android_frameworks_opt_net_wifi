@@ -86,6 +86,7 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
@@ -360,7 +361,6 @@ public class WifiStateMachineTest {
         when(mWifiInjector.makeWificond()).thenReturn(mWificond);
         when(mWifiInjector.getWifiConfigManager()).thenReturn(mWifiConfigManager);
         when(mWifiInjector.getWifiScanner()).thenReturn(mWifiScanner);
-        when(mWifiInjector.getWifiNetworkSelector()).thenReturn(mock(WifiNetworkSelector.class));
         when(mWifiInjector.makeWifiConnectivityManager(any(WifiInfo.class), anyBoolean()))
                 .thenReturn(mWifiConnectivityManager);
         when(mWifiInjector.makeSoftApManager(any(INetworkManagementService.class),
@@ -1166,20 +1166,31 @@ public class WifiStateMachineTest {
      */
     @Test
     public void syncAddOrUpdatePasspointConfig() throws Exception {
-        when(mPasspointManager.addOrUpdateProvider(any(PasspointConfiguration.class)))
-                .thenReturn(true);
+        PasspointConfiguration config = new PasspointConfiguration();
+        HomeSp homeSp = new HomeSp();
+        homeSp.setFqdn("test.com");
+        config.setHomeSp(homeSp);
+
+        when(mPasspointManager.addOrUpdateProvider(config)).thenReturn(true);
         mLooper.startAutoDispatch();
-        assertTrue(mWsm.syncAddOrUpdatePasspointConfig(mWsmAsyncChannel,
-                new PasspointConfiguration()));
+        assertTrue(mWsm.syncAddOrUpdatePasspointConfig(mWsmAsyncChannel, config));
         mLooper.stopAutoDispatch();
         reset(mPasspointManager);
 
-        when(mPasspointManager.addOrUpdateProvider(any(PasspointConfiguration.class)))
-                .thenReturn(false);
+        when(mPasspointManager.addOrUpdateProvider(config)).thenReturn(false);
         mLooper.startAutoDispatch();
-        assertFalse(mWsm.syncAddOrUpdatePasspointConfig(mWsmAsyncChannel,
-                new PasspointConfiguration()));
+        assertFalse(mWsm.syncAddOrUpdatePasspointConfig(mWsmAsyncChannel, config));
         mLooper.stopAutoDispatch();
+    }
+
+    /**
+     * Verify that syncAddOrUpdatePasspointConfig will redirect calls to {@link PasspointManager}
+     * and returning the result that's returned from {@link PasspointManager} when in client mode.
+     */
+    @Test
+    public void syncAddOrUpdatePasspointConfigInClientMode() throws Exception {
+        loadComponentsInStaMode();
+        syncAddOrUpdatePasspointConfig();
     }
 
     /**
@@ -1288,14 +1299,15 @@ public class WifiStateMachineTest {
         mWsm.setOperationalMode(WifiStateMachine.CONNECT_MODE);
         mLooper.dispatchAll();
 
-        when(mWifiNative.startWpsPbc(anyString())).thenReturn(true);
+        when(mWifiNative.startWpsPbc(eq(sBSSID))).thenReturn(true);
         WpsInfo wpsInfo = new WpsInfo();
         wpsInfo.setup = WpsInfo.PBC;
+        wpsInfo.BSSID = sBSSID;
 
         mLooper.startAutoDispatch();
         mWsm.sendMessage(WifiManager.START_WPS, 0, 0, wpsInfo);
         mLooper.stopAutoDispatch();
-        verify(mWifiNative).startWpsPbc(anyString());
+        verify(mWifiNative).startWpsPbc(eq(sBSSID));
 
         assertEquals("WpsRunningState", getCurrentState().getName());
 
@@ -1317,14 +1329,15 @@ public class WifiStateMachineTest {
         mWsm.setOperationalMode(WifiStateMachine.CONNECT_MODE);
         mLooper.dispatchAll();
 
-        when(mWifiNative.startWpsPbc(anyString())).thenReturn(false);
+        when(mWifiNative.startWpsPbc(eq(sBSSID))).thenReturn(false);
         WpsInfo wpsInfo = new WpsInfo();
         wpsInfo.setup = WpsInfo.PBC;
+        wpsInfo.BSSID = sBSSID;
 
         mLooper.startAutoDispatch();
         mWsm.sendMessage(WifiManager.START_WPS, 0, 0, wpsInfo);
         mLooper.stopAutoDispatch();
-        verify(mWifiNative).startWpsPbc(anyString());
+        verify(mWifiNative).startWpsPbc(eq(sBSSID));
 
         assertFalse("WpsRunningState".equals(getCurrentState().getName()));
     }
@@ -1338,14 +1351,15 @@ public class WifiStateMachineTest {
         mWsm.setOperationalMode(WifiStateMachine.CONNECT_MODE);
         mLooper.dispatchAll();
 
-        when(mWifiNative.startWpsPinDisplay(anyString())).thenReturn("34545434");
+        when(mWifiNative.startWpsPinDisplay(eq(sBSSID))).thenReturn("34545434");
         WpsInfo wpsInfo = new WpsInfo();
         wpsInfo.setup = WpsInfo.DISPLAY;
+        wpsInfo.BSSID = sBSSID;
 
         mLooper.startAutoDispatch();
         mWsm.sendMessage(WifiManager.START_WPS, 0, 0, wpsInfo);
         mLooper.stopAutoDispatch();
-        verify(mWifiNative).startWpsPinDisplay(anyString());
+        verify(mWifiNative).startWpsPinDisplay(eq(sBSSID));
 
         assertEquals("WpsRunningState", getCurrentState().getName());
 
@@ -1367,16 +1381,46 @@ public class WifiStateMachineTest {
         mWsm.setOperationalMode(WifiStateMachine.CONNECT_MODE);
         mLooper.dispatchAll();
 
-        when(mWifiNative.startWpsPinDisplay(anyString())).thenReturn(null);
+        when(mWifiNative.startWpsPinDisplay(eq(sBSSID))).thenReturn(null);
         WpsInfo wpsInfo = new WpsInfo();
         wpsInfo.setup = WpsInfo.DISPLAY;
+        wpsInfo.BSSID = sBSSID;
 
         mLooper.startAutoDispatch();
         mWsm.sendMessage(WifiManager.START_WPS, 0, 0, wpsInfo);
         mLooper.stopAutoDispatch();
-        verify(mWifiNative).startWpsPinDisplay(anyString());
+        verify(mWifiNative).startWpsPinDisplay(eq(sBSSID));
 
         assertFalse("WpsRunningState".equals(getCurrentState().getName()));
+    }
+
+    @Test
+    public void handleVendorHalDeath() throws Exception {
+        ArgumentCaptor<WifiNative.VendorHalDeathEventHandler> deathHandlerCapturer =
+                ArgumentCaptor.forClass(WifiNative.VendorHalDeathEventHandler.class);
+        when(mWifiNative.initializeVendorHal(deathHandlerCapturer.capture())).thenReturn(true);
+
+        // Trigger initialize to capture the death handler registration.
+        mLooper.startAutoDispatch();
+        assertTrue(mWsm.syncInitialize(mWsmAsyncChannel));
+        mLooper.stopAutoDispatch();
+
+        verify(mWifiNative).initializeVendorHal(any(WifiNative.VendorHalDeathEventHandler.class));
+        WifiNative.VendorHalDeathEventHandler deathHandler = deathHandlerCapturer.getValue();
+
+        mWsm.setOperationalMode(WifiStateMachine.CONNECT_MODE);
+        mLooper.dispatchAll();
+
+        // We should not be in initial state now.
+        assertFalse("InitialState".equals(getCurrentState().getName()));
+
+        // Now trigger the death notification.
+        mLooper.startAutoDispatch();
+        deathHandler.onDeath();
+        mLooper.stopAutoDispatch();
+
+        // We should back to initial state after vendor HAL death.
+        assertTrue("InitialState".equals(getCurrentState().getName()));
     }
 
     private void setupMocksForWpsNetworkMigration() {
@@ -1393,5 +1437,70 @@ public class WifiStateMachineTest {
                 .thenReturn(new NetworkUpdateResult(newNetworkId));
         when(mWifiConfigManager.enableNetwork(eq(newNetworkId), anyBoolean(), anyInt()))
                 .thenReturn(true);
+    }
+
+    /**
+     * Verifies that WifiInfo is cleared upon exiting and entering WifiInfo, and that it is not
+     * updated by SUPPLICAN_STATE_CHANGE_EVENTs in ScanModeState.
+     * This protects WifiStateMachine from  getting into a bad state where WifiInfo says wifi is
+     * already Connected or Connecting, (when it is in-fact Disconnected), so
+     * WifiConnectivityManager does not attempt any new Connections, freezing wifi.
+     */
+    @Test
+    public void testWifiInfoCleanedUpEnteringExitingConnectModeState() throws Exception {
+        InOrder inOrder = inOrder(mWifiConnectivityManager);
+        Log.i(TAG, mWsm.getCurrentState().getName());
+        String initialBSSID = "aa:bb:cc:dd:ee:ff";
+        WifiInfo wifiInfo = mWsm.getWifiInfo();
+        wifiInfo.setBSSID(initialBSSID);
+
+        // Set WSM to CONNECT_MODE and verify state, and wifi enabled in ConnectivityManager
+        mWsm.setOperationalMode(WifiStateMachine.CONNECT_MODE);
+        startSupplicantAndDispatchMessages();
+        mWsm.setSupplicantRunning(true);
+        mLooper.dispatchAll();
+        assertEquals(WifiStateMachine.CONNECT_MODE, mWsm.getOperationalModeForTest());
+        assertEquals(WifiManager.WIFI_STATE_ENABLED, mWsm.syncGetWifiState());
+        inOrder.verify(mWifiConnectivityManager).setWifiEnabled(eq(true));
+        assertNull(wifiInfo.getBSSID());
+
+        // Send a SUPPLICANT_STATE_CHANGE_EVENT, verify WifiInfo is updated
+        mWsm.sendMessage(WifiMonitor.SUPPLICANT_STATE_CHANGE_EVENT, 0, 0,
+                new StateChangeResult(0, sWifiSsid, sBSSID, SupplicantState.COMPLETED));
+        mLooper.dispatchAll();
+        assertEquals(sBSSID, wifiInfo.getBSSID());
+        assertEquals(SupplicantState.COMPLETED, wifiInfo.getSupplicantState());
+
+        // Set WSM to SCAN_ONLY_MODE, verify state and wifi disabled in ConnectivityManager, and
+        // WifiInfo is reset() and state set to DISCONNECTED
+        mWsm.setOperationalMode(WifiStateMachine.SCAN_ONLY_MODE);
+        mLooper.dispatchAll();
+        assertEquals(WifiStateMachine.SCAN_ONLY_MODE, mWsm.getOperationalModeForTest());
+        assertEquals("ScanModeState", getCurrentState().getName());
+        assertEquals(WifiManager.WIFI_STATE_DISABLED, mWsm.syncGetWifiState());
+        inOrder.verify(mWifiConnectivityManager).setWifiEnabled(eq(false));
+        assertNull(wifiInfo.getBSSID());
+        assertEquals(SupplicantState.DISCONNECTED, wifiInfo.getSupplicantState());
+
+        // Send a SUPPLICANT_STATE_CHANGE_EVENT, verify WifiInfo is not updated
+        mWsm.sendMessage(WifiMonitor.SUPPLICANT_STATE_CHANGE_EVENT, 0, 0,
+                new StateChangeResult(0, sWifiSsid, sBSSID, SupplicantState.COMPLETED));
+        mLooper.dispatchAll();
+        assertNull(wifiInfo.getBSSID());
+        assertEquals(SupplicantState.DISCONNECTED, wifiInfo.getSupplicantState());
+
+        // Set the bssid to something, so we can verify it is cleared (just in case)
+        wifiInfo.setBSSID(initialBSSID);
+
+        // Set WSM to CONNECT_MODE and verify state, and wifi enabled in ConnectivityManager,
+        // and WifiInfo has been reset
+        mWsm.setOperationalMode(WifiStateMachine.CONNECT_MODE);
+        mLooper.dispatchAll();
+        assertEquals(WifiStateMachine.CONNECT_MODE, mWsm.getOperationalModeForTest());
+        assertEquals(WifiManager.WIFI_STATE_ENABLED, mWsm.syncGetWifiState());
+        inOrder.verify(mWifiConnectivityManager).setWifiEnabled(eq(true));
+        assertEquals("DisconnectedState", getCurrentState().getName());
+        assertEquals(SupplicantState.DISCONNECTED, wifiInfo.getSupplicantState());
+        assertNull(wifiInfo.getBSSID());
     }
 }

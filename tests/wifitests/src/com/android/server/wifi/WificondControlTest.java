@@ -46,7 +46,7 @@ import com.android.server.wifi.wificond.SingleScanSettings;
 import org.junit.Before;
 import org.junit.Test;
 import org.mockito.ArgumentCaptor;
-import org.mockito.compat.ArgumentMatcher;
+import org.mockito.ArgumentMatcher;
 
 import java.util.ArrayList;
 import java.util.BitSet;
@@ -61,6 +61,7 @@ public class WificondControlTest {
     private WifiInjector mWifiInjector;
     private WifiMonitor mWifiMonitor;
     private WificondControl mWificondControl;
+    private static final String TEST_INTERFACE_NAME = "test_wlan_if";
     private static final byte[] TEST_SSID =
             new byte[] {'G', 'o', 'o', 'g', 'l', 'e', 'G', 'u', 'e', 's', 't'};
     private static final byte[] TEST_BSSID =
@@ -592,7 +593,7 @@ public class WificondControlTest {
         assertNotNull(pnoScanEvent);
         pnoScanEvent.OnPnoNetworkFound();
 
-        verify(mWifiMonitor).broadcastScanResultEvent(any(String.class));
+        verify(mWifiMonitor).broadcastPnoScanResultEvent(any(String.class));
     }
 
     /**
@@ -620,6 +621,7 @@ public class WificondControlTest {
         when(mWifiInjector.makeWificond()).thenReturn(wificond);
         when(wificond.createClientInterface()).thenReturn(clientInterface);
         when(clientInterface.getWifiScannerImpl()).thenReturn(scanner);
+        when(clientInterface.getInterfaceName()).thenReturn(TEST_INTERFACE_NAME);
 
         assertEquals(clientInterface, mWificondControl.setupDriverForClientMode());
 
@@ -628,7 +630,7 @@ public class WificondControlTest {
 
     // Create a ArgumentMatcher which captures a SingleScanSettings parameter and checks if it
     // matches the provided frequency set and ssid set.
-    private class ScanMatcher extends ArgumentMatcher<SingleScanSettings> {
+    private class ScanMatcher implements ArgumentMatcher<SingleScanSettings> {
         private final Set<Integer> mExpectedFreqs;
         private final Set<String> mExpectedSsids;
         ScanMatcher(Set<Integer> expectedFreqs, Set<String> expectedSsids) {
@@ -637,8 +639,7 @@ public class WificondControlTest {
         }
 
         @Override
-        public boolean matchesObject(Object argument) {
-            SingleScanSettings settings = (SingleScanSettings) argument;
+        public boolean matches(SingleScanSettings settings) {
             ArrayList<ChannelSettings> channelSettings = settings.channelSettings;
             ArrayList<HiddenNetwork> hiddenNetworks = settings.hiddenNetworks;
             if (mExpectedFreqs != null) {
@@ -672,18 +673,23 @@ public class WificondControlTest {
             }
             return true;
         }
+
+        @Override
+        public String toString() {
+            return "ScanMatcher{mExpectedFreqs=" + mExpectedFreqs
+                    + ", mExpectedSsids=" + mExpectedSsids + '}';
+        }
     }
 
     // Create a ArgumentMatcher which captures a PnoSettings parameter and checks if it
     // matches the WifiNative.PnoSettings;
-    private class PnoScanMatcher extends ArgumentMatcher<PnoSettings> {
+    private class PnoScanMatcher implements ArgumentMatcher<PnoSettings> {
         private final WifiNative.PnoSettings mExpectedPnoSettings;
         PnoScanMatcher(WifiNative.PnoSettings expectedPnoSettings) {
             this.mExpectedPnoSettings = expectedPnoSettings;
         }
         @Override
-        public boolean matchesObject(Object argument) {
-            PnoSettings settings = (PnoSettings) argument;
+        public boolean matches(PnoSettings settings) {
             if (mExpectedPnoSettings == null) {
                 return false;
             }
@@ -714,5 +720,9 @@ public class WificondControlTest {
             return true;
         }
 
+        @Override
+        public String toString() {
+            return "PnoScanMatcher{" + "mExpectedPnoSettings=" + mExpectedPnoSettings + '}';
+        }
     }
 }

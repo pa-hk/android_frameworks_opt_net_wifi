@@ -72,13 +72,6 @@ public class WifiMonitor {
     public static final int WPS_OVERLAP_EVENT                    = BASE + 10;
      /* WPS timeout detected */
     public static final int WPS_TIMEOUT_EVENT                    = BASE + 11;
-    /* Driver was hung */
-    public static final int DRIVER_HUNG_EVENT                    = BASE + 12;
-    /* SSID was disabled due to auth failure or excessive
-     * connection failures */
-    public static final int SSID_TEMP_DISABLED                   = BASE + 13;
-    /* SSID reenabled by supplicant */
-    public static final int SSID_REENABLED                       = BASE + 14;
 
     /* Request Identity */
     public static final int SUP_REQUEST_IDENTITY                 = BASE + 15;
@@ -87,6 +80,9 @@ public class WifiMonitor {
     public static final int SUP_REQUEST_SIM_AUTH                 = BASE + 16;
 
     public static final int SCAN_FAILED_EVENT                    = BASE + 17;
+    /* Pno scan results are available */
+    public static final int PNO_SCAN_RESULTS_EVENT               = BASE + 18;
+
 
     /* Indicates assoc reject event */
     public static final int ASSOCIATION_REJECTION_EVENT          = BASE + 43;
@@ -99,15 +95,6 @@ public class WifiMonitor {
 
     /* hotspot 2.0 events */
     public static final int HS20_REMEDIATION_EVENT               = BASE + 61;
-
-    /**
-     * Authentication Failure reasonCode, used internally by WifiStateMachine
-     * @hide
-     */
-    public static final int AUTHENTICATION_FAILURE_REASON_DEFAULT = 0;
-    public static final int AUTHENTICATION_FAILURE_REASON_TIMEOUT = 1;
-    public static final int AUTHENTICATION_FAILURE_REASON_WRONG_PSWD = 2;
-    public static final int AUTHENTICATION_FAILURE_REASON_EAP_FAILURE = 3;
 
     /* WPS config errrors */
     private static final int CONFIG_MULTIPLE_PBC_DETECTED = 12;
@@ -464,6 +451,14 @@ public class WifiMonitor {
     }
 
     /**
+     * Broadcast pno scan result event to all the handlers registered for this event.
+     * @param iface Name of iface on which this occurred.
+     */
+    public void broadcastPnoScanResultEvent(String iface) {
+        sendMessage(iface, PNO_SCAN_RESULTS_EVENT);
+    }
+
+    /**
      * Broadcast scan failed event to all the handlers registered for this event.
      * @param iface Name of iface on which this occurred.
      */
@@ -476,7 +471,10 @@ public class WifiMonitor {
      *
      * @param iface Name of iface on which this occurred.
      * @param reason Reason for authentication failure. This has to be one of the
-     *               |AUTHENTICATION_FAILURE_REASON_*| reason codes.
+     *               {@link android.net.wifi.WifiManager#ERROR_AUTH_FAILURE_NONE},
+     *               {@link android.net.wifi.WifiManager#ERROR_AUTH_FAILURE_TIMEOUT},
+     *               {@link android.net.wifi.WifiManager#ERROR_AUTH_FAILURE_WRONG_PSWD},
+     *               {@link android.net.wifi.WifiManager#ERROR_AUTH_FAILURE_EAP_FAILURE}
      */
     public void broadcastAuthenticationFailureEvent(String iface, int reason) {
         sendMessage(iface, AUTHENTICATION_FAILURE_EVENT, 0, reason);

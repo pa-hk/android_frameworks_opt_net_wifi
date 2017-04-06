@@ -291,6 +291,21 @@ public class WifiMonitorTest {
     }
 
     /**
+     * Broadcast pno scan results event test.
+     */
+    @Test
+    public void testBroadcastPnoScanResultsEvent() {
+        mWifiMonitor.registerHandler(
+                WLAN_IFACE_NAME, WifiMonitor.PNO_SCAN_RESULTS_EVENT, mHandlerSpy);
+        mWifiMonitor.broadcastPnoScanResultEvent(WLAN_IFACE_NAME);
+        mLooper.dispatchAll();
+
+        ArgumentCaptor<Message> messageCaptor = ArgumentCaptor.forClass(Message.class);
+        verify(mHandlerSpy).handleMessage(messageCaptor.capture());
+        assertEquals(WifiMonitor.PNO_SCAN_RESULTS_EVENT, messageCaptor.getValue().what);
+    }
+
+    /**
      * Broadcast Scan results event test.
      */
     @Test
@@ -328,7 +343,7 @@ public class WifiMonitorTest {
     public void testBroadcastAuthenticationFailureEvent() {
         mWifiMonitor.registerHandler(
                 WLAN_IFACE_NAME, WifiMonitor.AUTHENTICATION_FAILURE_EVENT, mHandlerSpy);
-        int reason = WifiMonitor.AUTHENTICATION_FAILURE_REASON_WRONG_PSWD;
+        int reason = WifiManager.ERROR_AUTH_FAILURE_WRONG_PSWD;
         mWifiMonitor.broadcastAuthenticationFailureEvent(WLAN_IFACE_NAME, reason);
         mLooper.dispatchAll();
 

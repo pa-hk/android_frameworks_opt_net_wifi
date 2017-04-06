@@ -41,6 +41,7 @@ public class SavedNetworkEvaluator implements WifiNetworkSelector.NetworkEvaluat
     private final WifiConfigManager mWifiConfigManager;
     private final Clock mClock;
     private final LocalLog mLocalLog;
+    private final WifiConnectivityHelper mConnectivityHelper;
     private final int mRssiScoreSlope;
     private final int mRssiScoreOffset;
     private final int mSameBssidAward;
@@ -48,16 +49,18 @@ public class SavedNetworkEvaluator implements WifiNetworkSelector.NetworkEvaluat
     private final int mBand5GHzAward;
     private final int mLastSelectionAward;
     private final int mSecurityAward;
-    private final int mNoInternetPenalty;
     private final int mThresholdSaturatedRssi24;
+    private final int mThresholdSaturatedRssi5;
     private final ContentObserver mContentObserver;
     private boolean mCurateSavedOpenNetworks;
 
     SavedNetworkEvaluator(final Context context, WifiConfigManager configManager, Clock clock,
-            LocalLog localLog, Looper looper, final FrameworkFacade frameworkFacade) {
+            LocalLog localLog, Looper looper, final FrameworkFacade frameworkFacade,
+            WifiConnectivityHelper connectivityHelper) {
         mWifiConfigManager = configManager;
         mClock = clock;
         mLocalLog = localLog;
+        mConnectivityHelper = connectivityHelper;
 
         mRssiScoreSlope = context.getResources().getInteger(
                 R.integer.config_wifi_framework_RSSI_SCORE_SLOPE);
@@ -75,9 +78,8 @@ public class SavedNetworkEvaluator implements WifiNetworkSelector.NetworkEvaluat
                 R.integer.config_wifi_framework_5GHz_preference_boost_factor);
         mThresholdSaturatedRssi24 = context.getResources().getInteger(
                 R.integer.config_wifi_framework_wifi_score_good_rssi_threshold_24GHz);
-        mNoInternetPenalty = (mThresholdSaturatedRssi24 + mRssiScoreOffset)
-                * mRssiScoreSlope + mBand5GHzAward + mSameNetworkAward
-                + mSameBssidAward + mSecurityAward;
+        mThresholdSaturatedRssi5 = context.getResources().getInteger(
+                R.integer.config_wifi_framework_wifi_score_good_rssi_threshold_5GHz);
         mContentObserver = new ContentObserver(new Handler(looper)) {
             @Override
             public void onChange(boolean selfChange) {
@@ -98,9 +100,7 @@ public class SavedNetworkEvaluator implements WifiNetworkSelector.NetworkEvaluat
     }
 
     private void localLog(String log) {
-        if (mLocalLog != null) {
-            mLocalLog.log(log);
-        }
+        mLocalLog.log(log);
     }
 
     /**
@@ -154,8 +154,8 @@ public class SavedNetworkEvaluator implements WifiNetworkSelector.NetworkEvaluat
                 sbuf.append(status.getDisableReasonCounter(index)).append(" ");
             }
             sbuf.append("Connect Choice: ").append(status.getConnectChoice())
-                .append(" set time: ").append(status.getConnectChoiceTimestamp())
-                .append("\n");
+                    .append(" set time: ").append(status.getConnectChoiceTimestamp())
+                    .append("\n");
         }
         localLog(sbuf.toString());
     }
@@ -171,19 +171,20 @@ public class SavedNetworkEvaluator implements WifiNetworkSelector.NetworkEvaluat
                         WifiConfiguration currentNetwork, String currentBssid,
                         StringBuffer sbuf) {
         int score = 0;
+        boolean is5GHz = scanResult.is5GHz();
 
         sbuf.append("[ ").append(scanResult).append("] ");
         // Calculate the RSSI score.
-        int rssi = scanResult.level <= mThresholdSaturatedRssi24
-                ? scanResult.level : mThresholdSaturatedRssi24;
+        int rssiSaturationThreshold = is5GHz ? mThresholdSaturatedRssi5 : mThresholdSaturatedRssi24;
+        int rssi = scanResult.level < rssiSaturationThreshold ? scanResult.level
+                : rssiSaturationThreshold;
         score += (rssi + mRssiScoreOffset) * mRssiScoreSlope;
         sbuf.append(" RSSI score: ").append(score).append(",");
 
         // 5GHz band bonus.
-        if (scanResult.is5GHz()) {
+        if (is5GHz) {
             score += mBand5GHzAward;
-            sbuf.append(" 5GHz bonus: ").append(mBand5GHzAward)
-                .append(",");
+            sbuf.append(" 5GHz bonus: ").append(mBand5GHzAward).append(",");
         }
 
         // Last user selection award.
@@ -203,29 +204,33 @@ public class SavedNetworkEvaluator implements WifiNetworkSelector.NetworkEvaluat
         // Same network award.
         if (currentNetwork != null
                 && (network.networkId == currentNetwork.networkId
-                || network.isLinked(currentNetwork))) {
+                //TODO(b/36788683): re-enable linked configuration check
+                /* || network.isLinked(currentNetwork) */)) {
             score += mSameNetworkAward;
             sbuf.append(" Same network the current one bonus: ")
                     .append(mSameNetworkAward).append(",");
+
+            // When firmware roaming is supported, equivalent BSSIDs (the ones under the
+            // same network as the currently connected one) get the same BSSID award.
+            if (mConnectivityHelper.isFirmwareRoamingSupported()
+                    && currentBssid != null && !currentBssid.equals(scanResult.BSSID)) {
+                score += mSameBssidAward;
+                sbuf.append(" Firmware roaming equivalent BSSID bonus: ")
+                        .append(mSameBssidAward).append(",");
+            }
         }
 
         // Same BSSID award.
         if (currentBssid != null && currentBssid.equals(scanResult.BSSID)) {
             score += mSameBssidAward;
             sbuf.append(" Same BSSID as the current one bonus: ").append(mSameBssidAward)
-                .append(",");
+                    .append(",");
         }
 
         // Security award.
         if (!WifiConfigurationUtil.isConfigForOpenNetwork(network)) {
             score += mSecurityAward;
             sbuf.append(" Secure network bonus: ").append(mSecurityAward).append(",");
-        }
-
-        // No internet penalty.
-        if (network.numNoInternetAccessReports > 0 && !network.validatedInternetAccess) {
-            score -= mNoInternetPenalty;
-            sbuf.append(" No internet penalty: -").append(mNoInternetPenalty).append(",");
         }
 
         sbuf.append(" ## Total score: ").append(score).append("\n");

@@ -22,7 +22,8 @@ import static android.net.wifi.WifiManager.ACTION_PASSPOINT_SUBSCRIPTION_REMEDIA
 import static android.net.wifi.WifiManager.EXTRA_BSSID_LONG;
 import static android.net.wifi.WifiManager.EXTRA_DELAY;
 import static android.net.wifi.WifiManager.EXTRA_ESS;
-import static android.net.wifi.WifiManager.EXTRA_ICON_INFO;
+import static android.net.wifi.WifiManager.EXTRA_FILENAME;
+import static android.net.wifi.WifiManager.EXTRA_ICON;
 import static android.net.wifi.WifiManager.EXTRA_SUBSCRIPTION_REMEDIATION_METHOD;
 import static android.net.wifi.WifiManager.EXTRA_URL;
 
@@ -34,6 +35,7 @@ import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.anyBoolean;
 import static org.mockito.Mockito.anyLong;
 import static org.mockito.Mockito.anyMap;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -44,8 +46,8 @@ import static org.mockito.MockitoAnnotations.initMocks;
 
 import android.content.Context;
 import android.content.Intent;
+import android.graphics.drawable.Icon;
 import android.net.wifi.EAPConstants;
-import android.net.wifi.IconInfo;
 import android.net.wifi.ScanResult;
 import android.net.wifi.WifiConfiguration;
 import android.net.wifi.WifiEnterpriseConfig;
@@ -76,6 +78,8 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 
 import java.nio.charset.StandardCharsets;
+import java.security.GeneralSecurityException;
+import java.security.cert.X509Certificate;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -112,6 +116,7 @@ public class PasspointManagerTest {
     @Mock PasspointEventHandler.Callbacks mCallbacks;
     @Mock AnqpCache mAnqpCache;
     @Mock ANQPRequestManager mAnqpRequestManager;
+    @Mock CertificateVerifier mCertVerifier;
     @Mock WifiConfigManager mWifiConfigManager;
     @Mock WifiConfigStore mWifiConfigStore;
     @Mock PasspointConfigStoreData.DataSource mDataSource;
@@ -122,8 +127,9 @@ public class PasspointManagerTest {
     public void setUp() throws Exception {
         initMocks(this);
         when(mObjectFactory.makeAnqpCache(mClock)).thenReturn(mAnqpCache);
-        when(mObjectFactory.makeANQPRequestManager(any(PasspointEventHandler.class), eq(mClock)))
+        when(mObjectFactory.makeANQPRequestManager(any(), eq(mClock)))
                 .thenReturn(mAnqpRequestManager);
+        when(mObjectFactory.makeCertificateVerifier()).thenReturn(mCertVerifier);
         mManager = new PasspointManager(mContext, mWifiNative, mWifiKeyStore, mClock,
                 mSimAccessor, mObjectFactory, mWifiConfigManager, mWifiConfigStore);
         ArgumentCaptor<PasspointEventHandler.Callbacks> callbacks =
@@ -151,10 +157,15 @@ public class PasspointManagerTest {
         assertEquals(ACTION_PASSPOINT_ICON, intent.getValue().getAction());
         assertTrue(intent.getValue().getExtras().containsKey(EXTRA_BSSID_LONG));
         assertEquals(bssid, intent.getValue().getExtras().getLong(EXTRA_BSSID_LONG));
-        assertTrue(intent.getValue().getExtras().containsKey(EXTRA_ICON_INFO));
-        IconInfo expectedInfo = new IconInfo(fileName, data);
-        assertEquals(new IconInfo(fileName, data),
-                (IconInfo) intent.getValue().getExtras().getParcelable(EXTRA_ICON_INFO));
+        assertTrue(intent.getValue().getExtras().containsKey(EXTRA_FILENAME));
+        assertEquals(fileName, intent.getValue().getExtras().getString(EXTRA_FILENAME));
+        if (data != null) {
+            assertTrue(intent.getValue().getExtras().containsKey(EXTRA_ICON));
+            Icon icon = (Icon) intent.getValue().getExtras().getParcelable(EXTRA_ICON);
+            assertTrue(Arrays.equals(data, icon.getDataBytes()));
+        } else {
+            assertFalse(intent.getValue().getExtras().containsKey(EXTRA_ICON));
+        }
     }
 
     /**
@@ -544,6 +555,37 @@ public class PasspointManagerTest {
     }
 
     /**
+     * Verify that adding a provider with an invalid CA certificate will fail.
+     *
+     * @throws Exception
+     */
+    @Test
+    public void addProviderWithInvalidCaCert() throws Exception {
+        PasspointConfiguration config = createTestConfigWithUserCredential();
+        doThrow(new GeneralSecurityException())
+                .when(mCertVerifier).verifyCaCert(any(X509Certificate.class));
+        assertFalse(mManager.addOrUpdateProvider(config));
+    }
+
+    /**
+     * Verify that adding a provider with R2 configuration will not perform CA certificate
+     * verification.
+     *
+     * @throws Exception
+     */
+    @Test
+    public void addProviderWithR2Config() throws Exception {
+        PasspointConfiguration config = createTestConfigWithUserCredential();
+        config.setUpdateIdentifier(1);
+        PasspointProvider provider = createMockProvider(config);
+        when(mObjectFactory.makePasspointProvider(eq(config), eq(mWifiKeyStore),
+                eq(mSimAccessor), anyLong())).thenReturn(provider);
+        assertTrue(mManager.addOrUpdateProvider(config));
+        verify(mCertVerifier, never()).verifyCaCert(any(X509Certificate.class));
+        verifyInstalledConfig(config);
+    }
+
+    /**
      * Verify that removing a non-existing provider will fail.
      *
      * @throws Exception
@@ -685,6 +727,7 @@ public class PasspointManagerTest {
         when(provider.getWifiConfig()).thenReturn(new WifiConfiguration());
         WifiConfiguration config = mManager.getMatchingWifiConfig(createTestScanResult());
         assertEquals(ScanResultUtil.createQuotedSSID(TEST_SSID), config.SSID);
+        assertTrue(config.isHomeProviderNetwork);
     }
 
     /**
@@ -703,6 +746,7 @@ public class PasspointManagerTest {
         when(provider.getWifiConfig()).thenReturn(new WifiConfiguration());
         WifiConfiguration config = mManager.getMatchingWifiConfig(createTestScanResult());
         assertEquals(ScanResultUtil.createQuotedSSID(TEST_SSID), config.SSID);
+        assertFalse(config.isHomeProviderNetwork);
     }
 
     /**

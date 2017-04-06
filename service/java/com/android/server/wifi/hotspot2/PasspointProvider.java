@@ -280,6 +280,7 @@ public class PasspointProvider {
 
         WifiEnterpriseConfig enterpriseConfig = new WifiEnterpriseConfig();
         enterpriseConfig.setRealm(mConfig.getCredential().getRealm());
+        enterpriseConfig.setDomainSuffixMatch(mConfig.getHomeSp().getFqdn());
         if (mConfig.getCredential().getUserCredential() != null) {
             buildEnterpriseConfigForUserCredential(enterpriseConfig,
                     mConfig.getCredential().getUserCredential());
@@ -379,6 +380,16 @@ public class PasspointProvider {
     public int hashCode() {
         return Objects.hash(mProviderId, mCaCertificateAlias, mClientCertificateAlias,
                 mClientPrivateKeyAlias, mConfig);
+    }
+
+    @Override
+    public String toString() {
+        StringBuilder builder = new StringBuilder();
+        builder.append("ProviderId: ").append(mProviderId).append("\n");
+        builder.append("Configuration Begin ---\n");
+        builder.append(mConfig);
+        builder.append("Configuration End ---\n");
+        return builder.toString();
     }
 
     /**
