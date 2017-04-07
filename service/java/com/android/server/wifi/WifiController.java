@@ -63,7 +63,7 @@ public class WifiController extends StateMachine {
     private int mSleepPolicy;
     private boolean mFirstUserSignOnSeen = false;
     private boolean mStaAndApConcurrency = false;
-
+    private boolean mRestartStaSapStack = false;
     private AlarmManager mAlarmManager;
     private PendingIntent mIdleIntent;
     private static final int IDLE_REQUEST = 0;
@@ -632,7 +632,15 @@ public class WifiController extends StateMachine {
                     sendMessage((Message)(msg.obj));
                     break;
                 case CMD_RESTART_WIFI_CONTINUE:
-                    transitionTo(mDeviceActiveState);
+                    if (mStaAndApConcurrency) {
+                        log("ApStaDisabledState: CMD_RESTART_WIFI_CONTINUE -> mStaEnablingState");
+                        if (mRestartStaSapStack) {
+                            deferMessage(msg);
+                        }
+                        transitionTo(mStaEnablingState);
+                    } else {
+                        transitionTo(mDeviceActiveState);
+                    }
                     break;
                 default:
                     return NOT_HANDLED;
@@ -692,6 +700,10 @@ public class WifiController extends StateMachine {
                     log("StaEnablingState: CMD_AIRPLANE_TOGGLED defered");
                     deferMessage(msg);
                     break;
+                case CMD_RESTART_WIFI_CONTINUE:
+                    log("StaEnablingState: CMD_RESTART_WIFI_CONTINUE defered");
+                    deferMessage(msg);
+                    break;
                 default:
                     return NOT_HANDLED;
             }
@@ -735,6 +747,10 @@ public class WifiController extends StateMachine {
                     break;
                 case CMD_AIRPLANE_TOGGLED:
                     log("StaDisablingState: CMD_AIRPLANE_TOGGLED defered");
+                    deferMessage(msg);
+                    break;
+                case CMD_RESTART_WIFI_CONTINUE:
+                    log("StaDisablingState: CMD_RESTART_WIFI_CONTINUE defered");
                     deferMessage(msg);
                     break;
                 default:
@@ -950,6 +966,10 @@ public class WifiController extends StateMachine {
                 case CMD_STA_START_FAILURE:
                     log("ApStaDisablingState: CMD_STA_START_FAILURE dropped");
                     break;
+                case CMD_RESTART_WIFI:
+                    log("ApStaDisablingState defer CMD_RESTART_WIFI");
+                    deferMessage(msg);
+                    break;
                 default :
                     return NOT_HANDLED;
            }
@@ -1021,6 +1041,13 @@ public class WifiController extends StateMachine {
                 break;
             case CMD_AP_START_FAILURE:
                 transitionTo(mStaEnabledState);
+                break;
+            case CMD_RESTART_WIFI:
+                log("ApStaEnabledState: CMD_RESTART_WIFI -> setHostApRunning(false) -> mApStaDisablingState");
+                mSoftApStateMachine.setHostApRunning(null, false);
+                mRestartStaSapStack = true;
+                deferMessage(msg);
+                transitionTo(mApStaDisablingState);
                 break;
             default :
                 return NOT_HANDLED;
@@ -1123,6 +1150,21 @@ public class WifiController extends StateMachine {
                         }
                     }
                     break;
+                case CMD_RESTART_WIFI:
+                    if (mStaAndApConcurrency) {
+                        log("StaEnabledState:CMD_RESTART_WIFI ->StaDisablingState");
+                        deferMessage(obtainMessage(CMD_RESTART_WIFI_CONTINUE));
+                        transitionTo(mStaDisablingState);
+                    }
+                    break;
+                case CMD_RESTART_WIFI_CONTINUE:
+                    if (mStaAndApConcurrency && mRestartStaSapStack) {
+                        log("StaEnabledState:CMD_RESTART_WIFI ->mApStaEnablingState");
+                        mSoftApStateMachine.setHostApRunning((WifiConfiguration) msg.obj, true);
+                        mRestartStaSapStack = false;
+                        transitionTo(mApStaEnablingState);
+                    }
+                    break;
                 default:
                     return NOT_HANDLED;
 
@@ -1138,8 +1180,10 @@ public class WifiController extends StateMachine {
 
         @Override
         public void enter() {
-            mWifiStateMachine.setSupplicantRunning(true);
+            // need to set the mode before starting supplicant because WSM will assume we are going
+            // in to client mode
             mWifiStateMachine.setOperationalMode(WifiStateMachine.SCAN_ONLY_WITH_WIFI_OFF_MODE);
+            mWifiStateMachine.setSupplicantRunning(true);
             mWifiStateMachine.setDriverStart(true);
             // Supplicant can't restart right away, so not the time we switched off
             mDisabledTimestamp = SystemClock.elapsedRealtime();
@@ -1171,16 +1215,21 @@ public class WifiController extends StateMachine {
                 case CMD_AIRPLANE_TOGGLED:
                     if (mSettingsStore.isAirplaneModeOn() &&
                             ! mSettingsStore.isWifiToggleEnabled()) {
-                        transitionTo(mApStaDisabledState);
+                        if (mStaAndApConcurrency) {
+                            transitionTo(mStaDisablingState);
+                        } else {
+                            transitionTo(mApStaDisabledState);
+                        }
                     }
                     break;
                 case CMD_SCAN_ALWAYS_MODE_CHANGED:
                     if (! mSettingsStore.isScanAlwaysAvailable()) {
                         if (mStaAndApConcurrency) {
                             mWifiStateMachine.setOperationalMode(WifiStateMachine.CONNECT_MODE);
-                            mWifiStateMachine.setSupplicantRunning(false);
+                            transitionTo(mStaDisablingState);
+                        } else {
+                            transitionTo(mApStaDisabledState);
                         }
-                        transitionTo(mApStaDisabledState);
                     }
                     break;
                 case CMD_SET_AP:
@@ -1285,7 +1334,7 @@ public class WifiController extends StateMachine {
                             }
                         } else {
                             mWifiStateMachine.setHostApRunning(null, false);
-                            mPendingState = mStaEnabledState;
+                            mPendingState = mDeviceActiveState;
                         }
                     }
                     break;
@@ -1412,6 +1461,9 @@ public class WifiController extends StateMachine {
                 } else if (mSettingsStore.isScanAlwaysAvailable()) {
                     transitionTo(mStaDisabledWithScanState);
                 } else {
+                    // For STA + SAP concurrency, supplicant already stopped
+                    // in EcmState.enter(), hence no need to transition to
+                    // mStaDisablingState.
                     transitionTo(mApStaDisabledState);
                 }
             }
@@ -1442,9 +1494,11 @@ public class WifiController extends StateMachine {
                 mFirstUserSignOnSeen = true;
                 return HANDLED;
             } else if (msg.what == CMD_RESTART_WIFI) {
-                deferMessage(obtainMessage(CMD_RESTART_WIFI_CONTINUE));
-                transitionTo(mApStaDisabledState);
-                return HANDLED;
+                if (!mStaAndApConcurrency) {
+                    deferMessage(obtainMessage(CMD_RESTART_WIFI_CONTINUE));
+                    transitionTo(mApStaDisabledState);
+                    return HANDLED;
+                }
             }
             return NOT_HANDLED;
         }
