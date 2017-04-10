@@ -18,7 +18,9 @@ package com.android.server.wifi.hotspot2;
 
 import static android.net.wifi.WifiManager.ACTION_PASSPOINT_DEAUTH_IMMINENT;
 import static android.net.wifi.WifiManager.ACTION_PASSPOINT_ICON;
+import static android.net.wifi.WifiManager.ACTION_PASSPOINT_OSU_PROVIDERS_LIST;
 import static android.net.wifi.WifiManager.ACTION_PASSPOINT_SUBSCRIPTION_REMEDIATION;
+import static android.net.wifi.WifiManager.EXTRA_ANQP_ELEMENT_DATA;
 import static android.net.wifi.WifiManager.EXTRA_BSSID_LONG;
 import static android.net.wifi.WifiManager.EXTRA_DELAY;
 import static android.net.wifi.WifiManager.EXTRA_ESS;
@@ -47,6 +49,7 @@ import com.android.server.wifi.WifiKeyStore;
 import com.android.server.wifi.WifiNative;
 import com.android.server.wifi.hotspot2.anqp.ANQPElement;
 import com.android.server.wifi.hotspot2.anqp.Constants;
+import com.android.server.wifi.hotspot2.anqp.RawByteElement;
 import com.android.server.wifi.util.InformationElementUtil;
 import com.android.server.wifi.util.ScanResultUtil;
 
@@ -118,6 +121,18 @@ public class PasspointManager {
 
             // Add new entry to the cache.
             mAnqpCache.addEntry(anqpKey, anqpElements);
+
+            // Broadcast OSU providers info.
+            if (anqpElements.containsKey(Constants.ANQPElementType.HSOSUProviders)) {
+                RawByteElement osuProviders = (RawByteElement) anqpElements.get(
+                        Constants.ANQPElementType.HSOSUProviders);
+                Intent intent = new Intent(ACTION_PASSPOINT_OSU_PROVIDERS_LIST);
+                intent.addFlags(Intent.FLAG_RECEIVER_REGISTERED_ONLY_BEFORE_BOOT);
+                intent.putExtra(EXTRA_BSSID_LONG, bssid);
+                intent.putExtra(EXTRA_ANQP_ELEMENT_DATA, osuProviders.getPayload());
+                mContext.sendBroadcastAsUser(intent, UserHandle.ALL,
+                        android.Manifest.permission.ACCESS_WIFI_STATE);
+            }
         }
 
         @Override
@@ -218,7 +233,7 @@ public class PasspointManager {
      * @param config Configuration of the Passpoint provider to be added
      * @return true if provider is added, false otherwise
      */
-    public boolean addOrUpdateProvider(PasspointConfiguration config) {
+    public boolean addOrUpdateProvider(PasspointConfiguration config, int uid) {
         if (config == null) {
             Log.e(TAG, "Configuration not provided");
             return false;
@@ -245,7 +260,7 @@ public class PasspointManager {
 
         // Create a provider and install the necessary certificates and keys.
         PasspointProvider newProvider = mObjectFactory.makePasspointProvider(
-                config, mKeyStore, mSimAccessor, mProviderIndex++);
+                config, mKeyStore, mSimAccessor, mProviderIndex++, uid);
 
         if (!newProvider.installCertsAndKeys()) {
             Log.e(TAG, "Failed to install certificates and keys to keystore");
@@ -261,7 +276,8 @@ public class PasspointManager {
 
         mProviders.put(config.getHomeSp().getFqdn(), newProvider);
         mWifiConfigManager.saveToStore(true /* forceWrite */);
-        Log.d(TAG, "Added/updated Passpoint configuration: " + config.getHomeSp().getFqdn());
+        Log.d(TAG, "Added/updated Passpoint configuration: " + config.getHomeSp().getFqdn()
+                + " by " + uid);
         return true;
     }
 
@@ -313,11 +329,6 @@ public class PasspointManager {
      * @return A pair of {@link PasspointProvider} and match status.
      */
     public Pair<PasspointProvider, PasspointMatch> matchProvider(ScanResult scanResult) {
-        // Nothing to be done if no Passpoint provider is installed.
-        if (mProviders.isEmpty()) {
-            return null;
-        }
-
         // Retrieve the relevant information elements, mainly Roaming Consortium IE and Hotspot 2.0
         // Vendor Specific IE.
         InformationElementUtil.RoamingConsortium roamingConsortium =
@@ -530,7 +541,8 @@ public class PasspointManager {
         // Note that for legacy configuration, the alias for client private key is the same as the
         // alias for the client certificate.
         PasspointProvider provider = new PasspointProvider(passpointConfig, mKeyStore,
-                mSimAccessor, mProviderIndex++, enterpriseConfig.getCaCertificateAlias(),
+                mSimAccessor, mProviderIndex++, wifiConfig.creatorUid,
+                enterpriseConfig.getCaCertificateAlias(),
                 enterpriseConfig.getClientCertificateAlias(),
                 enterpriseConfig.getClientCertificateAlias());
         mProviders.put(passpointConfig.getHomeSp().getFqdn(), provider);

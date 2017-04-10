@@ -596,6 +596,12 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
     int disconnectingWatchdogCount = 0;
     static final int DISCONNECTING_GUARD_TIMER_MSEC = 5000;
 
+    /* Disable p2p watchdog */
+    static final int CMD_DISABLE_P2P_WATCHDOG_TIMER                   = BASE + 112;
+
+    int mDisableP2pWatchdogCount = 0;
+    static final int DISABLE_P2P_GUARD_TIMER_MSEC = 2000;
+
     /* P2p commands */
     /* We are ok with no response here since we wont do much with it anyway */
     public static final int CMD_ENABLE_P2P                              = BASE + 131;
@@ -1846,9 +1852,9 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
      * @return true on success
      */
     public boolean syncAddOrUpdatePasspointConfig(AsyncChannel channel,
-            PasspointConfiguration config) {
+            PasspointConfiguration config, int uid) {
         Message resultMsg = channel.sendMessageSynchronously(CMD_ADD_OR_UPDATE_PASSPOINT_CONFIG,
-                config);
+                uid, 0, config);
         boolean result = (resultMsg.arg1 == SUCCESS);
         resultMsg.recycle();
         return result;
@@ -2183,6 +2189,16 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
         messageHandlingStatus = 0;
         if (mVerboseLoggingEnabled) {
             logd(" " + state.getClass().getSimpleName() + " " + getLogRecString(message));
+        }
+    }
+
+    @Override
+    protected boolean recordLogRec(Message msg) {
+        switch (msg.what) {
+            case CMD_RSSI_POLL:
+                return mVerboseLoggingEnabled;
+            default:
+                return true;
         }
     }
 
@@ -2614,6 +2630,13 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                 sb.append(" ");
                 sb.append(Integer.toString(msg.arg2));
                 sb.append(" cur=").append(disconnectingWatchdogCount);
+                break;
+            case CMD_DISABLE_P2P_WATCHDOG_TIMER:
+                sb.append(" ");
+                sb.append(Integer.toString(msg.arg1));
+                sb.append(" ");
+                sb.append(Integer.toString(msg.arg2));
+                sb.append(" cur=").append(mDisableP2pWatchdogCount);
                 break;
             case CMD_START_RSSI_MONITORING_OFFLOAD:
             case CMD_STOP_RSSI_MONITORING_OFFLOAD:
@@ -3667,7 +3690,24 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                             BluetoothAdapter.STATE_DISCONNECTED);
                     break;
                 case CMD_ENABLE_NETWORK:
+                    boolean disableOthers = message.arg2 == 1;
+                    int netId = message.arg1;
+                    boolean ok = mWifiConfigManager.enableNetwork(
+                            netId, disableOthers, message.sendingUid);
+                    if (!ok) {
+                        messageHandlingStatus = MESSAGE_HANDLING_STATUS_FAIL;
+                    }
+                    replyToMessage(message, message.what, ok ? SUCCESS : FAILURE);
+                    break;
                 case CMD_ADD_OR_UPDATE_NETWORK:
+                    WifiConfiguration config = (WifiConfiguration) message.obj;
+                    NetworkUpdateResult result =
+                            mWifiConfigManager.addOrUpdateNetwork(config, message.sendingUid);
+                    if (!result.isSuccess()) {
+                        messageHandlingStatus = MESSAGE_HANDLING_STATUS_FAIL;
+                    }
+                    replyToMessage(message, message.what, result.getNetworkId());
+                    break;
                 case CMD_SAVE_CONFIG:
                     replyToMessage(message, message.what, FAILURE);
                     break;
@@ -3692,7 +3732,7 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                     }
                     break;
                 case CMD_INITIALIZE:
-                    boolean ok = mWifiNative.initializeVendorHal(mVendorHalDeathRecipient);
+                    ok = mWifiNative.initializeVendorHal(mVendorHalDeathRecipient);
                     replyToMessage(message, message.what, ok ? SUCCESS : FAILURE);
                     break;
                 case CMD_BOOT_COMPLETED:
@@ -3875,7 +3915,8 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                     break;
                 case CMD_ADD_OR_UPDATE_PASSPOINT_CONFIG:
                     int addResult = mPasspointManager.addOrUpdateProvider(
-                            (PasspointConfiguration) message.obj) ? SUCCESS : FAILURE;
+                            (PasspointConfiguration) message.obj, message.arg1)
+                            ? SUCCESS : FAILURE;
                     replyToMessage(message, message.what, addResult);
                     break;
                 case CMD_REMOVE_PASSPOINT_CONFIG:
@@ -4366,7 +4407,12 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                     mTransitionToState = mSupplicantStoppingState;
                     break;
             }
-            p2pSendMessage(WifiStateMachine.CMD_DISABLE_P2P_REQ);
+            if (p2pSendMessage(WifiStateMachine.CMD_DISABLE_P2P_REQ)) {
+                sendMessageDelayed(obtainMessage(CMD_DISABLE_P2P_WATCHDOG_TIMER,
+                        mDisableP2pWatchdogCount, 0), DISABLE_P2P_GUARD_TIMER_MSEC);
+            } else {
+                transitionTo(mTransitionToState);
+            }
         }
         @Override
         public boolean processMessage(Message message) {
@@ -4375,6 +4421,12 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
             switch(message.what) {
                 case WifiStateMachine.CMD_DISABLE_P2P_RSP:
                     transitionTo(mTransitionToState);
+                    break;
+                case WifiStateMachine.CMD_DISABLE_P2P_WATCHDOG_TIMER:
+                    if (mDisableP2pWatchdogCount == message.arg1) {
+                        logd("Timeout waiting for CMD_DISABLE_P2P_RSP");
+                        transitionTo(mTransitionToState);
+                    }
                     break;
                 /* Defer wifi start/shut and driver commands */
                 case WifiMonitor.SUPPLICANT_STATE_CHANGE_EVENT:
@@ -4772,14 +4824,6 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                         mTemporarilyDisconnectWifi = false;
                     }
                     break;
-                case CMD_ADD_OR_UPDATE_NETWORK:
-                    config = (WifiConfiguration) message.obj;
-                    result = mWifiConfigManager.addOrUpdateNetwork(config, message.sendingUid);
-                    if (!result.isSuccess()) {
-                        messageHandlingStatus = MESSAGE_HANDLING_STATUS_FAIL;
-                    }
-                    replyToMessage(message, message.what, result.getNetworkId());
-                    break;
                 case CMD_REMOVE_NETWORK:
                     if (!deleteNetworkConfigAndSendReply(message, false)) {
                         // failed to remove the config and caller was notified
@@ -5174,7 +5218,7 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                     break;
                 case CMD_ADD_OR_UPDATE_PASSPOINT_CONFIG:
                     PasspointConfiguration passpointConfig = (PasspointConfiguration) message.obj;
-                    if (mPasspointManager.addOrUpdateProvider(passpointConfig)) {
+                    if (mPasspointManager.addOrUpdateProvider(passpointConfig, message.arg1)) {
                         String fqdn = passpointConfig.getHomeSp().getFqdn();
                         if (isProviderOwnedNetwork(mTargetNetworkId, fqdn)
                                 || isProviderOwnedNetwork(mLastNetworkId, fqdn)) {
@@ -5740,30 +5784,22 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
             if (!TextUtils.isEmpty(mTcpBufferSizes)) {
                 mIpManager.setTcpBufferSizes(mTcpBufferSizes);
             }
-
+            final IpManager.ProvisioningConfiguration prov;
             if (!isUsingStaticIp) {
-                final IpManager.ProvisioningConfiguration prov =
-                        IpManager.buildProvisioningConfiguration()
+                prov = IpManager.buildProvisioningConfiguration()
                             .withPreDhcpAction()
                             .withApfCapabilities(mWifiNative.getApfCapabilities())
                             .build();
-                mIpManager.startProvisioning(prov);
-                // Get Link layer stats so as we get fresh tx packet counters
-                getWifiLinkLayerStats();
             } else {
-                StaticIpConfiguration config = currentConfig.getStaticIpConfiguration();
-                if (config.ipAddress == null) {
-                    logd("Static IP lacks address");
-                    sendMessage(CMD_IPV4_PROVISIONING_FAILURE);
-                } else {
-                    final IpManager.ProvisioningConfiguration prov =
-                            IpManager.buildProvisioningConfiguration()
-                                .withStaticConfiguration(config)
-                                .withApfCapabilities(mWifiNative.getApfCapabilities())
-                                .build();
-                    mIpManager.startProvisioning(prov);
-                }
+                StaticIpConfiguration staticIpConfig = currentConfig.getStaticIpConfiguration();
+                prov = IpManager.buildProvisioningConfiguration()
+                            .withStaticConfiguration(staticIpConfig)
+                            .withApfCapabilities(mWifiNative.getApfCapabilities())
+                            .build();
             }
+            mIpManager.startProvisioning(prov);
+            // Get Link layer stats so as we get fresh tx packet counters
+            getWifiLinkLayerStats();
         }
 
         @Override
@@ -6861,16 +6897,30 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
         return null;
     }
 
-    private void p2pSendMessage(int what) {
+    /**
+     * Send message to WifiP2pServiceImpl.
+     * @return true if message is sent.
+     *         false if there is no channel configured for WifiP2pServiceImpl.
+     */
+    private boolean p2pSendMessage(int what) {
         if (mWifiP2pChannel != null) {
             mWifiP2pChannel.sendMessage(what);
+            return true;
         }
+        return false;
     }
 
-    private void p2pSendMessage(int what, int arg1) {
+    /**
+     * Send message to WifiP2pServiceImpl with an additional param |arg1|.
+     * @return true if message is sent.
+     *         false if there is no channel configured for WifiP2pServiceImpl.
+     */
+    private boolean p2pSendMessage(int what, int arg1) {
         if (mWifiP2pChannel != null) {
             mWifiP2pChannel.sendMessage(what, arg1);
+            return true;
         }
+        return false;
     }
 
     /**
