@@ -353,6 +353,9 @@ public class WifiConfigStore {
         // The FT flags should not be exposed to external apps.
         config.allowedKeyManagement = removeFastTransitionFlags(config.allowedKeyManagement);
 
+         readNetworkBitsetVariable(config.networkId, config.filsKeyMgmts,
+                WifiConfiguration.KeyMgmt.varName, WifiConfiguration.Fils.filsKeyStrings);
+
         readNetworkBitsetVariable(config.networkId, config.allowedAuthAlgorithms,
                 WifiConfiguration.AuthAlgorithm.varName, WifiConfiguration.AuthAlgorithm.strings);
 
@@ -661,6 +664,14 @@ public class WifiConfigStore {
         }
         String allowedKeyManagementString =
                 makeString(config.allowedKeyManagement, WifiConfiguration.KeyMgmt.strings);
+        if (config.filsKeyMgmts.get(WifiConfiguration.Fils.FILS_SHA256) ||
+               config.filsKeyMgmts.get(WifiConfiguration.Fils.FILS_SHA384)) {
+            if (!mWifiNative.setNetworkVariable(netId, WifiConfiguration.erpVarName, "1")) {
+                loge("failed to set erp");
+            }
+            allowedKeyManagementString = allowedKeyManagementString + " " +
+                                             makeString(config.filsKeyMgmts, WifiConfiguration.Fils.filsKeyStrings);
+        }
         if (config.allowedKeyManagement.cardinality() != 0 && !mWifiNative.setNetworkVariable(
                 netId,
                 WifiConfiguration.KeyMgmt.varName,
