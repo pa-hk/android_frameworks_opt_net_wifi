@@ -5111,6 +5111,11 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                     break;
                 case WifiManager.START_WPS:
                     WpsInfo wpsInfo = (WpsInfo) message.obj;
+                    if (wpsInfo == null) {
+                        loge("Cannot start WPS with null WpsInfo object");
+                        replyToMessage(message, WifiManager.WPS_FAILED, WifiManager.ERROR);
+                        break;
+                    }
                     WpsResult wpsResult = new WpsResult();
                     // TODO(b/32898136): Not needed when we start deleting networks from supplicant
                     // on disconnect.
@@ -5840,7 +5845,9 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
         // If this network was explicitly selected by the user, evaluate whether to call
         // explicitlySelected() so the system can treat it appropriately.
         WifiConfiguration config = getCurrentWifiConfiguration();
-        if (mWifiConfigManager.getLastSelectedNetwork() == config.networkId) {
+        if (config == null) {
+            Log.wtf(TAG, "Current WifiConfiguration is null, but IP provisioning just succeeded");
+        } else if (mWifiConfigManager.getLastSelectedNetwork() == config.networkId) {
             boolean prompt =
                     mWifiPermissionsUtil.checkConfigOverridePermission(config.lastConnectUid);
             if (mVerboseLoggingEnabled) {
