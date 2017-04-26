@@ -558,13 +558,13 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
     }
 
     public void setStaSoftApConcurrency() {
-       mStaAndAPConcurrency = true;
-       mSoftApStateMachine =
-               new SoftApStateMachine(mContext, this, mFacade, mInterfaceName,
-                                      mWifiConfigManager,  mWifiMonitor,
-                                      mBackupManagerProxy,
-                                      mNwService, mBatteryStats, mCountryCode);
-      logd("mSoftApStateMachine is created");
+        mSoftApStateMachine =
+            new SoftApStateMachine(mContext, this, mFacade, mInterfaceName,
+                                   mWifiConfigManager,  mWifiMonitor,
+                                   mBackupManagerProxy,
+                                   mNwService, mBatteryStats, mCountryCode);
+        mStaAndAPConcurrency = true;
+        logd("mSoftApStateMachine is created");
     }
 
 
@@ -4635,6 +4635,7 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                     mWifiNative.enableTdlsExtControl();
                     mWifiNative.disableScanOffload();
                     mWifiNative.setP2pDisable();
+                    mWifiNative.setPnoScanPlans();
 
                     sendSupplicantConnectionChangedBroadcast(true);
                     transitionTo(mDriverStartedState);
