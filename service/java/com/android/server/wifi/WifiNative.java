@@ -932,6 +932,14 @@ public class WifiNative {
         return doBooleanCommand("BLACKLIST clear");
     }
 
+    public boolean flushAllHlp() {
+        return doBooleanCommand("FILS_HLP_REQ_FLUSH");
+    }
+
+    public boolean addHlpReq(String dst, String hlpPacket) {
+        return doBooleanCommand("FILS_HLP_REQ_ADD " + dst + " " + hlpPacket);
+    }
+
     public boolean setSuspendOptimizations(boolean enabled) {
         if (enabled) {
             return doBooleanCommand("DRIVER SETSUSPENDMODE 1");

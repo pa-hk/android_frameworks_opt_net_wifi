@@ -532,6 +532,9 @@ public class WifiMonitor {
     /* subnet status change event */
     public static final int SUBNET_STATUS_UPDATE_EVENT           = VENDOR_BASE_WIFI_MONITOR + 62;
 
+   /* Fils network connection completed */
+    public static final int FILS_NETWORK_CONNECTION_EVENT        = VENDOR_BASE_WIFI_MONITOR + 63;
+
     /**
      * This indicates a read error on the monitor socket conenction
      */
@@ -1461,6 +1464,10 @@ public class WifiMonitor {
                     networkId = Integer.parseInt(match.group(2));
                 } catch (NumberFormatException e) {
                     networkId = -1;
+                }
+                if (data.contains("FILS_HLP_SENT")) {
+                    sendMessage(iface, FILS_NETWORK_CONNECTION_EVENT, networkId, reason, BSSID);
+                    return;
                 }
             }
             sendMessage(iface, NETWORK_CONNECTION_EVENT, networkId, reason, BSSID);
