@@ -18,12 +18,10 @@ package com.android.server.wifi.p2p;
 import static org.junit.Assert.*;
 import static org.mockito.Matchers.*;
 import static org.mockito.Mockito.doAnswer;
-import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
 
 import android.app.test.MockAnswerUtil.AnswerWithArguments;
 import android.hardware.wifi.supplicant.V1_0.ISupplicantP2pIfaceCallback;
@@ -33,15 +31,14 @@ import android.net.wifi.p2p.WifiP2pConfig;
 import android.net.wifi.p2p.WifiP2pDevice;
 import android.net.wifi.p2p.WifiP2pGroup;
 import android.net.wifi.p2p.WifiP2pProvDiscEvent;
-import android.net.wifi.p2p.WifiP2pWfdInfo;
+
+import com.android.server.wifi.util.NativeUtil;
 
 import org.junit.Assert.*;
 import org.junit.Before;
 import org.junit.Test;
 import org.mockito.ArgumentCaptor;
-import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
-import org.mockito.stubbing.Answer;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -295,7 +292,7 @@ public class SupplicantP2pIfaceCallbackTest {
             add((byte)0x32);
             add((byte)0x33);
         }};
-        String fakeSsidString = "\"0123\"";
+        String fakeSsidString = "0123";
         HashSet<String> passwords = new HashSet<String>();
 
         doAnswer(new AnswerWithArguments() {
@@ -375,18 +372,35 @@ public class SupplicantP2pIfaceCallbackTest {
                 ArgumentCaptor.forClass(WifiP2pProvDiscEvent.class);
         mDut.onProvisionDiscoveryCompleted(
                 p2pDeviceAddr, isRequest, status, configMethods, generatedPin);
+        verify(mMonitor).broadcastP2pProvisionDiscoveryEnterPin(
+                anyString(), discEventCaptor.capture());
+        assertEquals(WifiP2pProvDiscEvent.ENTER_PIN, discEventCaptor.getValue().event);
+
+        configMethods = WpsConfigMethods.KEYPAD;
+        mDut.onProvisionDiscoveryCompleted(
+                p2pDeviceAddr, isRequest, status, configMethods, generatedPin);
         verify(mMonitor).broadcastP2pProvisionDiscoveryShowPin(
                 anyString(), discEventCaptor.capture());
         assertEquals(WifiP2pProvDiscEvent.SHOW_PIN, discEventCaptor.getValue().event);
         assertEquals(generatedPin, discEventCaptor.getValue().pin);
 
+        isRequest = true;
         configMethods = WpsConfigMethods.KEYPAD;
         mDut.onProvisionDiscoveryCompleted(
                 p2pDeviceAddr, isRequest, status, configMethods, generatedPin);
-        verify(mMonitor).broadcastP2pProvisionDiscoveryEnterPin(
+        verify(mMonitor, times(2)).broadcastP2pProvisionDiscoveryEnterPin(
                 anyString(), discEventCaptor.capture());
         assertEquals(WifiP2pProvDiscEvent.ENTER_PIN, discEventCaptor.getValue().event);
 
+        configMethods = WpsConfigMethods.DISPLAY;
+        mDut.onProvisionDiscoveryCompleted(
+                p2pDeviceAddr, isRequest, status, configMethods, generatedPin);
+        verify(mMonitor, times(2)).broadcastP2pProvisionDiscoveryShowPin(
+                anyString(), discEventCaptor.capture());
+        assertEquals(WifiP2pProvDiscEvent.SHOW_PIN, discEventCaptor.getValue().event);
+        assertEquals(generatedPin, discEventCaptor.getValue().pin);
+
+        isRequest = false;
         configMethods = WpsConfigMethods.PUSHBUTTON;
         mDut.onProvisionDiscoveryCompleted(
                 p2pDeviceAddr, isRequest, status, configMethods, generatedPin);
@@ -400,5 +414,33 @@ public class SupplicantP2pIfaceCallbackTest {
         verify(mMonitor).broadcastP2pProvisionDiscoveryPbcRequest(
                 anyString(), discEventCaptor.capture());
         assertEquals(WifiP2pProvDiscEvent.PBC_REQ, discEventCaptor.getValue().event);
+    }
+
+    /**
+     * Test staAuth with device address, should trigger ApStaConnected broadcast
+     */
+    @Test
+    public void testStaAuth_success() {
+        // Trigger onStaAuthorized callback, ensure wifimonitor broadcast is sent with WifiP2pDevice
+        // using the p2pDeviceAddress
+        ArgumentCaptor<WifiP2pDevice> p2pDeviceCaptor =
+                ArgumentCaptor.forClass(WifiP2pDevice.class);
+        mDut.onStaAuthorized(mDeviceAddress1Bytes, mDeviceAddress2Bytes);
+        verify(mMonitor).broadcastP2pApStaConnected(any(String.class), p2pDeviceCaptor.capture());
+        assertEquals(mDeviceAddress2String, p2pDeviceCaptor.getValue().deviceAddress);
+    }
+
+    /**
+     * Test staAuth without device address, should trigger ApStaConnected broadcast using srcAddress
+     */
+    @Test
+    public void testStaAuth_noDeviceAddress_success() {
+        // Trigger onStaAuthorized callback, using a zero'd p2pDeviceAddress, ensure wifimonitor
+        // broadcast is sent with WifiP2pDevice using the srcAddress
+        ArgumentCaptor<WifiP2pDevice> p2pDeviceCaptor =
+                ArgumentCaptor.forClass(WifiP2pDevice.class);
+        mDut.onStaAuthorized(mDeviceAddress1Bytes, NativeUtil.ANY_MAC_BYTES);
+        verify(mMonitor).broadcastP2pApStaConnected(any(String.class), p2pDeviceCaptor.capture());
+        assertEquals(mDeviceAddress1String, p2pDeviceCaptor.getValue().deviceAddress);
     }
 }
