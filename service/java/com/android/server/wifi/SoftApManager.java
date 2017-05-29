@@ -20,6 +20,9 @@ import static com.android.server.wifi.util.ApConfigUtil.ERROR_GENERIC;
 import static com.android.server.wifi.util.ApConfigUtil.ERROR_NO_CHANNEL;
 import static com.android.server.wifi.util.ApConfigUtil.SUCCESS;
 
+import android.net.wifi.IInterfaceEventCallback;
+import android.net.wifi.IWificond;
+import android.net.wifi.IClientInterface;
 import android.net.InterfaceConfiguration;
 import android.net.wifi.IApInterface;
 import android.net.wifi.WifiConfiguration;
@@ -85,8 +88,9 @@ public class SoftApManager implements ActiveModeManager {
                          INetworkManagementService nms,
                          WifiApConfigStore wifiApConfigStore,
                          WifiConfiguration config,
-                         WifiMetrics wifiMetrics) {
-        mStateMachine = new SoftApStateMachine(looper);
+                         WifiMetrics wifiMetrics,
+                         WifiInjector wifiInjector) {
+        mStateMachine = new SoftApStateMachine(looper, wifiInjector);
 
         mWifiNative = wifiNative;
         mCountryCode = countryCode;
@@ -244,6 +248,27 @@ public class SoftApManager implements ActiveModeManager {
         Log.d(TAG, "Soft AP is stopped");
     }
 
+    private static class InterfaceEventHandler extends IInterfaceEventCallback.Stub {
+        InterfaceEventHandler(SoftApStateMachine stateMachine) {
+            mSoftApStateMachine = stateMachine;
+        }
+        @Override
+        public void OnClientTorndownEvent(IClientInterface networkInterface) {
+        }
+        @Override
+        public void OnClientInterfaceReady(IClientInterface networkInterface) {
+        }
+        @Override
+        public void OnApTorndownEvent(IApInterface networkInterface) { }
+        @Override
+        public void OnApInterfaceReady(IApInterface networkInterface) { }
+        @Override
+        public void OnSoftApClientEvent(byte[] mac_address, boolean connect_status) {
+               Log.d(TAG, "Client Mac addr " + mac_address.toString() + "status = "+connect_status );
+        }
+        private SoftApStateMachine mSoftApStateMachine;
+    }
+
     private class SoftApStateMachine extends StateMachine {
         // Commands for the state machine.
         public static final int CMD_START = 0;
@@ -258,6 +283,9 @@ public class SoftApManager implements ActiveModeManager {
                 new StateMachineDeathRecipient(this, CMD_AP_INTERFACE_BINDER_DEATH);
 
         private NetworkObserver mNetworkObserver;
+        private IWificond mWificond;
+        private InterfaceEventHandler mInterfaceEventHandler;
+        private WifiInjector mWifiInjector;
 
         private class NetworkObserver extends BaseNetworkObserver {
             private final String mIfaceName;
@@ -275,8 +303,10 @@ public class SoftApManager implements ActiveModeManager {
             }
         }
 
-        SoftApStateMachine(Looper looper) {
+        SoftApStateMachine(Looper looper, WifiInjector wifiInjector) {
             super(TAG, looper);
+            mWifiInjector = wifiInjector;
+            mInterfaceEventHandler = new InterfaceEventHandler(this);
 
             addState(mIdleState);
             addState(mStartedState);
@@ -290,6 +320,15 @@ public class SoftApManager implements ActiveModeManager {
             public void enter() {
                 mDeathRecipient.unlinkToDeath();
                 unregisterObserver();
+
+                /* Register InterfaceHandler to get number of sta connected */
+                mWificond = mWifiInjector.makeWificond();
+                if (mWificond == null) {
+                    Log.w(TAG, "Failed to get wificond binder handler");
+                }
+                try {
+                    mWificond.RegisterCallback(mInterfaceEventHandler);
+                } catch (RemoteException e1) { }
             }
 
             @Override
@@ -408,6 +447,10 @@ public class SoftApManager implements ActiveModeManager {
                             updateApState(WifiManager.WIFI_AP_STATE_DISABLED, 0);
                         }
                         transitionTo(mIdleState);
+                        try {
+                            mWificond.UnregisterCallback(mInterfaceEventHandler);
+                        } catch (RemoteException e1) { }
+                        mInterfaceEventHandler = null;
                         break;
                     default:
                         return NOT_HANDLED;
