@@ -379,7 +379,7 @@ public class WifiInjector {
         return new SoftApManager(mWifiServiceHandlerThread.getLooper(),
                                  mWifiNative, mCountryCode.getCountryCode(),
                                  listener, apInterface, nmService,
-                                 mWifiApConfigStore, config, mWifiMetrics, this);
+                                 mWifiApConfigStore, config, mWifiMetrics, this, mContext);
     }
 
     /**
