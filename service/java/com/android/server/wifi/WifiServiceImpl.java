@@ -89,6 +89,7 @@ import android.os.PowerManager;
 import android.os.Process;
 import android.os.RemoteException;
 import android.os.ResultReceiver;
+import android.os.SystemProperties;
 import android.os.UserHandle;
 import android.os.UserManager;
 import android.os.WorkSource;
@@ -713,6 +714,10 @@ public class WifiServiceImpl extends IWifiManager.Stub {
                 "WifiService");
     }
 
+    private boolean isStrictOpEnable() {
+        return SystemProperties.getBoolean("persist.vendor.strict_op_enable", false);
+    }
+
     private void enforceConnectivityInternalPermission() {
         mContext.enforceCallingOrSelfPermission(
                 android.Manifest.permission.CONNECTIVITY_INTERNAL,
@@ -747,7 +752,19 @@ public class WifiServiceImpl extends IWifiManager.Stub {
             mLog.trace("setWifiEnabled SoftAp not disabled: only Settings can enable wifi").flush();
             return false;
         }
-
+        if(isStrictOpEnable()){
+            String callPackage = mContext.getPackageManager().getNameForUid(Binder.getCallingUid());
+            if (enable && (Binder.getCallingUid() >= Process.FIRST_APPLICATION_UID)
+                    && !callPackage.startsWith("android.uid.systemui:")
+                    && !callPackage.startsWith("android.uid.system:")) {
+                AppOpsManager mAppOpsManager = mContext.getSystemService(AppOpsManager.class);
+                int result = mAppOpsManager.noteOp(AppOpsManager.OP_CHANGE_WIFI_STATE,
+                        Binder.getCallingUid(), callPackage);
+                if (result == AppOpsManager.MODE_IGNORED) {
+                    return false;
+                }
+            }
+        }
         /*
         * Caller might not have WRITE_SECURE_SETTINGS,
         * only CHANGE_WIFI_STATE is enforced
