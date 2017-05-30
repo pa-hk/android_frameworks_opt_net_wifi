@@ -235,6 +235,8 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
     }
     private final PasspointManager mPasspointManager;
     private String mSapInterfaceName = null;
+    private boolean mStaAndAPConcurrency = false;
+    private SoftApStateMachine mSoftApStateMachine = null;
 
     /* Scan results handling */
     private List<ScanDetail> mScanResults = new ArrayList<>();
@@ -453,6 +455,18 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
     }
 
     private IpManager mIpManager;
+
+    public SoftApStateMachine getSoftApStateMachine() {
+        return mSoftApStateMachine;
+    }
+
+    public void setStaSoftApConcurrency() {
+        mSoftApStateMachine =
+               new SoftApStateMachine(mContext, mWifiInjector,
+                                      mWifiNative, mNwService, mBatteryStats);
+        mStaAndAPConcurrency = true;
+        logd("mSoftApStateMachine is created");
+    }
 
     public void setNewSapInterface(String intf) {
         mSapInterfaceName = intf;
@@ -1261,6 +1275,9 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
         mWifiNative.enableVerboseLogging(verbose);
         mWifiConfigManager.enableVerboseLogging(verbose);
         mSupplicantStateTracker.enableVerboseLogging(verbose);
+        if (mStaAndAPConcurrency) {
+            mSoftApStateMachine.enableVerboseLogging(verbose);
+        }
     }
 
     private static final String SYSTEM_PROPERTY_LOG_CONTROL_WIFIHAL = "log.tag.WifiHAL";
@@ -1745,6 +1762,9 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
      * TODO: doc
      */
     public int syncGetWifiApState() {
+        if (mStaAndAPConcurrency) {
+            return mSoftApStateMachine.syncGetWifiApState();
+        }
         return mWifiApState.get();
     }
 

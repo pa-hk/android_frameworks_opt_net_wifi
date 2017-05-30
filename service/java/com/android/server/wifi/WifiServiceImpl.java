@@ -111,7 +111,14 @@ import com.android.server.wifi.util.WifiHandler;
 import com.android.server.wifi.util.WifiPermissionsUtil;
 
 import java.io.BufferedReader;
+import java.io.BufferedInputStream;
+import java.io.EOFException;
+import java.io.File;
 import java.io.FileDescriptor;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
 import java.io.FileNotFoundException;
 import java.io.FileReader;
 import java.io.IOException;
@@ -161,8 +168,19 @@ public class WifiServiceImpl extends IWifiManager.Stub {
     private final Clock mClock;
     private final ArraySet<String> mBackgroundThrottlePackageWhitelist = new ArraySet<>();
 
+    private SoftApStateMachine mSoftApStateMachine;
+    private int mStaAndApConcurrency = 0;
     private String mSoftApInterfaceName = null;
     private boolean mSoftApCreateIntf = false;
+    private int mSoftApChannel = 0;
+    private static final String SEPARATOR_KEY = "\n";
+    private static final String ENABLE_STA_SAP
+            = "ENABLE_STA_SAP_CONCURRENCY:";
+    private static final String SAP_CHANNEL
+            = "SAP_CHANNEL:";
+    private static final String mConcurrencyCfgTemplateFile =
+            "/vendor/etc/wifi/wifi_concurrency_cfg.txt";
+
     private final PowerManager mPowerManager;
     private final AppOpsManager mAppOps;
     private final UserManager mUserManager;
@@ -464,8 +482,22 @@ public class WifiServiceImpl extends IWifiManager.Stub {
             }
 	}
 
-        if (mSoftApCreateIntf && mSoftApInterfaceName != null) {
-            /* Need to Create new Interface in Standalone SAP Case */
+        if (ensureConcurrencyFileExist()) {
+            readConcurrencyConfig();
+        }
+        if (mStaAndApConcurrency == 1) {
+            mWifiStateMachine.setStaSoftApConcurrency();
+            mSoftApStateMachine = mWifiStateMachine.getSoftApStateMachine();
+            if (mSoftApInterfaceName != null) {
+                mSoftApStateMachine.setSoftApInterfaceName(mSoftApInterfaceName);
+            }
+            if (mSoftApChannel != 0) {
+                mSoftApStateMachine.setSoftApChannel(mSoftApChannel);
+            }
+            mWifiController.setSoftApStateMachine(mSoftApStateMachine);
+        } else if (mSoftApCreateIntf && mSoftApInterfaceName != null) {
+            /* Need to Create new Interface in Standalone SAP Case.
+             * For STA + SAP it is handled by SoftApStateMachine */
             mWifiStateMachine.setNewSapInterface(mSoftApInterfaceName);
         }
 
@@ -2510,6 +2542,11 @@ public class WifiServiceImpl extends IWifiManager.Stub {
     }
 
     @Override
+    public boolean getWifiStaSapConcurrency() {
+        return mStaAndApConcurrency == 1;
+    }
+
+    @Override
     public void factoryReset() {
         enforceConnectivityInternalPermission();
         mLog.info("factoryReset uid=%").c(Binder.getCallingUid()).flush();
@@ -2712,4 +2749,85 @@ public class WifiServiceImpl extends IWifiManager.Stub {
         restoreNetworks(wifiConfigurations);
         Slog.d(TAG, "Restored supplicant backup data");
     }
+
+    private void readConcurrencyConfig() {
+        BufferedReader reader = null;
+        try {
+            if (mConcurrencyCfgTemplateFile != null) {
+                Log.d(TAG, "mConcurrencyCfgTemplateFile : "
+                      + mConcurrencyCfgTemplateFile);
+            }
+            reader = new BufferedReader(new FileReader(mConcurrencyCfgTemplateFile));
+            for (String key = reader.readLine(); key != null;
+            key = reader.readLine()) {
+                if (key != null) {
+                    Log.d(TAG, "mConcurrencyCfgTemplateFile line: " + key);
+                }
+                if (key.startsWith(ENABLE_STA_SAP)) {
+                    String st = key.replace(ENABLE_STA_SAP, "");
+                    st = st.replace(SEPARATOR_KEY, "");
+                    try {
+                        mStaAndApConcurrency = Integer.parseInt(st);
+                        Log.d(TAG,"mConcurrencyCfgTemplateFile EnableConcurrency = "
+                              + mStaAndApConcurrency);
+                    } catch (NumberFormatException e) {
+                        Log.e(TAG,"mConcurrencyCfgTemplateFile: incorrect format :"
+                              + key);
+                    }
+                }
+                if (key.startsWith(SAP_CHANNEL)) {
+                    String st = key.replace(SAP_CHANNEL, "");
+                    st = st.replace(SEPARATOR_KEY, "");
+                    try {
+                        mSoftApChannel = Integer.parseInt(st);
+                        Log.d(TAG,"mConcurrencyCfgTemplateFile SAPChannel = "
+                              + mSoftApChannel);
+                    } catch (NumberFormatException e) {
+                        Log.e(TAG,"mConcurrencyCfgTemplateFile: incorrect format :"
+                              + key);
+                    }
+                }
+            }
+        } catch (EOFException ignore) {
+            if (reader != null) {
+                try {
+                    reader.close();
+                    reader = null;
+                } catch (Exception e) {
+                    Log.e(TAG, "mConcurrencyCfgTemplateFile: Error closing file" + e);
+                }
+            }
+        } catch (IOException e) {
+            Log.e(TAG, "mConcurrencyCfgTemplateFile: Error parsing configuration" + e);
+        }
+        if (reader != null) {
+          try {
+              reader.close();
+          } catch (Exception e) {
+              Log.e(TAG, "mConcurrencyCfgTemplateFile: Error closing file" + e);
+          }
+        }
+    }
+
+    private boolean ensureConcurrencyFileExist() {
+        FileOutputStream dstStream = null;
+        FileInputStream srcStream = null;
+        DataInputStream in = null;
+        // check ConcurrencyCfgTemplateFile  exist
+        try {
+            in = new DataInputStream(new BufferedInputStream(new FileInputStream(
+                            mConcurrencyCfgTemplateFile)));
+        } catch (Exception e) {
+            Log.e(TAG, "ensureConcurrencyFile template file doesnt exist" + e);
+            return false;
+        } finally {
+            if (in != null) {
+                try {
+                    in.close();
+                } catch (IOException e) {}
+            }
+        }
+        return true;
+    }
+
 }
