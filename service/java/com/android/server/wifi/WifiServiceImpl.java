@@ -161,6 +161,8 @@ public class WifiServiceImpl extends IWifiManager.Stub {
     private final Clock mClock;
     private final ArraySet<String> mBackgroundThrottlePackageWhitelist = new ArraySet<>();
 
+    private String mSoftApInterfaceName = null;
+    private boolean mSoftApCreateIntf = false;
     private final PowerManager mPowerManager;
     private final AppOpsManager mAppOps;
     private final UserManager mUserManager;
@@ -449,6 +451,24 @@ public class WifiServiceImpl extends IWifiManager.Stub {
                 wifiServiceHandlerThread.getLooper(), asyncChannel);
         mWifiController = mWifiInjector.getWifiController();
         mWifiBackupRestore = mWifiInjector.getWifiBackupRestore();
+
+        /* Get softAp Interface name from overlay config.xml */
+        String[] softApInterfaces = mContext.getResources().getStringArray(
+                com.android.internal.R.array.config_tether_wifi_regexs);
+        for (String intf : softApInterfaces) {
+            if (intf.equals("wlan0")) {
+                mSoftApInterfaceName = intf;
+            } else if (intf.equals("softap0")) {
+                mSoftApInterfaceName = intf;
+                mSoftApCreateIntf = true;
+            }
+	}
+
+        if (mSoftApCreateIntf && mSoftApInterfaceName != null) {
+            /* Need to Create new Interface in Standalone SAP Case */
+            mWifiStateMachine.setNewSapInterface(mSoftApInterfaceName);
+        }
+
         mPermissionReviewRequired = Build.PERMISSIONS_REVIEW_REQUIRED
                 || context.getResources().getBoolean(
                 com.android.internal.R.bool.config_permissionReviewRequired);

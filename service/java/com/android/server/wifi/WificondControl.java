@@ -28,6 +28,7 @@ import android.net.wifi.WifiSsid;
 import android.os.Binder;
 import android.os.RemoteException;
 import android.util.Log;
+import java.nio.charset.StandardCharsets;
 
 import com.android.server.wifi.hotspot2.NetworkDetail;
 import com.android.server.wifi.util.InformationElementUtil;
@@ -240,6 +241,31 @@ public class WificondControl {
             return true;
         } catch (RemoteException e) {
             Log.e(TAG, "Failed to tear down interfaces due to remote exception");
+        }
+
+        return false;
+    }
+
+    /**
+    * Run Qsap command through wificond.
+    * @return Returns true on success.
+    */
+    public boolean runQsapCmd(String cmd) {
+        Log.d(TAG, "sending qsap cmd = " + cmd);
+        mWificond = mWifiInjector.makeWificond();
+        if (mWificond == null) {
+            Log.e(TAG, "Failed to get reference to wificond");
+            return false;
+        }
+
+        try {
+            if (!mWificond.setHostapdParam(cmd.getBytes(StandardCharsets.UTF_8))) {
+                Log.e(TAG, "Failed to run qsap command");
+                return false;
+	    }
+            return true;
+        } catch (RemoteException e) {
+            Log.e(TAG, "Failed to run qsap command due to remote exception");
         }
 
         return false;

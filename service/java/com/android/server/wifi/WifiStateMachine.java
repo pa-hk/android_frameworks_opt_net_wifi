@@ -234,6 +234,7 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
         return mWifiScoreReport;
     }
     private final PasspointManager mPasspointManager;
+    private String mSapInterfaceName = null;
 
     /* Scan results handling */
     private List<ScanDetail> mScanResults = new ArrayList<>();
@@ -452,6 +453,10 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
     }
 
     private IpManager mIpManager;
+
+    public void setNewSapInterface(String intf) {
+        mSapInterfaceName = intf;
+    }
 
     // Channel for sending replies.
     private AsyncChannel mReplyChannel = new AsyncChannel();
@@ -6983,8 +6988,10 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
             @Override
             public void onStateChanged(int state, int reason) {
                 if (state == WIFI_AP_STATE_DISABLED) {
+                    mWifiNative.addOrRemoveInterface(mSapInterfaceName, false);
                     sendMessage(CMD_AP_STOPPED);
                 } else if (state == WIFI_AP_STATE_FAILED) {
+                    mWifiNative.addOrRemoveInterface(mSapInterfaceName, false);
                     sendMessage(CMD_START_AP_FAILURE);
                 }
 
@@ -7001,6 +7008,12 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
             SoftApModeConfiguration config = (SoftApModeConfiguration) message.obj;
             mMode = config.getTargetMode();
 
+            if (mSapInterfaceName != null &&
+                !mWifiNative.addOrRemoveInterface(mSapInterfaceName, true)) {
+                transitionTo(mInitialState);
+                return;
+            }
+
             IApInterface apInterface = null;
             Pair<Integer, IApInterface> statusAndInterface = mWifiNative.setupForSoftApMode();
             if (statusAndInterface.first == WifiNative.SETUP_SUCCESS) {
@@ -7008,7 +7021,9 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
             } else {
                 incrementMetricsForSetupFailure(statusAndInterface.first);
             }
+
             if (apInterface == null) {
+                mWifiNative.addOrRemoveInterface(mSapInterfaceName, false);
                 setWifiApState(WIFI_AP_STATE_FAILED,
                         WifiManager.SAP_START_FAILURE_GENERAL, null, mMode);
                 /**

@@ -152,6 +152,47 @@ public class WifiNative {
         }
     }
 
+    /**
+     * Run QSAP command via wificond. It can perform following:
+     * 1. create virtual interface (create softap0)
+     * 2. remove virtual interface (remove softap0)
+     * 3. Set hostapd configuraiton (qccmd set interface=softap0)
+     * 4. Start/Stop SAP (startap/stopap). Note: use IApInterface.startHostapd()/IApInterface.stopHostapd() instead.
+     *
+     * @return Returns true on success.
+     */
+    public boolean runQsapCmd(String cmd, String arg) {
+        String strcmd = (arg != null) ? cmd + arg : cmd;
+        if (!mWificondControl.runQsapCmd(strcmd)) {
+            Log.e(mTAG, "Failed to run QSAP command = " + strcmd);
+            return false;
+        }
+        return true;
+    }
+
+   /**
+    * For Concurrent STA + SAP need to create new interface.
+    * This is a synchronous call.
+    *
+    * @return Returns true on success.
+    */
+    public boolean addOrRemoveInterface(String interfaceName, boolean add) {
+        boolean status = false;
+        if (interfaceName != null) {
+	    /* Do we need to run this in a for loop if create/remove fails? */
+            if (add && runQsapCmd("softap create ", interfaceName)) {
+                Log.d(mTAG, "created SAP interface " + interfaceName);
+		status = true;
+            } else if (!add && runQsapCmd("softap remove ", interfaceName)) {
+                Log.d(mTAG, "removed SAP interface " + interfaceName);
+		status = true;
+	    } else {
+                Log.e(mTAG, "Failed to add/remove SAP interface " + interfaceName);
+	    }
+        }
+	return status;
+    }
+
     /********************************************************
      * Wificond operations
      ********************************************************/
