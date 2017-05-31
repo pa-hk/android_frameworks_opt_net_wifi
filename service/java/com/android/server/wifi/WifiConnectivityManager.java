@@ -345,7 +345,8 @@ public class WifiConnectivityManager {
                         + " capabilities " + fullScanResult.capabilities);
             }
 
-            mScanDetails.add(ScanResultUtil.toScanDetail(fullScanResult));
+            if (fullScanResult.informationElements != null)
+                mScanDetails.add(ScanResultUtil.toScanDetail(fullScanResult));
         }
     }
 
@@ -460,7 +461,8 @@ public class WifiConnectivityManager {
         @Override
         public void onPnoNetworkFound(ScanResult[] results) {
             for (ScanResult result: results) {
-                mScanDetails.add(ScanResultUtil.toScanDetail(result));
+                 if (result.informationElements != null)
+                     mScanDetails.add(ScanResultUtil.toScanDetail(result));
             }
 
             boolean wasConnectAttempted;
