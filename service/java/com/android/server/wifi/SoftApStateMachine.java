@@ -149,9 +149,9 @@ public class SoftApStateMachine extends StateMachine {
 
 
    /*  Leverage from WiFiStateMachine */
-    public void setHostApRunning(WifiConfiguration wifiConfig, boolean enable) {
+    public void setHostApRunning(SoftApModeConfiguration softApConfig, boolean enable) {
         if (enable) {
-            sendMessage(CMD_START_AP, wifiConfig);
+            sendMessage(CMD_START_AP, softApConfig);
         } else {
             sendMessage(CMD_STOP_AP);
         }
@@ -181,7 +181,7 @@ public class SoftApStateMachine extends StateMachine {
     }
 
    /*  Leverage from WiFiStateMachine */
-    private void setWifiApState(int wifiApState, int reason) {
+    private void setWifiApState(int wifiApState, int reason, String ifaceName, int mode) {
         final int previousWifiApState = mWifiApState.get();
 
         try {
@@ -207,6 +207,12 @@ public class SoftApStateMachine extends StateMachine {
             //only set reason number when softAP start failed
             intent.putExtra(WifiManager.EXTRA_WIFI_AP_FAILURE_REASON, reason);
         }
+
+        if (ifaceName == null) {
+            Log.e(TAG, "Updating wifiApState with a null iface name");
+        }
+        intent.putExtra(WifiManager.EXTRA_WIFI_AP_INTERFACE_NAME, ifaceName);
+        intent.putExtra(WifiManager.EXTRA_WIFI_AP_MODE, mode);
 
         mContext.sendStickyBroadcastAsUser(intent, UserHandle.ALL);
     }
@@ -256,6 +262,8 @@ public class SoftApStateMachine extends StateMachine {
    /*  Leverage from WiFiStateMachine */
     class SoftApState extends State {
         private SoftApManager mSoftApManager;
+        private String mIfaceName;
+        private int mMode;
 
         private class SoftApListener implements SoftApManager.Listener {
             @Override
@@ -268,7 +276,7 @@ public class SoftApStateMachine extends StateMachine {
                     sendMessage(CMD_START_AP_FAILURE);
                 }
 
-                setWifiApState(state, reason);
+                setWifiApState(state, reason, mIfaceName, mMode);
             }
         }
 
@@ -278,6 +286,8 @@ public class SoftApStateMachine extends StateMachine {
             if (message.what != CMD_START_AP) {
                 throw new RuntimeException("Illegal transition to SoftApState: " + message);
             }
+            SoftApModeConfiguration config = (SoftApModeConfiguration) message.obj;
+            mMode = config.getTargetMode();
 
             if (!mWifiNative.addOrRemoveInterface(mInterfaceName, true)) {
                 transitionTo(mInitialState);
@@ -288,7 +298,7 @@ public class SoftApStateMachine extends StateMachine {
             if (apInterface == null) {
                 mWifiNative.addOrRemoveInterface(mInterfaceName, false);
                 setWifiApState(WIFI_AP_STATE_FAILED,
-                        WifiManager.SAP_START_FAILURE_GENERAL);
+                        WifiManager.SAP_START_FAILURE_GENERAL, null, mMode);
                 /**
                  * Transition to InitialState to reset thE
                  * driver/HAL back to the initial state.
@@ -297,13 +307,19 @@ public class SoftApStateMachine extends StateMachine {
                 return;
             }
 
-            WifiConfiguration config = (WifiConfiguration) message.obj;
+            try {
+                mIfaceName = apInterface.getInterfaceName();
+            } catch (RemoteException e) {
+                // Failed to get the interface name. The name will not be available for
+                // the enabled broadcast, but since we had an error getting the name, we most likely
+                // won't be able to fully start softap mode.
+            }
 
             checkAndSetConnectivityInstance();
             mSoftApManager = mWifiInjector.makeSoftApManager(mNwService,
                                                              new SoftApListener(),
                                                              apInterface,
-                                                             config);
+                                                             config.getWifiConfiguration());
             if (mSoftApChannel != 0) {
                 mSoftApManager.setSapChannel(mSoftApChannel);
             }
