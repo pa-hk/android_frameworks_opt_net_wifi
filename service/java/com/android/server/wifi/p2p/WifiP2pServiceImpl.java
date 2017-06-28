@@ -2162,6 +2162,7 @@ public class WifiP2pServiceImpl extends IWifiP2pManager.Stub {
                         // since supplicant would still maintain the group at that stage.
                         if (DBG) logd(getName() + " group removed");
                         handleGroupRemoved();
+                        mWifiNative.p2pFlush();
                         transitionTo(mInactiveState);
                         break;
                     case WifiP2pMonitor.P2P_DEVICE_LOST_EVENT:
