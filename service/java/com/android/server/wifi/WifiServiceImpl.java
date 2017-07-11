@@ -130,6 +130,10 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.Collections;
+import android.net.wifi.WifiDevice;
+import com.android.server.wifi.WifiSoftApNotificationManager;
+
 
 /**
  * WifiService handles remote WiFi operation requests by implementing
@@ -2780,6 +2784,13 @@ public class WifiServiceImpl extends IWifiManager.Stub {
                         supplicantData, ipConfigData);
         restoreNetworks(wifiConfigurations);
         Slog.d(TAG, "Restored supplicant backup data");
+    }
+    public List<WifiDevice> getConnectedStations() {
+        if (mContext.getResources().getBoolean(com.android.internal.R.bool.config_softap_extension)) {
+            return WifiSoftApNotificationManager.getInstance(mContext).getConnectedStations();
+        } else {
+            return Collections.emptyList();
+        }
     }
 
 }
