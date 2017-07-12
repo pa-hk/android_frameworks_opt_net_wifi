@@ -150,6 +150,49 @@ public class WifiNative {
     }
 
     /**
+     * Teardown STA mode configurations in wifi native.
+     *
+     * 1. Tears down all the STA interfaces from Wificond.
+     * 2. Stops the Wifi HAL for STA interface.
+     *
+     * @return Returns true on success.
+     */
+    public boolean tearDownSta() {
+        if (!mWificondControl.tearDownStaInterfaces()) {
+            Log.e(mTAG, "Failed to teardown Sta interfaces from Wificond");
+            return false;
+        }
+        return stopHalIfaceIfNecessary(true);
+    }
+
+    /**
+     * Teardown AP mode configurations in wifi native.
+     *
+     * 1. Tears down all the AP interfaces from Wificond.
+     * 2. Stops the Wifi HAL for AP interface.
+     *
+     * @return Returns true on success.
+     */
+    public boolean tearDownAp() {
+        if (!mWificondControl.tearDownApInterfaces()) {
+            Log.e(mTAG, "Failed to teardown Ap interfaces from Wificond");
+            return false;
+        }
+        return stopHalIfaceIfNecessary(false);
+    }
+
+    /**
+     * Stops the Iface HAL, if vendor HAL is supported.
+     */
+    private boolean stopHalIfaceIfNecessary(boolean isSta) {
+        if (!mWifiVendorHal.isVendorHalSupported()) {
+            Log.i(mTAG, "Vendor Iface HAL not supported, Ignore stop...");
+            return false;
+        }
+        return mWifiVendorHal.stopVendorHalIface(isSta);
+    }
+
+    /**
      * Run QSAP command via wificond. It can perform following:
      * 1. create virtual interface (create softap0)
      * 2. remove virtual interface (remove softap0)

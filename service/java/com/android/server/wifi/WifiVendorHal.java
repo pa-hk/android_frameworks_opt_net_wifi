@@ -465,6 +465,31 @@ public class WifiVendorHal {
     }
 
     /**
+     * Stops the HAL for STA/AP interface only
+     *
+     * @param isSta true to stop HAL for STA mode, false to stop for AP mode.
+     */
+    public boolean stopVendorHalIface(boolean isSta) {
+        synchronized (sLock) {
+            if (isSta && (mIWifiStaIface != null) &&
+                  mHalDeviceManager.removeIface(mIWifiStaIface)) {
+                mIWifiStaIface = null;
+                mIWifiRttController = null;
+                mLog.i("Vendor Hal for STA stopped");
+                return true;
+            } else if (!isSta && (mIWifiApIface != null) &&
+                       mHalDeviceManager.removeIface(mIWifiApIface)) {
+                mIWifiApIface = null;
+                mLog.i("Vendor Hal for AP stopped");
+                return true;
+            } else {
+                mLog.e("Failed to stop Vendor Hal. Ignoring!!");
+            }
+            return false;
+        }
+    }
+
+    /**
      * Clears the state associated with a started Iface
      *
      * Caller should hold the lock.

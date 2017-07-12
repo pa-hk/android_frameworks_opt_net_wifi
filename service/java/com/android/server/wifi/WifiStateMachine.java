@@ -453,6 +453,18 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
         mSapInterfaceName = intf;
     }
 
+    public void cleanup() {
+        // Tearing down the client interfaces below is going to stop our supplicant.
+        mWifiMonitor.stopAllMonitoring();
+
+        mDeathRecipient.unlinkToDeath();
+        mWifiNative.tearDown();
+    }
+
+    public int getOperationalMode() {
+        return mOperationalMode;
+    }
+
     // Channel for sending replies.
     private AsyncChannel mReplyChannel = new AsyncChannel();
 
@@ -4064,18 +4076,29 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
 
     class InitialState extends State {
 
-        private void cleanup() {
-            // Tearing down the client interfaces below is going to stop our supplicant.
-            mWifiMonitor.stopAllMonitoring();
-
-            mDeathRecipient.unlinkToDeath();
-            mWifiNative.tearDown();
+        private void staCleanup() {
+            boolean skipUnload = false;
+            if (mStaAndAPConcurrency) {
+                int wifiApState = mSoftApStateMachine.syncGetWifiApState();
+                if ((wifiApState ==  WifiManager.WIFI_AP_STATE_ENABLING) ||
+                       (wifiApState == WifiManager.WIFI_AP_STATE_ENABLED)) {
+                    log("Avoid unloading driver, AP_STATE is enabled/enabling");
+                    skipUnload = true;
+                }
+            }
+            if (!skipUnload) {
+                cleanup();
+            } else  {
+                mWifiMonitor.stopAllMonitoring();
+                mDeathRecipient.unlinkToDeath();
+                mWifiNative.tearDownSta();
+            }
         }
 
         @Override
         public void enter() {
             mWifiStateTracker.updateState(WifiStateTracker.INVALID);
-            cleanup();
+            staCleanup();
         }
 
         @Override
@@ -4087,7 +4110,7 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                     if (mClientInterface == null
                             || !mDeathRecipient.linkToDeath(mClientInterface.asBinder())) {
                         setWifiState(WifiManager.WIFI_STATE_UNKNOWN);
-                        cleanup();
+                        staCleanup();
                         break;
                     }
 
@@ -4117,7 +4140,7 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                     if (!mWifiNative.enableSupplicant()) {
                         loge("Failed to start supplicant!");
                         setWifiState(WifiManager.WIFI_STATE_UNKNOWN);
-                        cleanup();
+                        staCleanup();
                         break;
                     }
                     if (mVerboseLoggingEnabled) log("Supplicant start successful");
