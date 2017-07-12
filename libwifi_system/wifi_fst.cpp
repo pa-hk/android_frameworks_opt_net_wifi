@@ -32,7 +32,7 @@ static const char FSTMAN_IFNAME[] = "wlan0";
 static const char FSTMAN_NAME[] = "fstman";
 static const char FSTMAN_START_PROP_NAME[] = "netd.fstman.start";
 const char FSTMAN_CONFIG_TEMPLATE[] = "/etc/wifi/fstman.ini";
-const char FSTMAN_CONFIG_FILE[] = "/data/misc/wifi/fstman.ini";
+const char FSTMAN_CONFIG_FILE[] = "/data/vendor/wifi/fstman.ini";
 static const char FST_RATE_UPGRADE_ENABLED_PROP_NAME[] = "persist.vendor.fst.rate.upgrade.en";
 static const char FST_SOFTAP_ENABLED_PROP_NAME[] = "persist.vendor.fst.softap.en";
 
