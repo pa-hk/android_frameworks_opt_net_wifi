@@ -436,7 +436,7 @@ public class WifiServiceImpl extends IWifiManager.Stub {
                 mSoftApInterfaceName = intf;
                 mSoftApCreateIntf = true;
             }
-	}
+        }
 
         if (ensureConcurrencyFileExist()) {
             readConcurrencyConfig();

@@ -64,6 +64,7 @@ public class WifiNative {
     private final SupplicantStaIfaceHal mSupplicantStaIfaceHal;
     private final WifiVendorHal mWifiVendorHal;
     private final WificondControl mWificondControl;
+    private boolean mStaAndAPConcurrency = false;
 
     public WifiNative(String interfaceName, WifiVendorHal vendorHal,
                       SupplicantStaIfaceHal staIfaceHal, WificondControl condControl) {
@@ -85,6 +86,10 @@ public class WifiNative {
         mWificondControl.enableVerboseLogging(verbose > 0 ? true : false);
         mSupplicantStaIfaceHal.enableVerboseLogging(verbose > 0);
         mWifiVendorHal.enableVerboseLogging(verbose > 0);
+    }
+
+    public void setStaSoftApConcurrency(boolean enable) {
+        mStaAndAPConcurrency = enable;
     }
 
    /********************************************************
@@ -171,18 +176,18 @@ public class WifiNative {
     public boolean addOrRemoveInterface(String interfaceName, boolean add) {
         boolean status = false;
         if (interfaceName != null) {
-	    /* Do we need to run this in a for loop if create/remove fails? */
+            /* Do we need to run this in a for loop if create/remove fails? */
             if (add && runQsapCmd("softap create ", interfaceName)) {
                 Log.d(mTAG, "created SAP interface " + interfaceName);
-		status = true;
+                status = true;
             } else if (!add && runQsapCmd("softap remove ", interfaceName)) {
                 Log.d(mTAG, "removed SAP interface " + interfaceName);
-		status = true;
-	    } else {
+                status = true;
+            } else {
                 Log.e(mTAG, "Failed to add/remove SAP interface " + interfaceName);
-	    }
+            }
         }
-	return status;
+        return status;
     }
 
     /********************************************************
@@ -869,6 +874,10 @@ public class WifiNative {
             Log.i(mTAG, "Vendor HAL not supported, Ignore start...");
             return true;
         }
+
+        if (mStaAndAPConcurrency)
+            return mWifiVendorHal.startConcurrentVendorHal(isStaMode);
+
         return mWifiVendorHal.startVendorHal(isStaMode);
     }
 

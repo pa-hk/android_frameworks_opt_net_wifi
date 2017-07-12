@@ -445,6 +445,7 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                new SoftApStateMachine(mContext, mWifiInjector,
                                       mWifiNative, mNwService, mBatteryStats);
         mStaAndAPConcurrency = true;
+        mWifiNative.setStaSoftApConcurrency(true);
         logd("mSoftApStateMachine is created");
     }
 

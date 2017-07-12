@@ -334,6 +334,61 @@ public class WifiVendorHal {
     }
 
     /**
+     * Bring up the HIDL Vendor HAL and configure for STA mode or AP mode when
+     * STA + SAP Concurrency is enabled. This is similar to startVendorHal but
+     * will avoid re-initialization of common components.
+     *
+     * @param isStaMode true to start HAL in STA mode, false to start in AP mode.
+     */
+    public boolean startConcurrentVendorHal(boolean isStaMode) {
+        synchronized (sLock) {
+            boolean isApIfaceExist = (mIWifiApIface != null);
+            boolean isStaIfaceExist = (mIWifiStaIface != null);
+            if (isStaIfaceExist && isStaMode) return boolResult(false);
+            if (isApIfaceExist && !isStaMode) return boolResult(false);
+            if (!isStaIfaceExist && !isApIfaceExist && !mHalDeviceManager.start()) {
+                return startFailedTo("start the vendor HAL");
+            }
+            IWifiIface iface;
+            if (isStaMode) {
+                mIWifiStaIface = mHalDeviceManager.createStaIface(null, null);
+                if (mIWifiStaIface == null) {
+                    return startFailedTo("create STA Iface");
+                }
+                iface = (IWifiIface) mIWifiStaIface;
+                if (!registerStaIfaceCallback()) {
+                    return startFailedTo("register sta iface callback");
+                }
+                mIWifiRttController = mHalDeviceManager.createRttController(iface);
+                if (mIWifiRttController == null) {
+                    return startFailedTo("create RTT controller");
+                }
+                if (!registerRttEventCallback()) {
+                    return startFailedTo("register RTT iface callback");
+                }
+                enableLinkLayerStats();
+            } else {
+                mIWifiApIface = mHalDeviceManager.createApIface(null, null);
+                if (mIWifiApIface == null) {
+                    return startFailedTo("create AP Iface");
+                }
+                iface = (IWifiIface) mIWifiApIface;
+            }
+            if (!isStaIfaceExist && !isApIfaceExist) {
+                mIWifiChip = mHalDeviceManager.getChip(iface);
+                if (mIWifiChip == null) {
+                    return startFailedTo("get the chip created for the Iface");
+                }
+            }
+            if (!isStaIfaceExist && !isApIfaceExist && !registerChipCallback()) {
+                return startFailedTo("register chip callback");
+            }
+            mLog.i("Concurrent Vendor Hal started successfully");
+            return true;
+        }
+    }
+
+    /**
      * Logs a message and cleans up after a failing start attempt
      *
      * The lock should be held.
