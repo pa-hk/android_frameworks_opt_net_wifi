@@ -73,6 +73,7 @@ import android.net.wifi.WifiLinkLayerStats;
 import android.net.wifi.WifiManager;
 import android.net.wifi.WifiManager.LocalOnlyHotspotCallback;
 import android.net.wifi.WifiScanner;
+import android.net.wifi.hotspot2.OsuProvider;
 import android.net.wifi.hotspot2.PasspointConfiguration;
 import android.os.AsyncTask;
 import android.os.BatteryStats;
@@ -89,6 +90,7 @@ import android.os.Process;
 import android.os.RemoteException;
 import android.os.ResultReceiver;
 import android.os.SystemProperties;
+import android.os.ShellCallback;
 import android.os.UserHandle;
 import android.os.UserManager;
 import android.os.WorkSource;
@@ -268,7 +270,7 @@ public class WifiServiceImpl extends IWifiManager.Stub {
                             + " uid=" + msg.sendingUid
                             + " name="
                             + mContext.getPackageManager().getNameForUid(msg.sendingUid));
-                    if (config != null && isValid(config)) {
+                    if (config != null) {
                         if (DBG) Slog.d(TAG, "Connect with config " + config);
                         /* Command is forwarded to state machine */
                         mWifiStateMachine.sendMessage(Message.obtain(msg));
@@ -291,7 +293,7 @@ public class WifiServiceImpl extends IWifiManager.Stub {
                             + " uid=" + msg.sendingUid
                             + " name="
                             + mContext.getPackageManager().getNameForUid(msg.sendingUid));
-                    if (config != null && isValid(config)) {
+                    if (config != null) {
                         if (DBG) Slog.d(TAG, "Save network with config " + config);
                         /* Command is forwarded to state machine */
                         mWifiStateMachine.sendMessage(Message.obtain(msg));
@@ -1546,11 +1548,28 @@ public class WifiServiceImpl extends IWifiManager.Stub {
     public WifiConfiguration getMatchingWifiConfig(ScanResult scanResult) {
         enforceAccessPermission();
         mLog.trace("getMatchingWifiConfig uid=%").c(Binder.getCallingUid()).flush();
-        if (!mContext.getResources().getBoolean(
-                com.android.internal.R.bool.config_wifi_hotspot2_enabled)) {
+        if (!mContext.getPackageManager().hasSystemFeature(
+                PackageManager.FEATURE_WIFI_PASSPOINT)) {
             throw new UnsupportedOperationException("Passpoint not enabled");
         }
         return mWifiStateMachine.syncGetMatchingWifiConfig(scanResult, mWifiStateMachineChannel);
+    }
+
+    /**
+     * Returns list of OSU (Online Sign-Up) providers associated with the given Passpoint network.
+     *
+     * @param scanResult scanResult of the Passpoint AP
+     * @return List of {@link OsuProvider}
+     */
+    @Override
+    public List<OsuProvider> getMatchingOsuProviders(ScanResult scanResult) {
+        enforceAccessPermission();
+        mLog.trace("getMatchingOsuProviders uid=%").c(Binder.getCallingUid()).flush();
+        if (!mContext.getPackageManager().hasSystemFeature(
+                PackageManager.FEATURE_WIFI_PASSPOINT)) {
+            throw new UnsupportedOperationException("Passpoint not enabled");
+        }
+        return mWifiStateMachine.syncGetMatchingOsuProviders(scanResult, mWifiStateMachineChannel);
     }
 
     /**
@@ -1587,7 +1606,7 @@ public class WifiServiceImpl extends IWifiManager.Stub {
             return 0;
         }
 
-        if (isValid(config)) {
+        if (config != null) {
             //TODO: pass the Uid the WifiStateMachine as a message parameter
             Slog.i("addOrUpdateNetwork", " uid = " + Integer.toString(Binder.getCallingUid())
                     + " SSID " + config.SSID
@@ -1735,8 +1754,8 @@ public class WifiServiceImpl extends IWifiManager.Stub {
     public boolean addOrUpdatePasspointConfiguration(PasspointConfiguration config) {
         enforceChangePermission();
         mLog.trace("addorUpdatePasspointConfiguration uid=%").c(Binder.getCallingUid()).flush();
-        if (!mContext.getResources().getBoolean(
-                com.android.internal.R.bool.config_wifi_hotspot2_enabled)) {
+        if (!mContext.getPackageManager().hasSystemFeature(
+                PackageManager.FEATURE_WIFI_PASSPOINT)) {
             throw new UnsupportedOperationException("Passpoint not enabled");
         }
         return mWifiStateMachine.syncAddOrUpdatePasspointConfig(mWifiStateMachineChannel, config,
@@ -1753,8 +1772,8 @@ public class WifiServiceImpl extends IWifiManager.Stub {
     public boolean removePasspointConfiguration(String fqdn) {
         enforceChangePermission();
         mLog.trace("removePasspointConfiguration uid=%").c(Binder.getCallingUid()).flush();
-        if (!mContext.getResources().getBoolean(
-                com.android.internal.R.bool.config_wifi_hotspot2_enabled)) {
+        if (!mContext.getPackageManager().hasSystemFeature(
+                PackageManager.FEATURE_WIFI_PASSPOINT)) {
             throw new UnsupportedOperationException("Passpoint not enabled");
         }
         return mWifiStateMachine.syncRemovePasspointConfig(mWifiStateMachineChannel, fqdn);
@@ -1771,8 +1790,8 @@ public class WifiServiceImpl extends IWifiManager.Stub {
     public List<PasspointConfiguration> getPasspointConfigurations() {
         enforceAccessPermission();
         mLog.trace("getPasspointConfigurations uid=%").c(Binder.getCallingUid()).flush();
-        if (!mContext.getResources().getBoolean(
-                com.android.internal.R.bool.config_wifi_hotspot2_enabled)) {
+        if (!mContext.getPackageManager().hasSystemFeature(
+                PackageManager.FEATURE_WIFI_PASSPOINT)) {
             throw new UnsupportedOperationException("Passpoint not enabled");
         }
         return mWifiStateMachine.syncGetPasspointConfigs(mWifiStateMachineChannel);
@@ -1787,8 +1806,8 @@ public class WifiServiceImpl extends IWifiManager.Stub {
     public void queryPasspointIcon(long bssid, String fileName) {
         enforceAccessPermission();
         mLog.trace("queryPasspointIcon uid=%").c(Binder.getCallingUid()).flush();
-        if (!mContext.getResources().getBoolean(
-                com.android.internal.R.bool.config_wifi_hotspot2_enabled)) {
+        if (!mContext.getPackageManager().hasSystemFeature(
+                PackageManager.FEATURE_WIFI_PASSPOINT)) {
             throw new UnsupportedOperationException("Passpoint not enabled");
         }
         mWifiStateMachine.syncQueryPasspointIcon(mWifiStateMachineChannel, bssid, fileName);
@@ -2214,6 +2233,13 @@ public class WifiServiceImpl extends IWifiManager.Stub {
     }
 
     @Override
+    public void onShellCommand(FileDescriptor in, FileDescriptor out, FileDescriptor err,
+            String[] args, ShellCallback callback, ResultReceiver resultReceiver) {
+        (new WifiShellCommand(mWifiStateMachine)).exec(this, in, out, err, args, callback,
+                resultReceiver);
+    }
+
+    @Override
     protected void dump(FileDescriptor fd, PrintWriter pw, String[] args) {
         if (mContext.checkCallingOrSelfPermission(android.Manifest.permission.DUMP)
                 != PackageManager.PERMISSION_GRANTED) {
@@ -2231,18 +2257,9 @@ public class WifiServiceImpl extends IWifiManager.Stub {
             String[] ipManagerArgs = new String[args.length - 1];
             System.arraycopy(args, 1, ipManagerArgs, 0, ipManagerArgs.length);
             mWifiStateMachine.dumpIpManager(fd, pw, ipManagerArgs);
-        } else if (args != null && args.length > 0
-                && DUMP_ARG_SET_IPREACH_DISCONNECT.equals(args[0])) {
-            if (args.length > 1) {
-                if (DUMP_ARG_SET_IPREACH_DISCONNECT_ENABLED.equals(args[1])) {
-                    mWifiStateMachine.setIpReachabilityDisconnectEnabled(true);
-                } else if (DUMP_ARG_SET_IPREACH_DISCONNECT_DISABLED.equals(args[1])) {
-                    mWifiStateMachine.setIpReachabilityDisconnectEnabled(false);
-                }
-            }
-            pw.println("IPREACH_DISCONNECT state is "
-                    + mWifiStateMachine.getIpReachabilityDisconnectEnabled());
-            return;
+        } else if (args != null && args.length > 0 && WifiScoreReport.DUMP_ARG.equals(args[0])) {
+            WifiScoreReport wifiScoreReport = mWifiStateMachine.getWifiScoreReport();
+            if (wifiScoreReport != null) wifiScoreReport.dump(fd, pw, args);
         } else {
             pw.println("Wi-Fi is " + mWifiStateMachine.syncGetWifiStateByName());
             pw.println("Stay-awake conditions: " +
@@ -2266,6 +2283,12 @@ public class WifiServiceImpl extends IWifiManager.Stub {
             mWifiMetrics.dump(fd, pw, args);
             pw.println();
             mWifiBackupRestore.dump(fd, pw, args);
+            pw.println();
+            WifiScoreReport wifiScoreReport = mWifiStateMachine.getWifiScoreReport();
+            if (wifiScoreReport != null) {
+                pw.println("WifiScoreReport:");
+                wifiScoreReport.dump(fd, pw, args);
+            }
             pw.println();
         }
     }

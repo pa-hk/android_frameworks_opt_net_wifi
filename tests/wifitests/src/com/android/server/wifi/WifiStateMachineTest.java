@@ -153,32 +153,6 @@ public class WifiStateMachineTest {
         mWsm.enableVerboseLogging(1);
     }
 
-    private class TestIpManager extends IpManager {
-        TestIpManager(Context context, String ifname, IpManager.Callback callback) {
-            // Call dependency-injection superclass constructor.
-            super(context, ifname, callback, mock(INetworkManagementService.class));
-        }
-
-        @Override
-        public void startProvisioning(IpManager.ProvisioningConfiguration config) {}
-
-        @Override
-        public void stop() {}
-
-        @Override
-        public void confirmConfiguration() {}
-
-        void injectDhcpSuccess(DhcpResults dhcpResults) {
-            mCallback.onNewDhcpResults(dhcpResults);
-            mCallback.onProvisioningSuccess(new LinkProperties());
-        }
-
-        void injectDhcpFailure() {
-            mCallback.onNewDhcpResults(null);
-            mCallback.onProvisioningFailure(new LinkProperties());
-        }
-    }
-
     private FrameworkFacade getFrameworkFacade() throws Exception {
         FrameworkFacade facade = mock(FrameworkFacade.class);
 
@@ -212,8 +186,8 @@ public class WifiStateMachineTest {
                 .then(new AnswerWithArguments() {
                     public IpManager answer(
                             Context context, String ifname, IpManager.Callback callback) {
-                        mTestIpManager = new TestIpManager(context, ifname, callback);
-                        return mTestIpManager;
+                        mIpManagerCallback = callback;
+                        return mIpManager;
                     }
                 });
 
@@ -310,9 +284,18 @@ public class WifiStateMachineTest {
         return list;
     }
 
+    private void injectDhcpSuccess(DhcpResults dhcpResults) {
+        mIpManagerCallback.onNewDhcpResults(dhcpResults);
+        mIpManagerCallback.onProvisioningSuccess(new LinkProperties());
+    }
+
+    private void injectDhcpFailure() {
+        mIpManagerCallback.onNewDhcpResults(null);
+        mIpManagerCallback.onProvisioningFailure(new LinkProperties());
+    }
+
     static final String   sSSID = "\"GoogleGuest\"";
     static final WifiSsid sWifiSsid = WifiSsid.createFromAsciiEncoded(sSSID);
-    static final String   sHexSSID = sWifiSsid.getHexString().replace("0x", "").replace("22", "");
     static final String   sBSSID = "01:02:03:04:05:06";
     static final int      sFreq = 2437;
     static final String   WIFI_IFACE_NAME = "mockWlan";
@@ -324,9 +307,9 @@ public class WifiStateMachineTest {
     AsyncChannel  mWsmAsyncChannel;
     TestAlarmManager mAlarmManager;
     MockWifiMonitor mWifiMonitor;
-    TestIpManager mTestIpManager;
     TestLooper mLooper;
     Context mContext;
+    IpManager.Callback mIpManagerCallback;
 
     final ArgumentCaptor<SoftApManager.Listener> mSoftApManagerListenerCaptor =
                     ArgumentCaptor.forClass(SoftApManager.Listener.class);
@@ -354,6 +337,7 @@ public class WifiStateMachineTest {
     @Mock WifiStateTracker mWifiStateTracker;
     @Mock PasspointManager mPasspointManager;
     @Mock SelfRecovery mSelfRecovery;
+    @Mock IpManager mIpManager;
 
     public WifiStateMachineTest() throws Exception {
     }
@@ -796,6 +780,9 @@ public class WifiStateMachineTest {
 
         mWsm.sendMessage(WifiMonitor.SUP_CONNECTION_EVENT);
         mLooper.dispatchAll();
+
+        verify(mWifiNative).setupForClientMode();
+        verify(mWifiLastResortWatchdog).clearAllFailureCounts();
     }
 
     private void addNetworkAndVerifySuccess(boolean isHidden) throws Exception {
@@ -948,7 +935,7 @@ public class WifiStateMachineTest {
         dhcpResults.addDns("8.8.8.8");
         dhcpResults.setLeaseDuration(3600);
 
-        mTestIpManager.injectDhcpSuccess(dhcpResults);
+        injectDhcpSuccess(dhcpResults);
         mLooper.dispatchAll();
 
         assertEquals("ConnectedState", getCurrentState().getName());
@@ -986,7 +973,7 @@ public class WifiStateMachineTest {
         dhcpResults.addDns("8.8.8.8");
         dhcpResults.setLeaseDuration(3600);
 
-        mTestIpManager.injectDhcpSuccess(dhcpResults);
+        injectDhcpSuccess(dhcpResults);
         mLooper.dispatchAll();
 
         assertEquals("ConnectedState", getCurrentState().getName());
@@ -1069,10 +1056,103 @@ public class WifiStateMachineTest {
 
         assertEquals("ObtainingIpState", getCurrentState().getName());
 
-        mTestIpManager.injectDhcpFailure();
+        injectDhcpFailure();
         mLooper.dispatchAll();
 
         assertEquals("DisconnectingState", getCurrentState().getName());
+    }
+
+    /**
+     * Verify that the network selection status will be updated with DISABLED_AUTHENTICATION_FAILURE
+     * when wrong password authentication failure is detected and the network had been
+     * connected previously.
+     */
+    @Test
+    public void testWrongPasswordWithPreviouslyConnected() throws Exception {
+        initializeAndAddNetworkAndVerifySuccess();
+
+        mWsm.setOperationalMode(WifiStateMachine.CONNECT_MODE);
+        mLooper.dispatchAll();
+
+        mLooper.startAutoDispatch();
+        mWsm.syncEnableNetwork(mWsmAsyncChannel, 0, true);
+        mLooper.stopAutoDispatch();
+
+        verify(mWifiConfigManager).enableNetwork(eq(0), eq(true), anyInt());
+
+        WifiConfiguration config = new WifiConfiguration();
+        config.getNetworkSelectionStatus().setHasEverConnected(true);
+        when(mWifiConfigManager.getConfiguredNetwork(anyInt())).thenReturn(config);
+
+        mWsm.sendMessage(WifiMonitor.AUTHENTICATION_FAILURE_EVENT, 0,
+                WifiManager.ERROR_AUTH_FAILURE_WRONG_PSWD);
+        mLooper.dispatchAll();
+
+        verify(mWifiConfigManager).updateNetworkSelectionStatus(anyInt(),
+                eq(WifiConfiguration.NetworkSelectionStatus.DISABLED_AUTHENTICATION_FAILURE));
+
+        assertEquals("DisconnectedState", getCurrentState().getName());
+    }
+
+    /**
+     * Verify that the network selection status will be updated with DISABLED_BY_WRONG_PASSWORD
+     * when wrong password authentication failure is detected and the network has never been
+     * connected.
+     */
+    @Test
+    public void testWrongPasswordWithNeverConnected() throws Exception {
+        initializeAndAddNetworkAndVerifySuccess();
+
+        mWsm.setOperationalMode(WifiStateMachine.CONNECT_MODE);
+        mLooper.dispatchAll();
+
+        mLooper.startAutoDispatch();
+        mWsm.syncEnableNetwork(mWsmAsyncChannel, 0, true);
+        mLooper.stopAutoDispatch();
+
+        verify(mWifiConfigManager).enableNetwork(eq(0), eq(true), anyInt());
+
+        WifiConfiguration config = new WifiConfiguration();
+        config.getNetworkSelectionStatus().setHasEverConnected(false);
+        when(mWifiConfigManager.getConfiguredNetwork(anyInt())).thenReturn(config);
+
+        mWsm.sendMessage(WifiMonitor.AUTHENTICATION_FAILURE_EVENT, 0,
+                WifiManager.ERROR_AUTH_FAILURE_WRONG_PSWD);
+        mLooper.dispatchAll();
+
+        verify(mWifiConfigManager).updateNetworkSelectionStatus(anyInt(),
+                eq(WifiConfiguration.NetworkSelectionStatus.DISABLED_BY_WRONG_PASSWORD));
+
+        assertEquals("DisconnectedState", getCurrentState().getName());
+    }
+
+    /**
+     * Verify that the network selection status will be updated with DISABLED_BY_WRONG_PASSWORD
+     * when wrong password authentication failure is detected and the network is unknown.
+     */
+    @Test
+    public void testWrongPasswordWithNullNetwork() throws Exception {
+        initializeAndAddNetworkAndVerifySuccess();
+
+        mWsm.setOperationalMode(WifiStateMachine.CONNECT_MODE);
+        mLooper.dispatchAll();
+
+        mLooper.startAutoDispatch();
+        mWsm.syncEnableNetwork(mWsmAsyncChannel, 0, true);
+        mLooper.stopAutoDispatch();
+
+        verify(mWifiConfigManager).enableNetwork(eq(0), eq(true), anyInt());
+
+        when(mWifiConfigManager.getConfiguredNetwork(anyInt())).thenReturn(null);
+
+        mWsm.sendMessage(WifiMonitor.AUTHENTICATION_FAILURE_EVENT, 0,
+                WifiManager.ERROR_AUTH_FAILURE_WRONG_PSWD);
+        mLooper.dispatchAll();
+
+        verify(mWifiConfigManager).updateNetworkSelectionStatus(anyInt(),
+                eq(WifiConfiguration.NetworkSelectionStatus.DISABLED_BY_WRONG_PASSWORD));
+
+        assertEquals("DisconnectedState", getCurrentState().getName());
     }
 
     @Test

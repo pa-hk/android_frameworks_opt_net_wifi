@@ -1524,8 +1524,10 @@ public class WifiServiceImplTest {
     public void testAddPasspointProfileViaAddNetwork() throws Exception {
         WifiConfiguration config = WifiConfigurationTestUtil.createPasspointNetwork();
         config.enterpriseConfig.setEapMethod(WifiEnterpriseConfig.Eap.TLS);
-        when(mResources.getBoolean(com.android.internal.R.bool.config_wifi_hotspot2_enabled))
-                .thenReturn(true);
+
+        PackageManager pm = mock(PackageManager.class);
+        when(pm.hasSystemFeature(PackageManager.FEATURE_WIFI_PASSPOINT)).thenReturn(true);
+        when(mContext.getPackageManager()).thenReturn(pm);
 
         when(mWifiStateMachine.syncAddOrUpdatePasspointConfig(any(),
                 any(PasspointConfiguration.class), anyInt())).thenReturn(true);
