@@ -31,6 +31,7 @@ import android.os.SystemClock;
 import android.util.Log;
 import android.util.Pair;
 import android.util.SparseArray;
+import android.content.Context;
 
 import com.android.internal.annotations.Immutable;
 import com.android.internal.util.HexDump;
@@ -65,15 +66,19 @@ public class WifiNative {
     private final SupplicantStaIfaceHal mSupplicantStaIfaceHal;
     private final WifiVendorHal mWifiVendorHal;
     private final WificondControl mWificondControl;
+    private final WifiInjector mWifiInjector;
     private boolean mStaAndAPConcurrency = false;
+    private String mSoftApInterface = null;
 
     public WifiNative(String interfaceName, WifiVendorHal vendorHal,
-                      SupplicantStaIfaceHal staIfaceHal, WificondControl condControl) {
+                      SupplicantStaIfaceHal staIfaceHal, WificondControl condControl,
+                      WifiInjector wifiInjector) {
         mTAG = "WifiNative-" + interfaceName;
         mInterfaceName = interfaceName;
         mWifiVendorHal = vendorHal;
         mSupplicantStaIfaceHal = staIfaceHal;
         mWificondControl = condControl;
+        mWifiInjector = wifiInjector;
     }
 
     public String getInterfaceName() {
@@ -131,12 +136,13 @@ public class WifiNative {
      * @return Pair of <Integer, IApInterface> to indicate the status and the associated wificond
      * AP interface binder handler (will be null on failure).
      */
-    public Pair<Integer, IApInterface> setupForSoftApMode() {
+    public Pair<Integer, IApInterface> setupForSoftApMode(boolean isDualMode) {
         if (!startHalIfNecessary(false)) {
             Log.e(mTAG, "Failed to start HAL for AP mode");
             return Pair.create(SETUP_FAILURE_HAL, null);
         }
-        IApInterface iApInterface = mWificondControl.setupDriverForSoftApMode();
+
+        IApInterface iApInterface = mWificondControl.QcSetupDriverForSoftApMode(mSoftApInterface, isDualMode);
         if (iApInterface == null) {
             return Pair.create(SETUP_FAILURE_WIFICOND, null);
         }
@@ -190,14 +196,14 @@ public class WifiNative {
     }
 
     /**
-     * Stops the Iface HAL, if vendor HAL is supported.
+     * Stops the HAL, if vendor HAL is supported.
      */
-    private boolean stopHalIfaceIfNecessary(boolean isSta) {
+    private void stopHalIfNecessary() {
         if (!mWifiVendorHal.isVendorHalSupported()) {
-            Log.i(mTAG, "Vendor Iface HAL not supported, Ignore stop...");
-            return false;
+            Log.i(mTAG, "Vendor HAL not supported, Ignore stop...");
+            return;
         }
-        return mWifiVendorHal.stopVendorHalIface(isSta);
+        mWifiVendorHal.stopVendorHal();
     }
 
     /**
@@ -219,23 +225,57 @@ public class WifiNative {
     }
 
    /**
-    * For Concurrent STA + SAP need to create new interface.
+    * For SAP / SAP + SAP need to create new interface.
     * This is a synchronous call.
     *
     * @return Returns true on success.
     */
-    public boolean addOrRemoveInterface(String interfaceName, boolean add) {
+    public boolean addOrRemoveInterface(String interfaceName, boolean add, boolean isBridge) {
         boolean status = false;
-        if (interfaceName != null) {
+        if (interfaceName != null && !isBridge) {
             /* Do we need to run this in a for loop if create/remove fails? */
             if (add && runQsapCmd("softap create ", interfaceName)) {
                 Log.d(mTAG, "created SAP interface " + interfaceName);
                 status = true;
+                mSoftApInterface = interfaceName;
             } else if (!add && runQsapCmd("softap remove ", interfaceName)) {
                 Log.d(mTAG, "removed SAP interface " + interfaceName);
                 status = true;
+                mSoftApInterface = null;
             } else {
                 Log.e(mTAG, "Failed to add/remove SAP interface " + interfaceName);
+            }
+        } else if (interfaceName != null && isBridge) {
+            // Create bridge interface.
+            if (add && runQsapCmd("softap bridge create ", interfaceName)) {
+                Log.d(mTAG, "created bridge SAP interface " + interfaceName);
+                mSoftApInterface = interfaceName;
+            } else if (!add && runQsapCmd("softap bridge remove ", interfaceName)) {
+                Log.d(mTAG, "removed bridge SAP interface " + interfaceName);
+                mSoftApInterface = null;
+            } else {
+                Log.e(mTAG, "Failed to add/remove Bridge SAP interface " + interfaceName);
+                return false;
+            }
+
+            /* Get dual softAp Interface name from overlay config.xml */
+            String[] dualApInterfaces = mWifiInjector.getWifiApConfigStore().getDualSapInterfaces();
+            if (dualApInterfaces == null || dualApInterfaces.length != 2) {
+                Log.e(mTAG, "dualApInterfaces is not set or length is not 2");
+                return false;
+            }
+
+            // create sap0 and sap1
+            if (add && runQsapCmd("softap create ", dualApInterfaces[0])
+                    && runQsapCmd("softap create ", dualApInterfaces[1])) {
+                Log.d(mTAG, "created SAP interfaces " + dualApInterfaces[0] + " and " + dualApInterfaces[1]);
+                status = true;
+            } else if (!add && runQsapCmd("softap remove ", dualApInterfaces[0])
+                            && runQsapCmd("softap remove ", dualApInterfaces[1])) {
+                Log.d(mTAG, "removed SAP interfaces " + dualApInterfaces[0] + " and " + dualApInterfaces[1]);
+                status = true;
+            } else {
+                Log.e(mTAG, "Failed to add/remove SAP interfaces " + dualApInterfaces[0] + " and " + dualApInterfaces[1]);
             }
         }
         return status;
@@ -934,7 +974,6 @@ public class WifiNative {
             Log.i(mTAG, "Vendor HAL not supported, Ignore start...");
             return true;
         }
-
         if (mStaAndAPConcurrency)
             return mWifiVendorHal.startConcurrentVendorHal(isStaMode);
 
@@ -942,14 +981,14 @@ public class WifiNative {
     }
 
     /**
-     * Stops the HAL, if vendor HAL is supported.
+     * Stops the Iface HAL, if vendor HAL is supported.
      */
-    private void stopHalIfNecessary() {
+    private boolean stopHalIfaceIfNecessary(boolean isSta) {
         if (!mWifiVendorHal.isVendorHalSupported()) {
-            Log.i(mTAG, "Vendor HAL not supported, Ignore stop...");
-            return;
+            Log.i(mTAG, "Vendor Iface HAL not supported, Ignore stop...");
+            return false;
         }
-        mWifiVendorHal.stopVendorHal();
+        return mWifiVendorHal.stopVendorHalIface(isSta);
     }
 
     /**
