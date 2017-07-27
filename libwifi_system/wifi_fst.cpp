@@ -30,7 +30,6 @@
 
 static const char FSTMAN_IFNAME[] = "wlan0";
 static const char FSTMAN_NAME[] = "fstman";
-static const char FSTMAN_START_PROP_NAME[] = "netd.fstman.start";
 const char FSTMAN_CONFIG_TEMPLATE[] = "/etc/wifi/fstman.ini";
 const char FSTMAN_CONFIG_FILE[] = "/data/vendor/wifi/fstman.ini";
 static const char FST_RATE_UPGRADE_ENABLED_PROP_NAME[] = "persist.vendor.fst.rate.upgrade.en";
@@ -104,13 +103,7 @@ int wifi_start_fstman(int softap_mode)
         return 0;
 
     LOG(DEBUG) << "Starting FST Manager";
-    /* when invoked from netd, use different property because of different
-       selinux permissions */
-    if (softap_mode) {
-        property_set(FSTMAN_START_PROP_NAME, "true");
-    } else {
-        property_set("ctl.start", fstman_svc_name);
-    }
+    property_set("ctl.start", fstman_svc_name);
     sched_yield();
 
     while (count-- > 0) {
@@ -145,12 +138,7 @@ int wifi_stop_fstman(int softap_mode)
         return 0;
 
     LOG(DEBUG) << "Stopping FST Manager";
-    /* when invoked from netd, use different property because of different
-       selinux permissions */
-    if (softap_mode)
-        property_set(FSTMAN_START_PROP_NAME, "false");
-    else
-        property_set("ctl.stop", fstman_svc_name);
+    property_set("ctl.stop", fstman_svc_name);
     sched_yield();
 
     while (count-- > 0) {
