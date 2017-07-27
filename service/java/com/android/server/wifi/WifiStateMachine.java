@@ -7091,7 +7091,12 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
             }
 
             try {
-                mIfaceName = apInterface.getInterfaceName();
+                String defaultRateUpgradeInterfaceName = "bond0"; // interface used for fst
+                int fstEnabled = SystemProperties.getInt("persist.vendor.fst.softap.en", 0);
+                String rateUpgradeDataInterfaceName = SystemProperties.get("persist.vendor.fst.data.interface",
+                        defaultRateUpgradeInterfaceName);
+                mIfaceName = (fstEnabled == 1) ? rateUpgradeDataInterfaceName : apInterface.getInterfaceName();
+                logd("softap fst " + ((fstEnabled == 1) ? "enabled" : "disabled"));
             } catch (RemoteException e) {
                 // Failed to get the interface name. The name will not be available for
                 // the enabled broadcast, but since we had an error getting the name, we most likely
