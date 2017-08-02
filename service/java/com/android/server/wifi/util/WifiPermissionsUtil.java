@@ -76,6 +76,22 @@ public class WifiPermissionsUtil {
     }
 
     /**
+     * Checks if the app has the permission to change Wi-Fi network configuration or not.
+     *
+     * @param uid uid of the app.
+     * @return true if the app does have the permission, false otherwise.
+     */
+    public boolean checkChangePermission(int uid) {
+        try {
+            int permission = mWifiPermissionsWrapper.getChangeWifiConfigPermission(uid);
+            return (permission == PackageManager.PERMISSION_GRANTED);
+        } catch (RemoteException e) {
+            mLog.err("Error checking for permission: %").r(e.getMessage()).flush();
+            return false;
+        }
+    }
+
+    /**
      * Check and enforce tether change permission.
      *
      * @param context Context object of the caller.
@@ -239,5 +255,14 @@ public class WifiPermissionsUtil {
         // Location mode check on applications that are later than version.
         return (mSettingsStore.getLocationModeSetting(mContext)
                  != Settings.Secure.LOCATION_MODE_OFF);
+    }
+
+    /**
+     * Returns true if the |uid| holds NETWORK_SETTINGS permission.
+     */
+    public boolean checkNetworkSettingsPermission(int uid) {
+        return mWifiPermissionsWrapper.getUidPermission(
+                android.Manifest.permission.NETWORK_SETTINGS, uid)
+                == PackageManager.PERMISSION_GRANTED;
     }
 }
