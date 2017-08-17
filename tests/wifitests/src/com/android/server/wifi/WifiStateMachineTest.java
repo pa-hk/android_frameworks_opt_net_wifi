@@ -30,6 +30,7 @@ import static com.android.server.wifi.LocalOnlyHotspotRequestInfo.HOTSPOT_NO_ERR
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
@@ -75,6 +76,7 @@ import android.os.Looper;
 import android.os.Message;
 import android.os.Messenger;
 import android.os.PowerManager;
+import android.os.Process;
 import android.os.RemoteException;
 import android.os.UserHandle;
 import android.os.UserManager;
@@ -98,6 +100,7 @@ import com.android.internal.util.StateMachine;
 import com.android.server.wifi.hotspot2.NetworkDetail;
 import com.android.server.wifi.hotspot2.PasspointManager;
 import com.android.server.wifi.p2p.WifiP2pServiceImpl;
+import com.android.server.wifi.util.WifiPermissionsUtil;
 
 import org.junit.After;
 import org.junit.Before;
@@ -134,9 +137,12 @@ public class WifiStateMachineTest {
             (ActivityManager.isLowRamDeviceStatic()
                     ? WifiStateMachine.NUM_LOG_RECS_VERBOSE_LOW_MEMORY
                     : WifiStateMachine.NUM_LOG_RECS_VERBOSE);
+    private static final int FRAMEWORK_NETWORK_ID = 7;
+    private static final int TEST_RSSI = -54;
     private static final int WPS_SUPPLICANT_NETWORK_ID = 5;
     private static final int WPS_FRAMEWORK_NETWORK_ID = 10;
     private static final String DEFAULT_TEST_SSID = "\"GoogleGuest\"";
+    private static final String OP_PACKAGE_NAME = "com.xxx";
 
     private long mBinderToken;
 
@@ -225,6 +231,8 @@ public class WifiStateMachineTest {
         when(context.getSystemService(Context.CONNECTIVITY_SERVICE)).thenReturn(
                 mock(ConnectivityManager.class));
 
+        when(context.getOpPackageName()).thenReturn(OP_PACKAGE_NAME);
+
         return context;
     }
 
@@ -267,11 +275,11 @@ public class WifiStateMachineTest {
         Log.d(TAG, "WifiStateMachine state -" + stream.toString());
     }
 
-    private static ScanDetail getGoogleGuestScanDetail(int rssi) {
+    private static ScanDetail getGoogleGuestScanDetail(int rssi, String bssid, int freq) {
         ScanResult.InformationElement ie[] = new ScanResult.InformationElement[1];
         ie[0] = ScanResults.generateSsidIe(sSSID);
         NetworkDetail nd = new NetworkDetail(sBSSID, ie, new ArrayList<String>(), sFreq);
-        ScanDetail detail = new ScanDetail(nd, sWifiSsid, sBSSID, "", rssi, sFreq,
+        ScanDetail detail = new ScanDetail(nd, sWifiSsid, bssid, "", rssi, freq,
                 Long.MAX_VALUE, /* needed so that scan results aren't rejected because
                                    there older than scan start */
                 ie, new ArrayList<String>());
@@ -282,8 +290,7 @@ public class WifiStateMachineTest {
         ScanResults sr = ScanResults.create(0, 2412, 2437, 2462, 5180, 5220, 5745, 5825);
         ArrayList<ScanDetail> list = sr.getScanDetailArrayList();
 
-        int rssi = -65;
-        list.add(getGoogleGuestScanDetail(rssi));
+        list.add(getGoogleGuestScanDetail(TEST_RSSI, sBSSID, sFreq));
         return list;
     }
 
@@ -300,7 +307,9 @@ public class WifiStateMachineTest {
     static final String   sSSID = "\"GoogleGuest\"";
     static final WifiSsid sWifiSsid = WifiSsid.createFromAsciiEncoded(sSSID);
     static final String   sBSSID = "01:02:03:04:05:06";
+    static final String   sBSSID1 = "02:01:04:03:06:05";
     static final int      sFreq = 2437;
+    static final int      sFreq1 = 5240;
     static final String   WIFI_IFACE_NAME = "mockWlan";
 
     WifiStateMachine mWsm;
@@ -336,6 +345,7 @@ public class WifiStateMachineTest {
     @Mock IClientInterface mClientInterface;
     @Mock IBinder mApInterfaceBinder;
     @Mock IBinder mClientInterfaceBinder;
+    @Mock IBinder mPackageManagerBinder;
     @Mock WifiConfigManager mWifiConfigManager;
     @Mock WifiNative mWifiNative;
     @Mock WifiConnectivityManager mWifiConnectivityManager;
@@ -343,10 +353,12 @@ public class WifiStateMachineTest {
     @Mock WifiStateTracker mWifiStateTracker;
     @Mock PasspointManager mPasspointManager;
     @Mock SelfRecovery mSelfRecovery;
+    @Mock WifiPermissionsUtil mWifiPermissionsUtil;
     @Mock IpManager mIpManager;
     @Mock TelephonyManager mTelephonyManager;
     @Mock WrongPasswordNotifier mWrongPasswordNotifier;
     @Mock Clock mClock;
+    @Mock ScanDetailCache mScanDetailCache;
 
     public WifiStateMachineTest() throws Exception {
     }
@@ -387,6 +399,7 @@ public class WifiStateMachineTest {
         when(mWifiInjector.getWifiMonitor()).thenReturn(mWifiMonitor);
         when(mWifiInjector.getWifiNative()).thenReturn(mWifiNative);
         when(mWifiInjector.getSelfRecovery()).thenReturn(mSelfRecovery);
+        when(mWifiInjector.getWifiPermissionsUtil()).thenReturn(mWifiPermissionsUtil);
         when(mWifiInjector.makeTelephonyManager()).thenReturn(mTelephonyManager);
         when(mWifiInjector.getClock()).thenReturn(mClock);
 
@@ -817,6 +830,7 @@ public class WifiStateMachineTest {
 
     private void addNetworkAndVerifySuccess(boolean isHidden) throws Exception {
         WifiConfiguration config = new WifiConfiguration();
+        config.networkId = FRAMEWORK_NETWORK_ID;
         config.SSID = sSSID;
         config.allowedKeyManagement.set(WifiConfiguration.KeyMgmt.NONE);
         config.hiddenSSID = isHidden;
@@ -950,6 +964,13 @@ public class WifiStateMachineTest {
 
         verify(mWifiConfigManager).enableNetwork(eq(0), eq(true), anyInt());
         verify(mWifiConnectivityManager).setUserConnectChoice(eq(0));
+        when(mWifiConfigManager.getScanDetailCacheForNetwork(FRAMEWORK_NETWORK_ID))
+                .thenReturn(mScanDetailCache);
+
+        when(mScanDetailCache.getScanDetail(sBSSID)).thenReturn(
+                getGoogleGuestScanDetail(TEST_RSSI, sBSSID, sFreq));
+        when(mScanDetailCache.get(sBSSID)).thenReturn(
+                getGoogleGuestScanDetail(TEST_RSSI, sBSSID, sFreq).getScanResult());
 
         mWsm.sendMessage(WifiMonitor.NETWORK_CONNECTION_EVENT, 0, 0, sBSSID);
         mLooper.dispatchAll();
@@ -968,6 +989,12 @@ public class WifiStateMachineTest {
 
         injectDhcpSuccess(dhcpResults);
         mLooper.dispatchAll();
+
+        WifiInfo wifiInfo = mWsm.getWifiInfo();
+        assertNotNull(wifiInfo);
+        assertEquals(sBSSID, wifiInfo.getBSSID());
+        assertEquals(sFreq, wifiInfo.getFrequency());
+        assertTrue(sWifiSsid.equals(wifiInfo.getWifiSsid()));
 
         assertEquals("ConnectedState", getCurrentState().getName());
     }
@@ -1227,7 +1254,7 @@ public class WifiStateMachineTest {
     public void disconnect() throws Exception {
         connect();
 
-        mWsm.sendMessage(WifiMonitor.NETWORK_DISCONNECTION_EVENT, -1, 3, "01:02:03:04:05:06");
+        mWsm.sendMessage(WifiMonitor.NETWORK_DISCONNECTION_EVENT, -1, 3, sBSSID);
         mLooper.dispatchAll();
         mWsm.sendMessage(WifiMonitor.SUPPLICANT_STATE_CHANGE_EVENT, 0, 0,
                 new StateChangeResult(0, sWifiSsid, sBSSID, SupplicantState.DISCONNECTED));
@@ -1720,6 +1747,61 @@ public class WifiStateMachineTest {
     }
 
     /**
+     * Verifies that WifiInfo is updated upon SUPPLICANT_STATE_CHANGE_EVENT.
+     */
+    @Test
+    public void testWifiInfoUpdatedUponSupplicantStateChangedEvent() throws Exception {
+        // Connect to network with |sBSSID|, |sFreq|.
+        connect();
+
+        // Set the scan detail cache for roaming target.
+        when(mWifiConfigManager.getScanDetailCacheForNetwork(FRAMEWORK_NETWORK_ID))
+                .thenReturn(mScanDetailCache);
+        when(mScanDetailCache.getScanDetail(sBSSID1)).thenReturn(
+                getGoogleGuestScanDetail(TEST_RSSI, sBSSID1, sFreq1));
+        when(mScanDetailCache.get(sBSSID1)).thenReturn(
+                getGoogleGuestScanDetail(TEST_RSSI, sBSSID1, sFreq1).getScanResult());
+
+        // This simulates the behavior of roaming to network with |sBSSID1|, |sFreq1|.
+        // Send a SUPPLICANT_STATE_CHANGE_EVENT, verify WifiInfo is updated.
+        mWsm.sendMessage(WifiMonitor.SUPPLICANT_STATE_CHANGE_EVENT, 0, 0,
+                new StateChangeResult(0, sWifiSsid, sBSSID1, SupplicantState.COMPLETED));
+        mLooper.dispatchAll();
+
+        WifiInfo wifiInfo = mWsm.getWifiInfo();
+        assertEquals(sBSSID1, wifiInfo.getBSSID());
+        assertEquals(sFreq1, wifiInfo.getFrequency());
+        assertEquals(SupplicantState.COMPLETED, wifiInfo.getSupplicantState());
+    }
+
+    /**
+     * Verifies that WifiInfo is updated upon CMD_ASSOCIATED_BSSID event.
+     */
+    @Test
+    public void testWifiInfoUpdatedUponAssociatedBSSIDEvent() throws Exception {
+        // Connect to network with |sBSSID|, |sFreq|.
+        connect();
+
+        // Set the scan detail cache for roaming target.
+        when(mWifiConfigManager.getScanDetailCacheForNetwork(FRAMEWORK_NETWORK_ID))
+                .thenReturn(mScanDetailCache);
+        when(mScanDetailCache.getScanDetail(sBSSID1)).thenReturn(
+                getGoogleGuestScanDetail(TEST_RSSI, sBSSID1, sFreq1));
+        when(mScanDetailCache.get(sBSSID1)).thenReturn(
+                getGoogleGuestScanDetail(TEST_RSSI, sBSSID1, sFreq1).getScanResult());
+
+        // This simulates the behavior of roaming to network with |sBSSID1|, |sFreq1|.
+        // Send a CMD_ASSOCIATED_BSSID, verify WifiInfo is updated.
+        mWsm.sendMessage(WifiStateMachine.CMD_ASSOCIATED_BSSID, 0, 0, sBSSID1);
+        mLooper.dispatchAll();
+
+        WifiInfo wifiInfo = mWsm.getWifiInfo();
+        assertEquals(sBSSID1, wifiInfo.getBSSID());
+        assertEquals(sFreq1, wifiInfo.getFrequency());
+        assertEquals(SupplicantState.COMPLETED, wifiInfo.getSupplicantState());
+    }
+
+    /**
      * Verifies that WifiInfo is cleared upon exiting and entering WifiInfo, and that it is not
      * updated by SUPPLICAN_STATE_CHANGE_EVENTs in ScanModeState.
      * This protects WifiStateMachine from  getting into a bad state where WifiInfo says wifi is
@@ -1782,6 +1864,124 @@ public class WifiStateMachineTest {
         assertEquals("DisconnectedState", getCurrentState().getName());
         assertEquals(SupplicantState.DISCONNECTED, wifiInfo.getSupplicantState());
         assertNull(wifiInfo.getBSSID());
+    }
+
+    /**
+     * Test that the process uid has full wifiInfo access.
+     * Also tests that {@link WifiStateMachine#syncRequestConnectionInfo(String)} always
+     * returns a copy of WifiInfo.
+     */
+    @Test
+    public void testConnectedIdsAreVisibleFromOwnUid() throws Exception {
+        assertEquals(Process.myUid(), Binder.getCallingUid());
+        WifiInfo wifiInfo = mWsm.getWifiInfo();
+        wifiInfo.setBSSID(sBSSID);
+        wifiInfo.setSSID(WifiSsid.createFromAsciiEncoded(sSSID));
+
+        connect();
+        WifiInfo connectionInfo = mWsm.syncRequestConnectionInfo(mContext.getOpPackageName());
+
+        assertNotEquals(wifiInfo, connectionInfo);
+        assertEquals(wifiInfo.getSSID(), connectionInfo.getSSID());
+        assertEquals(wifiInfo.getBSSID(), connectionInfo.getBSSID());
+    }
+
+    /**
+     * Test that connected SSID and BSSID are not exposed to an app that does not have the
+     * appropriate permissions.
+     * Also tests that {@link WifiStateMachine#syncRequestConnectionInfo(String)} always
+     * returns a copy of WifiInfo.
+     */
+    @Test
+    public void testConnectedIdsAreHiddenFromRandomApp() throws Exception {
+        int actualUid = Binder.getCallingUid();
+        int fakeUid = Process.myUid() + 100000;
+        assertNotEquals(actualUid, fakeUid);
+        BinderUtil.setUid(fakeUid);
+        try {
+            WifiInfo wifiInfo = mWsm.getWifiInfo();
+
+            // Get into a connected state, with known BSSID and SSID
+            connect();
+            assertEquals(sBSSID, wifiInfo.getBSSID());
+            assertEquals(sWifiSsid, wifiInfo.getWifiSsid());
+
+            when(mWifiPermissionsUtil.canAccessScanResults(anyString(), eq(fakeUid), anyInt()))
+                    .thenReturn(false);
+
+            WifiInfo connectionInfo = mWsm.syncRequestConnectionInfo(mContext.getOpPackageName());
+
+            assertNotEquals(wifiInfo, connectionInfo);
+            assertEquals(WifiSsid.NONE, connectionInfo.getSSID());
+            assertEquals(WifiInfo.DEFAULT_MAC_ADDRESS, connectionInfo.getBSSID());
+        } finally {
+            BinderUtil.setUid(actualUid);
+        }
+    }
+
+    /**
+     * Test that connected SSID and BSSID are not exposed to an app that does not have the
+     * appropriate permissions, when canAccessScanResults raises a SecurityException.
+     * Also tests that {@link WifiStateMachine#syncRequestConnectionInfo(String)} always
+     * returns a copy of WifiInfo.
+     */
+    @Test
+    public void testConnectedIdsAreHiddenOnSecurityException() throws Exception {
+        int actualUid = Binder.getCallingUid();
+        int fakeUid = Process.myUid() + 100000;
+        assertNotEquals(actualUid, fakeUid);
+        BinderUtil.setUid(fakeUid);
+        try {
+            WifiInfo wifiInfo = mWsm.getWifiInfo();
+
+            // Get into a connected state, with known BSSID and SSID
+            connect();
+            assertEquals(sBSSID, wifiInfo.getBSSID());
+            assertEquals(sWifiSsid, wifiInfo.getWifiSsid());
+
+            when(mWifiPermissionsUtil.canAccessScanResults(anyString(), eq(fakeUid), anyInt()))
+                    .thenThrow(new SecurityException());
+
+            WifiInfo connectionInfo = mWsm.syncRequestConnectionInfo(mContext.getOpPackageName());
+
+            assertNotEquals(wifiInfo, connectionInfo);
+            assertEquals(WifiSsid.NONE, connectionInfo.getSSID());
+            assertEquals(WifiInfo.DEFAULT_MAC_ADDRESS, connectionInfo.getBSSID());
+        } finally {
+            BinderUtil.setUid(actualUid);
+        }
+    }
+
+    /**
+     * Test that connected SSID and BSSID are exposed to an app that does have the
+     * appropriate permissions.
+     */
+    @Test
+    public void testConnectedIdsAreVisibleFromPermittedApp() throws Exception {
+        int actualUid = Binder.getCallingUid();
+        int fakeUid = Process.myUid() + 100000;
+        BinderUtil.setUid(fakeUid);
+        try {
+            WifiInfo wifiInfo = mWsm.getWifiInfo();
+
+            // Get into a connected state, with known BSSID and SSID
+            connect();
+            assertEquals(sBSSID, wifiInfo.getBSSID());
+            assertEquals(sWifiSsid, wifiInfo.getWifiSsid());
+
+            when(mWifiPermissionsUtil.canAccessScanResults(anyString(), eq(fakeUid), anyInt()))
+                    .thenReturn(true);
+
+            WifiInfo connectionInfo = mWsm.syncRequestConnectionInfo(mContext.getOpPackageName());
+
+            assertNotEquals(wifiInfo, connectionInfo);
+            assertEquals(wifiInfo.getSSID(), connectionInfo.getSSID());
+            assertEquals(wifiInfo.getBSSID(), connectionInfo.getBSSID());
+            // Access to our MAC address uses a different permission, make sure it is not granted
+            assertEquals(WifiInfo.DEFAULT_MAC_ADDRESS, connectionInfo.getMacAddress());
+        } finally {
+            BinderUtil.setUid(actualUid);
+        }
     }
 
     /**
