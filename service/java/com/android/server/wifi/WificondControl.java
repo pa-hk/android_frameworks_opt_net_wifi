@@ -99,6 +99,18 @@ public class WificondControl {
             Log.d(TAG, "Pno Scan failed event");
             // Nothing to do for now.
         }
+
+        @Override
+        public void OnPnoScanOverOffloadStarted() {
+            Log.d(TAG, "Pno scan over offload started");
+            // Update metrics
+        }
+
+        @Override
+        public void OnPnoScanOverOffloadFailed(int reason) {
+            Log.d(TAG, "Pno scan over offload failed");
+            // Update metrics
+        }
     }
 
     /** Enable or disable verbose logging of WificondControl.
@@ -352,10 +364,6 @@ public class WificondControl {
                 NetworkDetail networkDetail =
                         new NetworkDetail(bssid, ies, null, result.frequency);
 
-                if (!wifiSsid.toString().equals(networkDetail.getTrimmedSSID())) {
-                    Log.e(TAG, "Inconsistent SSID on BSSID: " + bssid);
-                    continue;
-                }
                 ScanDetail scanDetail = new ScanDetail(networkDetail, wifiSsid, bssid, flags,
                         result.signalMbm / 100, result.frequency, result.tsf, ies, null);
                 // Update carrier network info if this AP's SSID is associated with a carrier Wi-Fi

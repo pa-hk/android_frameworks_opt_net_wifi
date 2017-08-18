@@ -31,6 +31,7 @@ import static android.telephony.TelephonyManager.CALL_STATE_OFFHOOK;
 
 import android.Manifest;
 import android.app.ActivityManager;
+import android.app.AppGlobals;
 import android.app.PendingIntent;
 import android.bluetooth.BluetoothAdapter;
 import android.content.BroadcastReceiver;
@@ -82,6 +83,7 @@ import android.net.wifi.hotspot2.PasspointConfiguration;
 import android.net.wifi.p2p.IWifiP2pManager;
 import android.os.BatteryStats;
 import android.os.Binder;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.IBinder;
 import android.os.INetworkManagementService;
@@ -368,7 +370,7 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
     private final Object mDhcpResultsLock = new Object();
     private DhcpResults mDhcpResults;
 
-    // NOTE: Do not return to clients - use #getWiFiInfoForUid(int)
+    // NOTE: Do not return to clients - see syncRequestConnectionInfo()
     private final WifiInfo mWifiInfo;
     private NetworkInfo mNetworkInfo;
     private final NetworkCapabilities mDfltNetworkCapabilities;
@@ -954,7 +956,7 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                 mFacade.makeSupplicantStateTracker(context, mWifiConfigManager, getHandler());
 
         mLinkProperties = new LinkProperties();
-        mPhoneStateListener = new WifiPhoneStateListener();
+        mPhoneStateListener = new WifiPhoneStateListener(looper);
 
         mNetworkInfo.setIsAvailable(false);
         mLastBssid = null;
@@ -1798,8 +1800,36 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
      *
      * @return a {@link WifiInfo} object containing information about the current connection
      */
-    public WifiInfo syncRequestConnectionInfo() {
-        return getWiFiInfoForUid(Binder.getCallingUid());
+    public WifiInfo syncRequestConnectionInfo(String callingPackage) {
+        int uid = Binder.getCallingUid();
+        WifiInfo result = new WifiInfo(mWifiInfo);
+        if (uid == Process.myUid()) return result;
+        boolean hideBssidAndSsid = true;
+        result.setMacAddress(WifiInfo.DEFAULT_MAC_ADDRESS);
+
+        IPackageManager packageManager = AppGlobals.getPackageManager();
+
+        try {
+            if (packageManager.checkUidPermission(Manifest.permission.LOCAL_MAC_ADDRESS,
+                    uid) == PackageManager.PERMISSION_GRANTED) {
+                result.setMacAddress(mWifiInfo.getMacAddress());
+            }
+            if (mWifiPermissionsUtil.canAccessScanResults(
+                    callingPackage,
+                    uid,
+                    Build.VERSION_CODES.O)) {
+                hideBssidAndSsid = false;
+            }
+        } catch (RemoteException e) {
+            Log.e(TAG, "Error checking receiver permission", e);
+        } catch (SecurityException e) {
+            Log.e(TAG, "Security exception checking receiver permission", e);
+        }
+        if (hideBssidAndSsid) {
+            result.setBSSID(WifiInfo.DEFAULT_MAC_ADDRESS);
+            result.setSSID(WifiSsid.createFromHex(null));
+        }
+        return result;
     }
 
     public WifiInfo getWifiInfo() {
@@ -3182,29 +3212,6 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
         mContext.sendStickyBroadcastAsUser(intent, UserHandle.ALL);
     }
 
-    private WifiInfo getWiFiInfoForUid(int uid) {
-        if (Binder.getCallingUid() == Process.myUid()) {
-            return mWifiInfo;
-        }
-
-        WifiInfo result = new WifiInfo(mWifiInfo);
-        result.setMacAddress(WifiInfo.DEFAULT_MAC_ADDRESS);
-
-        IBinder binder = mFacade.getService("package");
-        IPackageManager packageManager = IPackageManager.Stub.asInterface(binder);
-
-        try {
-            if (packageManager.checkUidPermission(Manifest.permission.LOCAL_MAC_ADDRESS,
-                    uid) == PackageManager.PERMISSION_GRANTED) {
-                result.setMacAddress(mWifiInfo.getMacAddress());
-            }
-        } catch (RemoteException e) {
-            Log.e(TAG, "Error checking receiver permission", e);
-        }
-
-        return result;
-    }
-
     private void sendLinkConfigurationChangedBroadcast() {
         Intent intent = new Intent(WifiManager.LINK_CONFIGURATION_CHANGED_ACTION);
         intent.addFlags(Intent.FLAG_RECEIVER_REGISTERED_ONLY_BEFORE_BOOT);
@@ -3312,6 +3319,7 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
             if (scanDetailCache != null) {
                 ScanDetail scanDetail = scanDetailCache.getScanDetail(stateChangeResult.BSSID);
                 if (scanDetail != null) {
+                    mWifiInfo.setFrequency(scanDetail.getScanResult().frequency);
                     NetworkDetail networkDetail = scanDetail.getNetworkDetail();
                     if (networkDetail != null
                             && networkDetail.getAnt() == NetworkDetail.Ant.ChargeablePublic) {
@@ -3820,6 +3828,10 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
      * Listen for phone call state events to set/reset TX power limits for SAR requirements.
      */
     private class WifiPhoneStateListener extends PhoneStateListener {
+        WifiPhoneStateListener(Looper looper) {
+            super(looper);
+        }
+
         @Override
         public void onCallStateChanged(int state, String incomingNumber) {
             if (mEnableVoiceCallSarTxPowerLimit) {
@@ -5449,6 +5461,15 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                     if (config != null) {
                         mWifiInfo.setBSSID(mLastBssid);
                         mWifiInfo.setNetworkId(mLastNetworkId);
+
+                        ScanDetailCache scanDetailCache =
+                                mWifiConfigManager.getScanDetailCacheForNetwork(config.networkId);
+                        if (scanDetailCache != null && mLastBssid != null) {
+                            ScanResult scanResult = scanDetailCache.get(mLastBssid);
+                            if (scanResult != null) {
+                                mWifiInfo.setFrequency(scanResult.frequency);
+                            }
+                        }
                         mWifiConnectivityManager.trackBssid(mLastBssid, true, reasonCode);
                         // We need to get the updated pseudonym from supplicant for EAP-SIM/AKA/AKA'
                         if (config.enterpriseConfig != null
@@ -5991,7 +6012,18 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                     mLastBssid = (String) message.obj;
                     if (mLastBssid != null && (mWifiInfo.getBSSID() == null
                             || !mLastBssid.equals(mWifiInfo.getBSSID()))) {
-                        mWifiInfo.setBSSID((String) message.obj);
+                        mWifiInfo.setBSSID(mLastBssid);
+                        WifiConfiguration config = getCurrentWifiConfiguration();
+                        if (config != null) {
+                            ScanDetailCache scanDetailCache = mWifiConfigManager
+                                    .getScanDetailCacheForNetwork(config.networkId);
+                            if (scanDetailCache != null) {
+                                ScanResult scanResult = scanDetailCache.get(mLastBssid);
+                                if (scanResult != null) {
+                                    mWifiInfo.setFrequency(scanResult.frequency);
+                                }
+                            }
+                        }
                         sendNetworkStateChangeBroadcast(mLastBssid);
                     }
                     break;
@@ -6320,7 +6352,9 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
     class ConnectedState extends State {
         @Override
         public void enter() {
-            updateDefaultRouteMacAddress(1000);
+            // TODO: b/64349637 Investigate getting default router IP/MAC address info from
+            // IpManager
+            //updateDefaultRouteMacAddress(1000);
             if (mVerboseLoggingEnabled) {
                 log("Enter ConnectedState "
                        + " mScreenOn=" + mScreenOn);
