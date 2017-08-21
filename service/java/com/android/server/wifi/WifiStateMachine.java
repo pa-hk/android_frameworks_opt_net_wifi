@@ -464,6 +464,18 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
 
         mDeathRecipient.unlinkToDeath();
         mWifiNative.tearDown();
+        // tearDown only brings down the wireless interface (wlan0), in case of FST
+        // make sure the bonding interface is also brought down
+        if (!mDataInterfaceName.equals(mInterfaceName)) {
+            try {
+                mNwService.setInterfaceDown(mDataInterfaceName);
+                mNwService.clearInterfaceAddresses(mDataInterfaceName);
+            } catch (RemoteException re) {
+                loge("Unable to change interface settings: " + re);
+            } catch (IllegalStateException ie) {
+                loge("Unable to change interface settings: " + ie);
+            }
+        }
     }
 
     public int getOperationalMode() {
