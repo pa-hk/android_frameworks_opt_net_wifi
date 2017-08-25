@@ -582,9 +582,15 @@ public class SupplicantStaNetworkHal {
         }
         /** EAP ERP */
         eapParam = eapConfig.getFieldValue(WifiEnterpriseConfig.EAP_ERP);
-        if (!TextUtils.isEmpty(eapParam) && eapParam.equals("1") && !setEapErp(true)) {
-            Log.e(TAG, ssid + ": failed to set eap erp");
-            return false;
+        if (!TextUtils.isEmpty(eapParam) && eapParam.equals("1")) {
+            if (!setEapErp(true)) {
+                Log.e(TAG, ssid + ": failed to set eap erp");
+                return false;
+            } else if (!setAuthAlg(0)) {
+                /* Reset Auth Alg in order to allow supplicant to use both OPEN and FILS types */
+                Log.e(TAG, ssid + ": failed to reset AuthAlgorithm");
+                return false;
+            }
         }
 
         return true;
