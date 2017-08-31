@@ -4907,7 +4907,7 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
             return null;
         }
 
-        return scanDetailCache.get(BSSID);
+        return scanDetailCache.getScanResult(BSSID);
     }
 
     String getCurrentBSSID() {
@@ -5465,7 +5465,7 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                         ScanDetailCache scanDetailCache =
                                 mWifiConfigManager.getScanDetailCacheForNetwork(config.networkId);
                         if (scanDetailCache != null && mLastBssid != null) {
-                            ScanResult scanResult = scanDetailCache.get(mLastBssid);
+                            ScanResult scanResult = scanDetailCache.getScanResult(mLastBssid);
                             if (scanResult != null) {
                                 mWifiInfo.setFrequency(scanResult.frequency);
                             }
@@ -6018,7 +6018,7 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                             ScanDetailCache scanDetailCache = mWifiConfigManager
                                     .getScanDetailCacheForNetwork(config.networkId);
                             if (scanDetailCache != null) {
-                                ScanResult scanResult = scanDetailCache.get(mLastBssid);
+                                ScanResult scanResult = scanDetailCache.getScanResult(mLastBssid);
                                 if (scanResult != null) {
                                     mWifiInfo.setFrequency(scanResult.frequency);
                                 }
