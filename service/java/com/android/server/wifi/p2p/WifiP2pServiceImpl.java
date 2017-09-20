@@ -202,6 +202,8 @@ public class WifiP2pServiceImpl extends IWifiP2pManager.Stub {
     // Invitation to join an existing p2p group
     private boolean mJoinExistingGroup;
 
+    private boolean mIsInvite = false;
+
     // Track whether we are in p2p discovery. This is used to avoid sending duplicate
     // broadcasts
     private boolean mDiscoveryStarted;
@@ -1455,6 +1457,7 @@ public class WifiP2pServiceImpl extends IWifiP2pManager.Stub {
             @Override
             public void enter() {
                 if (DBG) logd(getName());
+                mIsInvite = false;
                 mSavedPeerConfig.invalidate();
             }
 
@@ -1551,6 +1554,7 @@ public class WifiP2pServiceImpl extends IWifiP2pManager.Stub {
 
                         mAutonomousGroup = false;
                         mJoinExistingGroup = true;
+                        mIsInvite = true;
                         transitionTo(mUserAuthorizingInviteRequestState);
                         break;
                     case WifiP2pMonitor.P2P_PROV_DISC_PBC_REQ_EVENT:
@@ -2809,6 +2813,7 @@ public class WifiP2pServiceImpl extends IWifiP2pManager.Stub {
          * @param config for the peer
          */
         private void p2pConnectWithPinDisplay(WifiP2pConfig config) {
+            boolean join = false;
             if (config == null) {
                 Log.e(TAG, "Illegal argument(s)");
                 return;
@@ -2818,13 +2823,19 @@ public class WifiP2pServiceImpl extends IWifiP2pManager.Stub {
                 Log.e(TAG, "Invalid device");
                 return;
             }
-            String pin = mWifiNative.p2pConnect(config, dev.isGroupOwner());
+            if (mIsInvite) {
+                join = true;
+            } else {
+                join = dev.isGroupOwner();
+            }
+            String pin = mWifiNative.p2pConnect(config, join);
             try {
                 Integer.parseInt(pin);
                 notifyInvitationSent(pin, config.deviceAddress);
             } catch (NumberFormatException ignore) {
                 // do nothing if p2pConnect did not return a pin
             }
+            mIsInvite = false;
         }
 
         /**
