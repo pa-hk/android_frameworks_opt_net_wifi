@@ -991,7 +991,6 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
         mPasspointManager = mWifiInjector.getPasspointManager();
 
         mWifiMonitor = mWifiInjector.getWifiMonitor();
-        mWifiDiagnostics = mWifiInjector.makeWifiDiagnostics(mWifiNative);
 
         mWifiInfo = new WifiInfo();
         mSupplicantStateTracker =
@@ -1252,6 +1251,10 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
         /* Restore power save and suspend optimizations */
         handlePostDhcpSetup();
         mIpManager.stop();
+    }
+
+    public void setWifiDiagnostics(BaseWifiDiagnostics WifiDiagnostics) {
+        mWifiDiagnostics = WifiDiagnostics;
     }
 
     public void setTrafficPoller(WifiTrafficPoller trafficPoller) {
