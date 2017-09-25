@@ -2570,8 +2570,8 @@ public class WifiServiceImpl extends IWifiManager.Stub {
             return "allowed kmgmt";
 
         if (config.allowedKeyManagement.cardinality() > 1) {
-            if (config.allowedKeyManagement.cardinality() != 2) {
-                return "cardinality != 2";
+            if (config.allowedKeyManagement.cardinality() > 4) {
+                return "cardinality > 4";
             }
             if (!config.allowedKeyManagement.get(WifiConfiguration.KeyMgmt.WPA_EAP)) {
                 return "not WPA_EAP";
