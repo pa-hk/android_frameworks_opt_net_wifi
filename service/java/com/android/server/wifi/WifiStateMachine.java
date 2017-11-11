@@ -530,6 +530,8 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
     static final int CMD_STATIC_IP_SUCCESS                              = BASE + 15;
     /* Indicates Static IP failed */
     static final int CMD_STATIC_IP_FAILURE                              = BASE + 16;
+    /* The supplicant stop is completed */
+    static final int CMD_SUPPLICANT_STOPPED                             = BASE + 18;
     /* A delayed message sent to start driver when it fail to come up */
     static final int CMD_DRIVER_START_TIMED_OUT                         = BASE + 19;
 
@@ -874,6 +876,7 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
 
     private State mFilsState = new FilsState();
     private boolean mIsFilsConnection = false;
+    private boolean mIsIpManagerStarted = false;
     private WifiConfiguration mFilsConfig;
 
     /**
@@ -975,7 +978,6 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
         mPasspointManager = mWifiInjector.getPasspointManager();
 
         mWifiMonitor = mWifiInjector.getWifiMonitor();
-        mWifiDiagnostics = mWifiInjector.makeWifiDiagnostics(mWifiNative);
 
         mWifiInfo = new WifiInfo();
         mSupplicantStateTracker =
@@ -1236,6 +1238,11 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
         /* Restore power save and suspend optimizations */
         handlePostDhcpSetup();
         mIpManager.stop();
+        mIsIpManagerStarted = false;
+    }
+
+    public void setWifiDiagnostics(BaseWifiDiagnostics WifiDiagnostics) {
+        mWifiDiagnostics = WifiDiagnostics;
     }
 
     public void setTrafficPoller(WifiTrafficPoller trafficPoller) {
@@ -1896,6 +1903,21 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                 scanList.add(new ScanResult(result.getScanResult()));
             }
             return scanList;
+        }
+    }
+
+    /**
+     * Get scan result for the specified BSSID
+     */
+    public ScanResult getScanResultForBssid(String bssid) {
+        synchronized (mScanResultsLock) {
+            ScanResult scanRes;
+            for (ScanDetail result : mScanResults) {
+                scanRes = result.getScanResult();
+                if (scanRes.BSSID.equals(bssid))
+                    return scanRes;
+            }
+            return null;
         }
     }
 
@@ -3378,6 +3400,10 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
      * using the interface, stopping DHCP & disabling interface
      */
     private void handleNetworkDisconnect() {
+        handleNetworkDisconnect(false);
+    }
+
+    private void handleNetworkDisconnect(boolean connectionInProgress) {
         if (mVerboseLoggingEnabled) {
             log("handleNetworkDisconnect: Stopping DHCP and clearing IP"
                     + " stack:" + Thread.currentThread().getStackTrace()[2].getMethodName()
@@ -3390,7 +3416,7 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
 
         clearTargetBssid("handleNetworkDisconnect");
 
-        if (getCurrentState() != mFilsState)
+        if (getCurrentState() != mFilsState || !connectionInProgress)
             stopIpManager();
 
         /* Reset data structures */
@@ -3433,27 +3459,9 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
     }
 
     void handlePreDhcpSetup() {
-        if (!mBluetoothConnectionActive) {
-            /*
-             * There are problems setting the Wi-Fi driver's power
-             * mode to active when bluetooth coexistence mode is
-             * enabled or sense.
-             * <p>
-             * We set Wi-Fi to active mode when
-             * obtaining an IP address because we've found
-             * compatibility issues with some routers with low power
-             * mode.
-             * <p>
-             * In order for this active power mode to properly be set,
-             * we disable coexistence mode until we're done with
-             * obtaining an IP address.  One exception is if we
-             * are currently connected to a headset, since disabling
-             * coexistence would interrupt that connection.
-             */
-            // Disable the coexistence mode
-            mWifiNative.setBluetoothCoexistenceMode(
+        // Disable the coexistence mode
+        mWifiNative.setBluetoothCoexistenceMode(
                     WifiNative.BLUETOOTH_COEXISTENCE_MODE_DISABLED);
-        }
 
         // Disable power save and suspend optimizations during DHCP
         // Note: The order here is important for now. Brcm driver changes
@@ -4626,7 +4634,30 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                 // Failed to disable supplicant
                 handleSupplicantConnectionLoss(true);
             }
-            transitionTo(mInitialState);
+            // Give a chance to pending messages in the Queue to be handled.
+            sendMessage(CMD_SUPPLICANT_STOPPED);
+        }
+
+        @Override
+        public boolean processMessage(Message message) {
+            logStateAndMessage(message, this);
+
+            switch(message.what) {
+                case CMD_SUPPLICANT_STOPPED:
+                    transitionTo(mInitialState);
+                    break;
+                case CMD_START_SUPPLICANT:
+                case CMD_STOP_SUPPLICANT:
+                case CMD_START_AP:
+                case CMD_STOP_AP:
+                case CMD_SET_OPERATIONAL_MODE:
+                    messageHandlingStatus = MESSAGE_HANDLING_STATUS_DEFERRED;
+                    deferMessage(message);
+                    break;
+                default:
+                    return NOT_HANDLED;
+            }
+            return HANDLED;
         }
     }
 
@@ -5491,8 +5522,13 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                     // idempotent commands are executed twice (stopping Dhcp, enabling the SPS mode
                     // at the chip etc...
                     if (mVerboseLoggingEnabled) log("ConnectModeState: Network connection lost ");
-                    handleNetworkDisconnect();
-                    if (getCurrentState() != mFilsState)
+
+                    ScanResult scanRes = getScanResultForBssid((String)message.obj);
+                    boolean mConnectionInProgress =
+                        (targetWificonfiguration != null) && (scanRes != null) &&
+                        !targetWificonfiguration.SSID.equals("\""+scanRes.SSID+"\"");
+                    handleNetworkDisconnect(mConnectionInProgress);
+                    if (getCurrentState() != mFilsState || !mConnectionInProgress)
                         transitionTo(mDisconnectedState);
                     break;
                 case CMD_QUERY_OSU_ICON:
@@ -5800,6 +5836,7 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
         @Override
         public void exit() {
             mIpManager.stop();
+            mIsIpManagerStarted = false;
 
             // This is handled by receiving a NETWORK_DISCONNECTION_EVENT in ConnectModeState
             // Bug: 15347363
@@ -6092,7 +6129,7 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                 mIpManager.setTcpBufferSizes(mTcpBufferSizes);
             }
             final IpManager.ProvisioningConfiguration prov;
-            if (mIsFilsConnection) {
+            if (mIsFilsConnection && mIsIpManagerStarted) {
                 setPowerSaveForFilsDhcp();
             } else if (!isUsingStaticIp) {
                 prov = IpManager.buildProvisioningConfiguration()
@@ -6100,6 +6137,7 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                             .withApfCapabilities(mWifiNative.getApfCapabilities())
                             .build();
                 mIpManager.startProvisioning(prov);
+                mIsIpManagerStarted = true;
             } else {
                 StaticIpConfiguration staticIpConfig = currentConfig.getStaticIpConfiguration();
                 prov = IpManager.buildProvisioningConfiguration()
@@ -6107,6 +6145,7 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                             .withApfCapabilities(mWifiNative.getApfCapabilities())
                             .build();
                 mIpManager.startProvisioning(prov);
+                mIsIpManagerStarted = true;
             }
             // Get Link layer stats so as we get fresh tx packet counters
             getWifiLinkLayerStats();
@@ -6794,6 +6833,7 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                   prov.mRapidCommit = true;
                   prov.mDiscoverSent = true;
                   mIpManager.startProvisioning(prov);
+               mIsIpManagerStarted = true;
         }
 
         @Override
@@ -7061,15 +7101,8 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
             SoftApModeConfiguration config = (SoftApModeConfiguration) message.obj;
             mMode = config.getTargetMode();
 
-            if (mSapInterfaceName != null &&
-                !mWifiNative.addOrRemoveInterface(mSapInterfaceName, true, mDualSapMode)) {
-                setWifiApState(WIFI_AP_STATE_FAILED,
-                        WifiManager.SAP_START_FAILURE_GENERAL, null, mMode);
-                transitionTo(mInitialState);
-                return;
-            }
-
-            IApInterface apInterface = mWifiNative.setupForSoftApMode(mDualSapMode);
+            // If required, new interface will added by setupForSoftApMode
+            IApInterface apInterface = mWifiNative.setupForSoftApMode(mSapInterfaceName, mDualSapMode);
             if (apInterface == null) {
                 mWifiNative.addOrRemoveInterface(mSapInterfaceName, false, mDualSapMode);
                 setWifiApState(WIFI_AP_STATE_FAILED,

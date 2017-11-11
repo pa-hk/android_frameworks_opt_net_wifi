@@ -37,7 +37,6 @@ import android.net.ConnectivityManager.NetworkCallback;
 import android.app.NotificationChannel;
 import android.content.res.Resources;
 import android.app.PendingIntent;
-import com.android.internal.notification.SystemNotificationChannels;
 import android.net.wifi.WifiDevice;
 import com.android.internal.R;
 import android.os.Message;
@@ -62,6 +61,10 @@ public class WifiSoftApNotificationManager  {
     private HashMap<String, WifiDevice> mL2ConnectedDeviceMap = new HashMap<String, WifiDevice>();
     private HashMap<String, WifiDevice> mConnectedDeviceMap = new HashMap<String, WifiDevice>();
     private static final String dhcpLocation = "/data/misc/dhcp/dnsmasq.leases";
+
+    //Notification channel,
+    private static String HOTSPOT_NOTIFICATION = "HOTSPOT_NOTIFICATION";
+    private String mChannelName;
 
     // Device name polling interval(ms) and max times
     private static final int DNSMASQ_POLLING_INTERVAL = 1000;
@@ -242,6 +245,7 @@ public class WifiSoftApNotificationManager  {
         CharSequence message;
         Resources r = Resources.getSystem();
         CharSequence title = r.getText(com.android.internal.R.string.tethered_notification_title);
+        mChannelName = r.getText(com.android.internal.R.string.notification_channel_hotspot).toString();
         int size = mConnectedDeviceMap.size();
         if (size == 0) {
             message = r.getText(com.android.internal.R.string.tethered_notification_no_device_message);
@@ -253,7 +257,10 @@ public class WifiSoftApNotificationManager  {
                     size);
         }
         if (softApNotificationBuilder == null) {
-            softApNotificationBuilder = new Notification.Builder(mContext,SystemNotificationChannels.ALERTS);
+
+            NotificationChannel channel = new NotificationChannel(HOTSPOT_NOTIFICATION, mChannelName, NotificationManager.IMPORTANCE_MIN);
+            notificationManager.createNotificationChannel(channel);
+            softApNotificationBuilder = new Notification.Builder(mContext,HOTSPOT_NOTIFICATION);
             softApNotificationBuilder.setWhen(0)
                     .setOngoing(true)
                     .setColor(mContext.getColor(
@@ -269,14 +276,14 @@ public class WifiSoftApNotificationManager  {
         softApNotificationBuilder.setContentText(message);
 
         mLastSoftApNotificationId = icon + 10;
-        notificationManager.notify(mLastSoftApNotificationId, softApNotificationBuilder.build());
+        notificationManager.notify(mChannelName, mLastSoftApNotificationId, softApNotificationBuilder.build());
     }
 
     public void clearSoftApClientsNotification() {
         NotificationManager notificationManager =
                 (NotificationManager)mContext.getSystemService(Context.NOTIFICATION_SERVICE);
         if (notificationManager != null && mLastSoftApNotificationId != 0) {
-            notificationManager.cancel(mLastSoftApNotificationId);
+            notificationManager.cancel(mChannelName, mLastSoftApNotificationId);
             mLastSoftApNotificationId = 0;
         }
     }
