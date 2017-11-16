@@ -5420,7 +5420,7 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                                 // to simplify obtainingIpState.
                                 mWifiNative.disconnect();
                                 handleNetworkDisconnect();
-                                transitionTo(mDisconnectedState);
+                                startConnectToNetwork(netId, SUPPLICANT_BSSID_ANY);
                             }
                         }
                     }
