@@ -4795,6 +4795,7 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                     if (message.arg1 == CONNECT_MODE) {
                         mOperationalMode = CONNECT_MODE;
                         setWifiState(WIFI_STATE_ENABLING);
+                        setNetworkDetailedState(DetailedState.DISCONNECTED);
                         transitionTo(mDisconnectedState);
                     } else if (message.arg1 == DISABLED_MODE) {
                         transitionTo(mSupplicantStoppingState);
@@ -6176,6 +6177,15 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
             // from this point on and having the BSSID specified in the network block would
             // cause the roam to fail and the device to disconnect.
             clearTargetBssid("ObtainingIpAddress");
+
+            // Reset power save mode after association.
+            // Kernel does not forward power save request to driver if power
+            // save state of that interface is same as requested state in
+            // cfg80211. This happens when driver’s power save state not
+            // synchronized with cfg80211 power save state.
+            // By resetting power save state resolves issues of cfg80211
+            // ignoring enable power save request sent in ObtainingIpState.
+            mWifiNative.setPowerSave(false);
 
             // Stop IpManager in case we're switching from DHCP to static
             // configuration or vice versa.
