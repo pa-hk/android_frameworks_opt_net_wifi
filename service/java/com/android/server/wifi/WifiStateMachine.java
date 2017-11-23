@@ -484,6 +484,18 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
 
         mDeathRecipient.unlinkToDeath();
         mWifiNative.tearDown();
+        // tearDown only brings down the wireless interface (wlan0), in case of FST
+        // make sure the bonding interface is also brought down
+        if (!mDataInterfaceName.equals(mInterfaceName)) {
+            try {
+                mNwService.setInterfaceDown(mDataInterfaceName);
+                mNwService.clearInterfaceAddresses(mDataInterfaceName);
+            } catch (RemoteException re) {
+                loge("Unable to change interface settings: " + re);
+            } catch (IllegalStateException ie) {
+                loge("Unable to change interface settings: " + ie);
+            }
+        }
     }
 
     public int getOperationalMode() {
@@ -7102,7 +7114,12 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
             }
 
             try {
-                mIfaceName = apInterface.getInterfaceName();
+                String defaultRateUpgradeInterfaceName = "bond0"; // interface used for fst
+                int fstEnabled = SystemProperties.getInt("persist.vendor.fst.softap.en", 0);
+                String rateUpgradeDataInterfaceName = SystemProperties.get("persist.vendor.fst.data.interface",
+                        defaultRateUpgradeInterfaceName);
+                mIfaceName = (fstEnabled == 1) ? rateUpgradeDataInterfaceName : apInterface.getInterfaceName();
+                logd("softap fst " + ((fstEnabled == 1) ? "enabled" : "disabled"));
             } catch (RemoteException e) {
                 // Failed to get the interface name. The name will not be available for
                 // the enabled broadcast, but since we had an error getting the name, we most likely
