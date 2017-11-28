@@ -549,6 +549,8 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
     static final int CMD_STATIC_IP_SUCCESS                              = BASE + 15;
     /* Indicates Static IP failed */
     static final int CMD_STATIC_IP_FAILURE                              = BASE + 16;
+    /* The supplicant stop is completed */
+    static final int CMD_SUPPLICANT_STOPPED                             = BASE + 18;
     /* A delayed message sent to start driver when it fail to come up */
     static final int CMD_DRIVER_START_TIMED_OUT                         = BASE + 19;
 
@@ -4720,7 +4722,30 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                 // Failed to disable supplicant
                 handleSupplicantConnectionLoss(true);
             }
-            transitionTo(mInitialState);
+            // Give a chance to pending messages in the Queue to be handled.
+            sendMessage(CMD_SUPPLICANT_STOPPED);
+        }
+
+        @Override
+        public boolean processMessage(Message message) {
+            logStateAndMessage(message, this);
+
+            switch(message.what) {
+                case CMD_SUPPLICANT_STOPPED:
+                    transitionTo(mInitialState);
+                    break;
+                case CMD_START_SUPPLICANT:
+                case CMD_STOP_SUPPLICANT:
+                case CMD_START_AP:
+                case CMD_STOP_AP:
+                case CMD_SET_OPERATIONAL_MODE:
+                    messageHandlingStatus = MESSAGE_HANDLING_STATUS_DEFERRED;
+                    deferMessage(message);
+                    break;
+                default:
+                    return NOT_HANDLED;
+            }
+            return HANDLED;
         }
     }
 
