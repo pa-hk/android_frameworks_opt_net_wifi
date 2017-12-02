@@ -478,7 +478,6 @@ public class WificondControl {
 
                 if (!wifiSsid.toString().equals(networkDetail.getTrimmedSSID())) {
                     Log.e(TAG, "Inconsistent SSID on BSSID: " + bssid);
-                    continue;
                 }
                 ScanDetail scanDetail = new ScanDetail(networkDetail, wifiSsid, bssid, flags,
                         result.signalMbm / 100, result.frequency, result.tsf, ies, null);
