@@ -1324,6 +1324,7 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
      * @param verbose int logging level to use
      */
     public void enableVerboseLogging(int verbose) {
+        int debug = SystemProperties.getInt("vendor.qcom.wifi.debug", 0);
         if (verbose > 0) {
             mVerboseLoggingEnabled = true;
             setLogRecSize(ActivityManager.isLowRamDeviceStatic()
@@ -1345,6 +1346,10 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
         mSupplicantStateTracker.enableVerboseLogging(verbose);
         if (mStaAndAPConcurrency) {
             mSoftApStateMachine.enableVerboseLogging(verbose);
+        }
+        if (mWifiConnectivityManager != null) {
+            Log.d(TAG, "set debug log for WifiConnectivityManager" + debug);
+            mWifiConnectivityManager.enableVerboseLogging(debug);
         }
     }
 
