@@ -130,6 +130,10 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.Collections;
+import android.net.wifi.WifiDevice;
+import com.android.server.wifi.WifiSoftApNotificationManager;
+
 
 /**
  * WifiService handles remote WiFi operation requests by implementing
@@ -153,6 +157,7 @@ public class WifiServiceImpl extends IWifiManager.Stub {
     // Apps with importance higher than this value is considered as background app.
     private static final int BACKGROUND_IMPORTANCE_CUTOFF =
             RunningAppProcessInfo.IMPORTANCE_FOREGROUND_SERVICE;
+    private boolean mIsFactoryResetOn = false;
 
     final WifiStateMachine mWifiStateMachine;
 
@@ -192,6 +197,7 @@ public class WifiServiceImpl extends IWifiManager.Stub {
     private WifiScanner mWifiScanner;
     private WifiLog mLog;
 
+    private boolean mIsControllerStarted = false;
     /**
      * Asynchronous channel to WifiStateMachine
      */
@@ -577,6 +583,7 @@ public class WifiServiceImpl extends IWifiManager.Stub {
             Log.wtf(TAG, "Failed to initialize WifiStateMachine");
         }
         mWifiController.start();
+        mIsControllerStarted = true;
 
         // If we are already disabled (could be due to airplane mode), avoid changing persist
         // state here
@@ -855,6 +862,10 @@ public class WifiServiceImpl extends IWifiManager.Stub {
             Binder.restoreCallingIdentity(ident);
         }
 
+        if (!mIsControllerStarted) {
+            Slog.e(TAG,"WifiController is not yet started, abort setWifiEnabled");
+            return false;
+        }
 
         if (mPermissionReviewRequired) {
             final int wiFiEnabledState = getWifiEnabledState();
@@ -1997,7 +2008,10 @@ public class WifiServiceImpl extends IWifiManager.Stub {
 
         if (dhcpResults.ipAddress != null &&
                 dhcpResults.ipAddress.getAddress() instanceof Inet4Address) {
-            info.ipAddress = NetworkUtils.inetAddressToInt((Inet4Address) dhcpResults.ipAddress.getAddress());
+            info.ipAddress = NetworkUtils.inetAddressToInt(
+               (Inet4Address) dhcpResults.ipAddress.getAddress());
+            info.netmask = NetworkUtils.prefixLengthToNetmaskInt(
+            dhcpResults.ipAddress.getNetworkPrefixLength());
         }
 
         if (dhcpResults.gateway != null) {
@@ -2172,6 +2186,15 @@ public class WifiServiceImpl extends IWifiManager.Stub {
                 mWifiController.sendMessage(CMD_EMERGENCY_CALL_STATE_CHANGED, inCall ? 1 : 0, 0);
             } else if (action.equals(PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED)) {
                 handleIdleModeChanged();
+            } else if (action.equals(WifiManager.WIFI_STATE_CHANGED_ACTION)) {
+               int state  = intent.getIntExtra(WifiManager.EXTRA_WIFI_STATE,
+                                WifiManager.WIFI_STATE_UNKNOWN);
+               if (state  == WifiManager.WIFI_STATE_ENABLED) {
+                   if (mIsFactoryResetOn) {
+                       resetWifiNetworks();
+                       mIsFactoryResetOn = false;
+                   }
+               }
             }
         }
     };
@@ -2273,6 +2296,7 @@ public class WifiServiceImpl extends IWifiManager.Stub {
         intentFilter.addAction(Intent.ACTION_SCREEN_OFF);
         intentFilter.addAction(Intent.ACTION_BATTERY_CHANGED);
         intentFilter.addAction(WifiManager.NETWORK_STATE_CHANGED_ACTION);
+        intentFilter.addAction(WifiManager.WIFI_STATE_CHANGED_ACTION);
         intentFilter.addAction(BluetoothAdapter.ACTION_CONNECTION_STATE_CHANGED);
         intentFilter.addAction(TelephonyIntents.ACTION_EMERGENCY_CALLBACK_MODE_CHANGED);
         intentFilter.addAction(PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED);
@@ -2578,6 +2602,20 @@ public class WifiServiceImpl extends IWifiManager.Stub {
         return true;
     }
 
+    private void resetWifiNetworks() {
+        // Delete all Wifi SSIDs
+         if (mWifiStateMachineChannel != null) {
+                List<WifiConfiguration> networks = mWifiStateMachine.syncGetConfiguredNetworks(
+                        Binder.getCallingUid(), mWifiStateMachineChannel);
+                if (networks != null) {
+                    for (WifiConfiguration config : networks) {
+                        removeNetwork(config.networkId);
+                    }
+                    saveConfiguration();
+                }
+        }
+    }
+
     @Override
     public void factoryReset() {
         enforceConnectivityInternalPermission();
@@ -2593,21 +2631,15 @@ public class WifiServiceImpl extends IWifiManager.Stub {
         }
 
         if (!mUserManager.hasUserRestriction(UserManager.DISALLOW_CONFIG_WIFI)) {
-            // Enable wifi
-            try {
-                setWifiEnabled(mContext.getOpPackageName(), true);
-            } catch (RemoteException e) {
+            if (getWifiEnabledState() == WifiManager.WIFI_STATE_ENABLED) {
+                resetWifiNetworks();
+            } else {
+                mIsFactoryResetOn = true;
+                // Enable wifi
+                try {
+                    setWifiEnabled(mContext.getOpPackageName(), true);
+                } catch (RemoteException e) {
                 /* ignore - local call */
-            }
-            // Delete all Wifi SSIDs
-            if (mWifiStateMachineChannel != null) {
-                List<WifiConfiguration> networks = mWifiStateMachine.syncGetConfiguredNetworks(
-                        Binder.getCallingUid(), mWifiStateMachineChannel);
-                if (networks != null) {
-                    for (WifiConfiguration config : networks) {
-                        removeNetwork(config.networkId);
-                    }
-                    saveConfiguration();
                 }
             }
         }
@@ -2629,8 +2661,8 @@ public class WifiServiceImpl extends IWifiManager.Stub {
             return "allowed kmgmt";
 
         if (config.allowedKeyManagement.cardinality() > 1) {
-            if (config.allowedKeyManagement.cardinality() != 2) {
-                return "cardinality != 2";
+            if (config.allowedKeyManagement.cardinality() > 4) {
+                return "cardinality > 4";
             }
             if (!config.allowedKeyManagement.get(WifiConfiguration.KeyMgmt.WPA_EAP)) {
                 return "not WPA_EAP";
@@ -2780,6 +2812,13 @@ public class WifiServiceImpl extends IWifiManager.Stub {
                         supplicantData, ipConfigData);
         restoreNetworks(wifiConfigurations);
         Slog.d(TAG, "Restored supplicant backup data");
+    }
+    public List<WifiDevice> getConnectedStations() {
+        if (mContext.getResources().getBoolean(com.android.internal.R.bool.config_softap_extension)) {
+            return WifiSoftApNotificationManager.getInstance(mContext).getConnectedStations();
+        } else {
+            return Collections.emptyList();
+        }
     }
 
 }
