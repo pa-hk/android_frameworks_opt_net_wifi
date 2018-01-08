@@ -912,6 +912,7 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
 
     private State mFilsState = new FilsState();
     private boolean mIsFilsConnection = false;
+    private boolean mIsIpManagerStarted = false;
     private WifiConfiguration mFilsConfig;
 
     /**
@@ -1280,6 +1281,7 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
         /* Restore power save and suspend optimizations */
         handlePostDhcpSetup();
         mIpManager.stop();
+        mIsIpManagerStarted = false;
     }
 
     public void setWifiDiagnostics(BaseWifiDiagnostics WifiDiagnostics) {
@@ -1979,6 +1981,21 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                 scanList.add(new ScanResult(result.getScanResult()));
             }
             return scanList;
+        }
+    }
+
+    /**
+     * Get scan result for the specified BSSID
+     */
+    public ScanResult getScanResultForBssid(String bssid) {
+        synchronized (mScanResultsLock) {
+            ScanResult scanRes;
+            for (ScanDetail result : mScanResults) {
+                scanRes = result.getScanResult();
+                if (scanRes.BSSID.equals(bssid))
+                    return scanRes;
+            }
+            return null;
         }
     }
 
@@ -3472,6 +3489,10 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
      * using the interface, stopping DHCP & disabling interface
      */
     private void handleNetworkDisconnect() {
+        handleNetworkDisconnect(false);
+    }
+
+    private void handleNetworkDisconnect(boolean connectionInProgress) {
         if (mVerboseLoggingEnabled) {
             log("handleNetworkDisconnect: Stopping DHCP and clearing IP"
                     + " stack:" + Thread.currentThread().getStackTrace()[2].getMethodName()
@@ -3484,7 +3505,7 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
 
         clearTargetBssid("handleNetworkDisconnect");
 
-        if (getCurrentState() != mFilsState)
+        if (getCurrentState() != mFilsState || !connectionInProgress)
             stopIpManager();
 
         /* Reset data structures */
@@ -5720,8 +5741,13 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                     // idempotent commands are executed twice (stopping Dhcp, enabling the SPS mode
                     // at the chip etc...
                     if (mVerboseLoggingEnabled) log("ConnectModeState: Network connection lost ");
-                    handleNetworkDisconnect();
-                    if (getCurrentState() != mFilsState)
+
+                    ScanResult scanRes = getScanResultForBssid((String)message.obj);
+                    boolean mConnectionInProgress =
+                        (targetWificonfiguration != null) && (scanRes != null) &&
+                        !targetWificonfiguration.SSID.equals("\""+scanRes.SSID+"\"");
+                    handleNetworkDisconnect(mConnectionInProgress);
+                    if (getCurrentState() != mFilsState || !mConnectionInProgress)
                         transitionTo(mDisconnectedState);
                     break;
                 case CMD_QUERY_OSU_ICON:
@@ -6035,6 +6061,7 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
         @Override
         public void exit() {
             mIpManager.stop();
+            mIsIpManagerStarted = false;
 
             // This is handled by receiving a NETWORK_DISCONNECTION_EVENT in ConnectModeState
             // Bug: 15347363
@@ -6349,7 +6376,7 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                 mIpManager.setTcpBufferSizes(mTcpBufferSizes);
             }
             final IpManager.ProvisioningConfiguration prov;
-            if (mIsFilsConnection) {
+            if (mIsFilsConnection && mIsIpManagerStarted) {
                 setPowerSaveForFilsDhcp();
             } else if (!isUsingStaticIp) {
                 prov = IpManager.buildProvisioningConfiguration()
@@ -6357,6 +6384,7 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                             .withApfCapabilities(mWifiNative.getApfCapabilities())
                             .build();
                 mIpManager.startProvisioning(prov);
+                mIsIpManagerStarted = true;
             } else {
                 StaticIpConfiguration staticIpConfig = currentConfig.getStaticIpConfiguration();
                 prov = IpManager.buildProvisioningConfiguration()
@@ -6364,6 +6392,7 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                             .withApfCapabilities(mWifiNative.getApfCapabilities())
                             .build();
                 mIpManager.startProvisioning(prov);
+                mIsIpManagerStarted = true;
             }
             // Get Link layer stats so as we get fresh tx packet counters
             getWifiLinkLayerStats();
@@ -7075,6 +7104,7 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                   prov.mRapidCommit = true;
                   prov.mDiscoverSent = true;
                   mIpManager.startProvisioning(prov);
+               mIsIpManagerStarted = true;
         }
 
         @Override
