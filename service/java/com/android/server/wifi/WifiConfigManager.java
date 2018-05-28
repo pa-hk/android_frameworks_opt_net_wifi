@@ -1039,6 +1039,8 @@ public class WifiConfigManager {
             }
         }
 
+        internalConfig.shareThisAp = externalConfig.shareThisAp;
+
         // Copy over the |WifiEnterpriseConfig| parameters if set.
         if (externalConfig.enterpriseConfig != null) {
             internalConfig.enterpriseConfig.copyFromExternal(
