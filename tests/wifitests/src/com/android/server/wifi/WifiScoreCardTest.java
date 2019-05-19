@@ -25,6 +25,7 @@ import android.net.MacAddress;
 import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiSsid;
 import android.util.Base64;
+import android.util.Pair;
 
 import androidx.test.filters.SmallTest;
 
@@ -124,6 +125,26 @@ public class WifiScoreCardTest {
     }
 
     /**
+     * Test identifiers.
+     */
+    @Test
+    public void testIdentifiers() throws Exception {
+        mWifiInfo.setSSID(TEST_SSID_1);
+        mWifiInfo.setBSSID(TEST_BSSID_1.toString());
+        Pair<String, String> p1 = mWifiScoreCard.getL2KeyAndGroupHint(mWifiInfo);
+        assertNotNull(p1.first);
+        assertNotNull(p1.second);
+        mWifiInfo.setBSSID(TEST_BSSID_2.toString());
+        Pair<String, String> p2 = mWifiScoreCard.getL2KeyAndGroupHint(mWifiInfo);
+        assertNotEquals(p1.first, p2.first);
+        assertEquals(p1.second, p2.second);
+        mWifiInfo.setBSSID(null);
+        Pair<String, String> p3 = mWifiScoreCard.getL2KeyAndGroupHint(mWifiInfo);
+        assertNull(p3.first);
+        assertNull(p3.second);
+    }
+
+    /**
      * Test rssi poll updates
      */
     @Test
@@ -193,8 +214,12 @@ public class WifiScoreCardTest {
         }
         // Make sure our simulated time adds up
         assertEquals(mMilliSecondsSinceBoot, 99999);
+        // Validation success, rather late!
+        mWifiScoreCard.noteValidationSuccess(mWifiInfo);
         // A long while later, wifi is toggled off
         secondsPass(9900);
+        // Second validation success should not matter.
+        mWifiScoreCard.noteValidationSuccess(mWifiInfo);
         mWifiScoreCard.noteWifiDisabled(mWifiInfo);
 
 
@@ -208,6 +233,8 @@ public class WifiScoreCardTest {
                 .elapsedMs.maxValue, TOL);
         assertEquals(999.0,  perBssid.lookupSignal(Event.FIRST_POLL_AFTER_CONNECTION, 5805)
                 .elapsedMs.minValue, TOL);
+        assertEquals(99999.0, perBssid.lookupSignal(Event.VALIDATION_SUCCESS, 5805)
+                .elapsedMs.sum, TOL);
         assertNull(perBssid.lookupSignal(Event.SIGNAL_POLL, 5805).elapsedMs);
     }
 
@@ -419,20 +446,21 @@ public class WifiScoreCardTest {
 
         secondsPass(33);
 
-        // There should be one changed bssid now
-        assertEquals(1, mWifiScoreCard.doWrites());
-        assertEquals(1, mKeys.size());
+        // There should be one changed bssid now. We may have already done some writes.
+        mWifiScoreCard.doWrites();
+        assertTrue(mKeys.size() > 0);
 
         // The written blob should not contain the BSSID, though the full serialized version does
-        String writtenHex = hexStringFromByteArray(mBlobs.get(0));
+        String writtenHex = hexStringFromByteArray(mBlobs.get(mKeys.size() - 1));
         String fullHex = hexStringFromByteArray(serialized);
         String bssidHex = hexStringFromByteArray(TEST_BSSID_1.toByteArray());
         assertFalse(writtenHex, writtenHex.contains(bssidHex));
         assertTrue(fullHex, fullHex.contains(bssidHex));
 
         // A second write request should not find anything to write
+        final int beforeSize = mKeys.size();
         assertEquals(0, mWifiScoreCard.doWrites());
-        assertEquals(1, mKeys.size());
+        assertEquals(beforeSize, mKeys.size());
     }
 
     /**
@@ -445,13 +473,25 @@ public class WifiScoreCardTest {
     }
 
     /**
-     * Installing a MemoryStore after startup should issue reads
+     * Installing a MemoryStore after startup should issue reads.
      */
     @Test
     public void testReadAfterDelayedMemoryStoreInstallation() throws Exception {
         makeSerializedAccessPointExample();
         mWifiScoreCard.installMemoryStore(mMemoryStore);
         verify(mMemoryStore).read(any(), any());
+    }
+
+    /**
+     * Calling clear should forget the state.
+     */
+    @Test
+    public void testClearReallyDoesClearTheState() throws Exception {
+        byte[] serialized = makeSerializedAccessPointExample();
+        assertNotEquals(0, serialized.length);
+        mWifiScoreCard.clear();
+        byte[] leftovers = mWifiScoreCard.getNetworkListByteArray(false);
+        assertEquals(0, leftovers.length);
     }
 
 }

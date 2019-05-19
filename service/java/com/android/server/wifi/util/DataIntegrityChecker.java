@@ -17,8 +17,10 @@
 package com.android.server.wifi.util;
 
 import android.annotation.NonNull;
+import android.os.SystemProperties;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
+import android.text.TextUtils;
 import android.util.Log;
 
 import java.io.File;
@@ -61,7 +63,13 @@ public class DataIntegrityChecker {
     private static final int GCM_TAG_LENGTH = 128;
     private static final String KEY_STORE = "AndroidKeyStore";
 
-    private File mIntegrityFile;
+    /**
+     * When KEYSTORE_FAILURE_RETURN_VALUE is true, all cryptographic operation failures will not
+     * enforce security and {@link #isOk(byte[])} always return true.
+     */
+    private static final boolean KEYSTORE_FAILURE_RETURN_VALUE = true;
+
+    private final File mIntegrityFile;
 
     /**
      * Construct a new integrity checker to update and check if/when a data file was altered
@@ -73,34 +81,37 @@ public class DataIntegrityChecker {
      *                          path as the file for which integrity is performed on.
      * @throws NullPointerException When integrity file is null or the empty string.
      */
-    public DataIntegrityChecker(@NonNull String integrityFilename) throws NullPointerException {
-        if (integrityFilename == null || integrityFilename.equals("")) {
+    public DataIntegrityChecker(@NonNull String integrityFilename) {
+        if (TextUtils.isEmpty(integrityFilename)) {
             throw new NullPointerException("integrityFilename must not be null or the empty "
                     + "string");
-        } else {
-            mIntegrityFile = new File(integrityFilename + FILE_SUFFIX);
         }
+        mIntegrityFile = new File(integrityFilename + FILE_SUFFIX);
     }
 
     /**
-     * Compute a digest of a byte array, encrypt it, and store the result
+     * Computes a digest of a byte array, encrypt it, and store the result
      *
      * Call this method immediately before storing the byte array
      *
      * @param data The data desired to ensure integrity
      */
     public void update(byte[] data) {
-        if (data == null || mIntegrityFile == null) {
+        if (data == null || data.length < 1) {
+            reportException(new Exception("No data to update"), "No data to update.");
             return;
         }
         byte[] digest = getDigest(data);
-        if (digest == null) {
+        if (digest == null || digest.length < 1) {
             return;
         }
         String alias = mIntegrityFile.getName() + ALIAS_SUFFIX;
         EncryptedData integrityData = encrypt(digest, alias);
         if (integrityData != null) {
             writeIntegrityData(integrityData, mIntegrityFile);
+        } else {
+            reportException(new Exception("integrityData null upon update"),
+                    "integrityData null upon update");
         }
     }
 
@@ -119,29 +130,42 @@ public class DataIntegrityChecker {
      * @return true if the data was not altered since {@link #update(byte[])} was last called
      */
     public boolean isOk(byte[] data) throws DigestException {
-        if (data == null || mIntegrityFile == null) {
-            return false;
+        if (data == null || data.length < 1) {
+            return KEYSTORE_FAILURE_RETURN_VALUE;
         }
         byte[] currentDigest = getDigest(data);
-        if (currentDigest == null) {
-            return false;
+        if (currentDigest == null || currentDigest.length < 1) {
+            return KEYSTORE_FAILURE_RETURN_VALUE;
         }
-        EncryptedData encryptedData = readIntegrityData(mIntegrityFile);
+
+        EncryptedData encryptedData = null;
+
+        try {
+            encryptedData = readIntegrityData(mIntegrityFile);
+        } catch (IOException e) {
+            reportException(e, "readIntegrityData had an IO exception");
+            return KEYSTORE_FAILURE_RETURN_VALUE;
+        } catch (ClassNotFoundException e) {
+            reportException(e, "readIntegrityData could not find the class EncryptedData");
+            return KEYSTORE_FAILURE_RETURN_VALUE;
+        }
+
         if (encryptedData == null) {
+            // File not found is not considered to be an error.
             throw new DigestException("No stored digest is available to compare.");
         }
         byte[] storedDigest = decrypt(encryptedData);
         if (storedDigest == null) {
-            return false;
+            return KEYSTORE_FAILURE_RETURN_VALUE;
         }
         return constantTimeEquals(storedDigest, currentDigest);
     }
 
-    private static byte[] getDigest(byte[] data) {
+    private byte[] getDigest(byte[] data) {
         try {
             return MessageDigest.getInstance(DIGEST_ALGORITHM).digest(data);
         } catch (NoSuchAlgorithmException e) {
-            Log.e(TAG, "getDigest could not find algorithm: " + DIGEST_ALGORITHM);
+            reportException(e, "getDigest could not find algorithm: " + DIGEST_ALGORITHM);
             return null;
         }
     }
@@ -154,22 +178,25 @@ public class DataIntegrityChecker {
             if (secretKeyReference != null) {
                 cipher.init(Cipher.ENCRYPT_MODE, secretKeyReference);
                 encryptedData = new EncryptedData(cipher.doFinal(data), cipher.getIV(), keyAlias);
+            } else {
+                reportException(new Exception("secretKeyReference is null."),
+                        "secretKeyReference is null.");
             }
         } catch (NoSuchAlgorithmException e) {
-            Log.e(TAG, "encrypt could not find the algorithm: " + CIPHER_ALGORITHM);
+            reportException(e, "encrypt could not find the algorithm: " + CIPHER_ALGORITHM);
         } catch (NoSuchPaddingException e) {
-            Log.e(TAG, "encrypt had a padding exception");
+            reportException(e, "encrypt had a padding exception");
         } catch (InvalidKeyException e) {
-            Log.e(TAG, "encrypt received an invalid key");
+            reportException(e, "encrypt received an invalid key");
         } catch (BadPaddingException e) {
-            Log.e(TAG, "encrypt had a padding problem");
+            reportException(e, "encrypt had a padding problem");
         } catch (IllegalBlockSizeException e) {
-            Log.e(TAG, "encrypt had an illegal block size");
+            reportException(e, "encrypt had an illegal block size");
         }
         return encryptedData;
     }
 
-    private static byte[] decrypt(EncryptedData encryptedData) {
+    private byte[] decrypt(EncryptedData encryptedData) {
         byte[] decryptedData = null;
         try {
             Cipher cipher = Cipher.getInstance(CIPHER_ALGORITHM);
@@ -180,22 +207,22 @@ public class DataIntegrityChecker {
                 decryptedData = cipher.doFinal(encryptedData.getEncryptedData());
             }
         } catch (NoSuchAlgorithmException e) {
-            Log.e(TAG, "decrypt could not find cipher algorithm " + CIPHER_ALGORITHM);
+            reportException(e, "decrypt could not find cipher algorithm " + CIPHER_ALGORITHM);
         } catch (NoSuchPaddingException e) {
-            Log.e(TAG, "decrypt could not find padding algorithm");
+            reportException(e, "decrypt could not find padding algorithm");
         } catch (IllegalBlockSizeException e) {
-            Log.e(TAG, "decrypt had a illegal block size");
+            reportException(e, "decrypt had a illegal block size");
         } catch (BadPaddingException e) {
-            Log.e(TAG, "decrypt had bad padding");
+            reportException(e, "decrypt had bad padding");
         } catch (InvalidKeyException e) {
-            Log.e(TAG, "decrypt had an invalid key");
+            reportException(e, "decrypt had an invalid key");
         } catch (InvalidAlgorithmParameterException e) {
-            Log.e(TAG, "decrypt had an invalid algorithm parameter");
+            reportException(e, "decrypt had an invalid algorithm parameter");
         }
         return decryptedData;
     }
 
-    private static SecretKey getOrCreateSecretKey(String keyAlias) {
+    private SecretKey getOrCreateSecretKey(String keyAlias) {
         SecretKey secretKey = null;
         try {
             KeyStore keyStore = KeyStore.getInstance(KEY_STORE);
@@ -205,6 +232,10 @@ public class DataIntegrityChecker {
                         .getEntry(keyAlias, null);
                 if (secretKeyEntry != null) {
                     secretKey = secretKeyEntry.getSecretKey();
+                } else {
+                    reportException(new Exception("keystore contains the alias and the secret key "
+                            + "entry was null"),
+                            "keystore contains the alias and the secret key entry was null");
                 }
             } else { // The key does not exist in key store. Create the key and store it.
                 KeyGenerator keyGenerator = KeyGenerator
@@ -220,50 +251,45 @@ public class DataIntegrityChecker {
                 secretKey = keyGenerator.generateKey();
             }
         } catch (CertificateException e) {
-            Log.e(TAG, "getOrCreateSecretKey had a certificate exception.");
+            reportException(e, "getOrCreateSecretKey had a certificate exception.");
         } catch (InvalidAlgorithmParameterException e) {
-            Log.e(TAG, "getOrCreateSecretKey had an invalid algorithm parameter");
+            reportException(e, "getOrCreateSecretKey had an invalid algorithm parameter");
         } catch (IOException e) {
-            Log.e(TAG, "getOrCreateSecretKey had an IO exception.");
+            reportException(e, "getOrCreateSecretKey had an IO exception.");
         } catch (KeyStoreException e) {
-            Log.e(TAG, "getOrCreateSecretKey cannot find the keystore: " + KEY_STORE);
+            reportException(e, "getOrCreateSecretKey cannot find the keystore: " + KEY_STORE);
         } catch (NoSuchAlgorithmException e) {
-            Log.e(TAG, "getOrCreateSecretKey cannot find algorithm");
+            reportException(e, "getOrCreateSecretKey cannot find algorithm");
         } catch (NoSuchProviderException e) {
-            Log.e(TAG, "getOrCreateSecretKey cannot find crypto provider");
+            reportException(e, "getOrCreateSecretKey cannot find crypto provider");
         } catch (UnrecoverableEntryException e) {
-            Log.e(TAG, "getOrCreateSecretKey had an unrecoverable entry exception.");
+            reportException(e, "getOrCreateSecretKey had an unrecoverable entry exception.");
         }
         return secretKey;
     }
 
-    private static void writeIntegrityData(EncryptedData encryptedData, File file) {
-        try {
-            FileOutputStream fos = new FileOutputStream(file);
-            ObjectOutputStream oos = new ObjectOutputStream(fos);
+    private void writeIntegrityData(EncryptedData encryptedData, File file) {
+        try (FileOutputStream fos = new FileOutputStream(file);
+             ObjectOutputStream oos = new ObjectOutputStream(fos)) {
             oos.writeObject(encryptedData);
-            oos.close();
         } catch (FileNotFoundException e) {
-            Log.e(TAG, "writeIntegrityData could not find the integrity file");
+            reportException(e, "writeIntegrityData could not find the integrity file");
         } catch (IOException e) {
-            Log.e(TAG, "writeIntegrityData had an IO exception");
+            reportException(e, "writeIntegrityData had an IO exception");
         }
     }
 
-    private static EncryptedData readIntegrityData(File file) {
-        EncryptedData encryptedData = null;
-        try {
-            FileInputStream fis = new FileInputStream(file);
-            ObjectInputStream ois = new ObjectInputStream(fis);
-            encryptedData = (EncryptedData) ois.readObject();
+    private EncryptedData readIntegrityData(File file) throws IOException, ClassNotFoundException  {
+        try (FileInputStream fis = new FileInputStream(file);
+             ObjectInputStream ois = new ObjectInputStream(fis)) {
+            return (EncryptedData) ois.readObject();
         } catch (FileNotFoundException e) {
-            Log.e(TAG, "readIntegrityData could not find integrity file");
-        } catch (IOException e) {
-            Log.e(TAG, "readIntegrityData had an IO exception");
-        } catch (ClassNotFoundException e) {
-            Log.e(TAG, "readIntegrityData could not find the class EncryptedData");
+            // File not found, this is not considered to be a real error. The file will be created
+            // by the system next time the data file is written. Note that it is not possible for
+            // non system user to delete or modify the file.
+            Log.w(TAG, "readIntegrityData could not find integrity file");
         }
-        return encryptedData;
+        return null;
     }
 
     private boolean constantTimeEquals(byte[] a, byte[] b) {
@@ -280,5 +306,15 @@ public class DataIntegrityChecker {
             differenceAccumulator |= a[i] ^ b[i];
         }
         return (differenceAccumulator == 0);
+    }
+
+    /* TODO(b/128526030): Remove this error reporting code upon resolving the bug. */
+    private static final boolean REQUEST_BUG_REPORT = false;
+    private void reportException(Exception exception, String error) {
+        Log.wtf(TAG, "An irrecoverable key store error was encountered: " + error);
+        if (REQUEST_BUG_REPORT) {
+            SystemProperties.set("dumpstate.options", "bugreportwifi");
+            SystemProperties.set("ctl.start", "bugreport");
+        }
     }
 }

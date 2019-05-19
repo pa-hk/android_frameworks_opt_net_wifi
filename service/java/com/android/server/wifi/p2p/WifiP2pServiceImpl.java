@@ -546,7 +546,6 @@ public class WifiP2pServiceImpl extends IWifiP2pManager.Stub {
 
                 final ProvisioningConfiguration config =
                         new ProvisioningConfiguration.Builder()
-                                .withoutIPv6()
                                 .withoutIpReachabilityMonitor()
                                 .withPreDhcpAction(30 * 1000)
                                 .withProvisioningTimeoutMs(36 * 1000)
@@ -779,8 +778,6 @@ public class WifiP2pServiceImpl extends IWifiP2pManager.Stub {
         private final WifiP2pInfo mWifiP2pInfo = new WifiP2pInfo();
         private WifiP2pGroup mGroup;
         private boolean mIsBTCoexDisabled = false;
-        // Is the P2P interface available for use.
-        private boolean mIsInterfaceAvailable = false;
         // Is the HAL (HIDL) interface available for use.
         private boolean mIsHalInterfaceAvailable = false;
         // Is wifi on or off.
@@ -1411,12 +1408,12 @@ public class WifiP2pServiceImpl extends IWifiP2pManager.Stub {
             }
 
             private void setupInterfaceFeatures(String interfaceName) {
-                long featureSets = mWifiNative.getSupportedFeatureSet(interfaceName);
-                Log.i(TAG, "P2p feature set 0x" + Long.toHexString(featureSets));
-
-                if ((featureSets & WifiManager.WIFI_FEATURE_P2P_RAND_MAC) != 0) {
+                if (mContext.getResources().getBoolean(
+                        R.bool.config_wifi_p2p_mac_randomization_supported)) {
                     Log.i(TAG, "Supported feature: P2P MAC randomization");
                     mWifiNative.setMacRandomization(true);
+                } else {
+                    mWifiNative.setMacRandomization(false);
                 }
             }
 
@@ -1432,7 +1429,7 @@ public class WifiP2pServiceImpl extends IWifiP2pManager.Stub {
                             break;
                         }
                         mInterfaceName = mWifiNative.setupInterface((String ifaceName) -> {
-                            mIsInterfaceAvailable = false;
+                            mIsHalInterfaceAvailable = false;
                             sendMessage(DISABLE_P2P);
                             checkAndSendP2pStateChangedBroadcast();
                         }, getHandler());

@@ -19,6 +19,7 @@ package com.android.server.wifi.hotspot2;
 import static com.android.server.wifi.hotspot2.Utils.isCarrierEapMethod;
 
 import android.annotation.NonNull;
+import android.net.wifi.ScanResult;
 import android.net.wifi.WifiConfiguration;
 import android.net.wifi.hotspot2.PasspointConfiguration;
 import android.os.Process;
@@ -31,11 +32,14 @@ import com.android.server.wifi.CarrierNetworkConfig;
 import com.android.server.wifi.NetworkUpdateResult;
 import com.android.server.wifi.ScanDetail;
 import com.android.server.wifi.WifiConfigManager;
+import com.android.server.wifi.WifiInjector;
 import com.android.server.wifi.WifiNetworkSelector;
 import com.android.server.wifi.util.ScanResultUtil;
+import com.android.server.wifi.util.TelephonyUtil;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Collectors;
 
 /**
  * This class is the WifiNetworkSelector.NetworkEvaluator implementation for
@@ -48,7 +52,8 @@ public class PasspointNetworkEvaluator implements WifiNetworkSelector.NetworkEva
     private final WifiConfigManager mWifiConfigManager;
     private final LocalLog mLocalLog;
     private final CarrierNetworkConfig mCarrierNetworkConfig;
-    private final TelephonyManager mTelephonyManager;
+    private final WifiInjector mWifiInjector;
+    private TelephonyManager mTelephonyManager;
     /**
      * Contained information for a Passpoint network candidate.
      */
@@ -66,12 +71,24 @@ public class PasspointNetworkEvaluator implements WifiNetworkSelector.NetworkEva
 
     public PasspointNetworkEvaluator(PasspointManager passpointManager,
             WifiConfigManager wifiConfigManager, LocalLog localLog,
-            CarrierNetworkConfig carrierNetworkConfig, TelephonyManager telephonyManager) {
+            CarrierNetworkConfig carrierNetworkConfig, WifiInjector wifiInjector) {
         mPasspointManager = passpointManager;
         mWifiConfigManager = wifiConfigManager;
         mLocalLog = localLog;
         mCarrierNetworkConfig = carrierNetworkConfig;
-        mTelephonyManager = telephonyManager;
+        mWifiInjector = wifiInjector;
+    }
+
+    private TelephonyManager getTelephonyManager() {
+        if (mTelephonyManager == null) {
+            mTelephonyManager = mWifiInjector.makeTelephonyManager();
+        }
+        return mTelephonyManager;
+    }
+
+    @Override
+    public @EvaluatorId int getId() {
+        return EVALUATOR_ID_PASSPOINT;
     }
 
     @Override
@@ -89,15 +106,29 @@ public class PasspointNetworkEvaluator implements WifiNetworkSelector.NetworkEva
                     @NonNull OnConnectableListener onConnectableListener) {
         // Sweep the ANQP cache to remove any expired ANQP entries.
         mPasspointManager.sweepCache();
+        List<ScanDetail> filteredScanDetails = scanDetails.stream()
+                .filter(s -> s.getNetworkDetail().isInterworking())
+                .filter(s -> {
+                    if (!mWifiConfigManager.wasEphemeralNetworkDeleted(
+                            ScanResultUtil.createQuotedSSID(s.getScanResult().SSID))) {
+                        return true;
+                    } else {
+                        // If the user previously disconnects this network, don't select it.
+                        mLocalLog.log("Ignoring disabled the SSID of Passpoint AP: "
+                                + WifiNetworkSelector.toScanId(s.getScanResult()));
+                        return false;
+                    }
+                }).collect(Collectors.toList());
 
         // Creates an ephemeral Passpoint profile if it finds a matching Passpoint AP for MCC/MNC
-        // of the current carrier on the device.
-        if (mWifiConfigManager.isSimPresent()
+        // of the current MNO carrier on the device.
+        if ((getTelephonyManager() != null)
+                && (TelephonyUtil.getCarrierType(mTelephonyManager)
+                == TelephonyUtil.CARRIER_MNO_TYPE)
                 && mCarrierNetworkConfig.isCarrierEncryptionInfoAvailable()
-                && !mPasspointManager.hasCarrierProvider(
-                mTelephonyManager.getNetworkOperator())) {
+                && !mPasspointManager.hasCarrierProvider(mTelephonyManager.getSimOperator())) {
             int eapMethod = mPasspointManager.findEapMethodFromNAIRealmMatchedWithCarrier(
-                    scanDetails);
+                    filteredScanDetails);
             if (isCarrierEapMethod(eapMethod)) {
                 PasspointConfiguration carrierConfig =
                         mPasspointManager.createEphemeralPasspointConfigForCarrier(
@@ -110,15 +141,12 @@ public class PasspointNetworkEvaluator implements WifiNetworkSelector.NetworkEva
 
         // Go through each ScanDetail and find the best provider for each ScanDetail.
         List<PasspointNetworkCandidate> candidateList = new ArrayList<>();
-        for (ScanDetail scanDetail : scanDetails) {
-            // Skip non-Passpoint APs.
-            if (!scanDetail.getNetworkDetail().isInterworking()) {
-                continue;
-            }
+        for (ScanDetail scanDetail : filteredScanDetails) {
+            ScanResult scanResult = scanDetail.getScanResult();
 
             // Find the best provider for this ScanDetail.
             Pair<PasspointProvider, PasspointMatch> bestProvider =
-                    mPasspointManager.matchProvider(scanDetail.getScanResult());
+                    mPasspointManager.matchProvider(scanResult);
             if (bestProvider != null) {
                 if (bestProvider.first.isSimCredential() && !mWifiConfigManager.isSimPresent()) {
                     // Skip providers backed by SIM credential when SIM is not present.
@@ -170,6 +198,15 @@ public class PasspointNetworkEvaluator implements WifiNetworkSelector.NetworkEva
      */
     private WifiConfiguration createWifiConfigForProvider(PasspointNetworkCandidate networkInfo) {
         WifiConfiguration config = networkInfo.mProvider.getWifiConfig();
+        if (TelephonyUtil.isSimEapMethod(config.enterpriseConfig.getEapMethod())
+                && mCarrierNetworkConfig.isCarrierEncryptionInfoAvailable()
+                && mCarrierNetworkConfig.isSupportAnonymousIdentity()) {
+            // In case of a carrier supporting encrypted IMSI and anonymous identity, we need
+            // to send anonymous@realm as EAP-IDENTITY response.
+            config.enterpriseConfig.setAnonymousIdentity(
+                    TelephonyUtil.getAnonymousIdentityWith3GppRealm(
+                            getTelephonyManager()));
+        }
         config.SSID = ScanResultUtil.createQuotedSSID(networkInfo.mScanDetail.getSSID());
         if (networkInfo.mMatchStatus == PasspointMatch.HomeProvider) {
             config.isHomeProviderNetwork = true;

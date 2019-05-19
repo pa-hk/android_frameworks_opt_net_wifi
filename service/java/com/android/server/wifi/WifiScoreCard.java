@@ -133,6 +133,13 @@ public class WifiScoreCard {
     private boolean mPolled = false;
 
     /**
+     * Records validation success for the current connection.
+     *
+     * We want to gather statistics only on the first success.
+     */
+    private boolean mValidated = false;
+
+    /**
      * A note to ourself that we are attempting a network switch
      */
     private boolean mAttemptingSwitch = false;
@@ -145,6 +152,18 @@ public class WifiScoreCard {
         mClock = clock;
         mL2KeySeed = l2KeySeed;
         mDummyPerBssid = new PerBssid("", MacAddress.fromString(DEFAULT_MAC_ADDRESS));
+    }
+
+    /**
+     * Gets the L2Key and GroupHint associated with the connection.
+     */
+    public @NonNull Pair<String, String> getL2KeyAndGroupHint(ExtendedWifiInfo wifiInfo) {
+        PerBssid perBssid = lookupBssid(wifiInfo.getSSID(), wifiInfo.getBSSID());
+        if (perBssid == mDummyPerBssid) {
+            return new Pair<>(null, null);
+        }
+        final long groupIdHash = computeHashLong(perBssid.ssid, mDummyPerBssid.bssid);
+        return new Pair<>(perBssid.l2Key, groupHintFromLong(groupIdHash));
     }
 
     /**
@@ -170,6 +189,7 @@ public class WifiScoreCard {
         }
         mTsRoam = TS_NONE;
         mPolled = false;
+        mValidated = false;
     }
 
     /**
@@ -204,6 +224,7 @@ public class WifiScoreCard {
             if (duration >= SUCCESS_MILLIS_SINCE_ROAM) {
                 update(Event.ROAM_SUCCESS, wifiInfo);
                 mTsRoam = TS_NONE;
+                doWrites();
             }
         }
     }
@@ -218,6 +239,18 @@ public class WifiScoreCard {
     public void noteIpConfiguration(ExtendedWifiInfo wifiInfo) {
         update(Event.IP_CONFIGURATION_SUCCESS, wifiInfo);
         mAttemptingSwitch = false;
+        doWrites();
+    }
+
+    /**
+     * Updates the score card after network validation success.
+     *
+     * @param wifiInfo object holding relevant values
+     */
+    public void noteValidationSuccess(ExtendedWifiInfo wifiInfo) {
+        if (mValidated) return; // Only once per connection
+        update(Event.VALIDATION_SUCCESS, wifiInfo);
+        mValidated = true;
     }
 
     /**
@@ -280,6 +313,7 @@ public class WifiScoreCard {
             update(Event.ROAM_FAILURE, wifiInfo);
         }
         resetConnectionStateInternal(false);
+        doWrites();
     }
 
     /**
@@ -326,6 +360,7 @@ public class WifiScoreCard {
     public void noteWifiDisabled(ExtendedWifiInfo wifiInfo) {
         update(Event.WIFI_DISABLED, wifiInfo);
         resetConnectionStateInternal(false);
+        doWrites();
     }
 
     final class PerBssid {
@@ -517,7 +552,7 @@ public class WifiScoreCard {
     }
 
     /**
-     * Issues write requests for all changed entries
+     * Issues write requests for all changed entries.
      *
      * This should be called from time to time to save the state to persistent
      * storage. Since we always check internal state first, this does not need
@@ -528,6 +563,7 @@ public class WifiScoreCard {
     public int doWrites() {
         if (mMemoryStore == null) return 0;
         int count = 0;
+        int bytes = 0;
         for (PerBssid perBssid : mApForBssid.values()) {
             if (perBssid.changed) {
                 perBssid.finishPendingRead();
@@ -535,7 +571,11 @@ public class WifiScoreCard {
                 mMemoryStore.write(perBssid.getL2Key(), serialized);
                 perBssid.changed = false;
                 count++;
+                bytes += serialized.length;
             }
+        }
+        if (DBG && count > 0) {
+            Log.v(TAG, "Write count: " + count + ", bytes: " + bytes);
         }
         return count;
     }
@@ -583,6 +623,10 @@ public class WifiScoreCard {
         return "W" + Long.toHexString(hash);
     }
 
+    private static String groupHintFromLong(long hash) {
+        return "G" + Long.toHexString(hash);
+    }
+
     @VisibleForTesting
     PerBssid fetchByBssid(MacAddress mac) {
         return mApForBssid.get(mac);
@@ -608,6 +652,7 @@ public class WifiScoreCard {
             switch (event) {
                 case FIRST_POLL_AFTER_CONNECTION:
                 case IP_CONFIGURATION_SUCCESS:
+                case VALIDATION_SUCCESS:
                 case CONNECTION_FAILURE:
                 case WIFI_DISABLED:
                 case ROAM_FAILURE:
@@ -783,6 +828,23 @@ public class WifiScoreCard {
     public String getNetworkListBase64(boolean obfuscate) {
         byte[] raw = getNetworkListByteArray(obfuscate);
         return Base64.encodeToString(raw, Base64.DEFAULT);
+    }
+
+    /**
+     * Clears the internal state.
+     *
+     * This is called in response to a factoryReset call from Settings.
+     * The memory store will be called after we are called, to wipe the stable
+     * storage as well. Since we will have just removed all of our networks,
+     * it is very unlikely that we're connected, or will connect immediately.
+     * Any in-flight reads will land in the objects we are dropping here, and
+     * the memory store should drop the in-flight writes. Ideally we would
+     * avoid issuing reads until we were sure that the memory store had
+     * received the factoryReset.
+     */
+    public void clear() {
+        mApForBssid.clear();
+        resetConnectionStateInternal(false);
     }
 
 }

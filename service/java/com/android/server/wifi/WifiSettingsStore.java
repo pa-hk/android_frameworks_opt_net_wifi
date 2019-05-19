@@ -58,12 +58,7 @@ public class WifiSettingsStore {
     public synchronized boolean isWifiToggleEnabled() {
         if (!mCheckSavedStateAtBoot) {
             mCheckSavedStateAtBoot = true;
-            if (testAndClearWifiSavedState()) {
-                // Retain Wifi On state if Wifi was On before airplane mode toggle.
-                if (mAirplaneModeOn)
-                    setWifiSavedState(WIFI_ENABLED);
-                return true;
-            }
+            if (testAndClearWifiSavedState()) return true;
         }
 
         if (mAirplaneModeOn) {
@@ -122,7 +117,8 @@ public class WifiSettingsStore {
         } else {
             /* On airplane mode disable, restore wifi state if necessary */
             if (testAndClearWifiSavedState() ||
-                    mPersistWifiState == WIFI_ENABLED_AIRPLANE_OVERRIDE) {
+                    mPersistWifiState == WIFI_ENABLED_AIRPLANE_OVERRIDE
+                    || mPersistWifiState == WIFI_DISABLED_AIRPLANE_ON) {
                 persistWifiState(WIFI_ENABLED);
             }
         }
@@ -228,15 +224,5 @@ public class WifiSettingsStore {
         return Settings.Global.getInt(mContext.getContentResolver(),
                 Settings.Global.WIFI_SCAN_ALWAYS_AVAILABLE,
                 0) == 1;
-    }
-
-    /**
-     * Get Location Mode settings for the context
-     * @param context
-     * @return Location Mode setting
-     */
-    public int getLocationModeSetting(Context context) {
-        return Settings.Secure.getInt(context.getContentResolver(),
-              Settings.Secure.LOCATION_MODE, Settings.Secure.LOCATION_MODE_OFF);
     }
 }

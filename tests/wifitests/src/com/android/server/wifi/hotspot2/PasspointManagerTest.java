@@ -192,7 +192,8 @@ public class PasspointManagerTest {
         when(mObjectFactory.makeWfaKeyStore()).thenReturn(mWfaKeyStore);
         when(mWfaKeyStore.get()).thenReturn(mKeyStore);
         when(mObjectFactory.makePasspointProvisioner(any(Context.class), any(WifiNative.class),
-                any(PasspointManager.class))).thenReturn(mPasspointProvisioner);
+                any(PasspointManager.class), any(WifiMetrics.class)))
+                .thenReturn(mPasspointProvisioner);
         mManager = new PasspointManager(mContext, mWifiNative, mWifiKeyStore, mClock,
                 mSimAccessor, mObjectFactory, mWifiConfigManager, mWifiConfigStore, mWifiMetrics);
         ArgumentCaptor<PasspointEventHandler.Callbacks> callbacks =
@@ -1586,7 +1587,7 @@ public class PasspointManagerTest {
         try {
             TelephonyManager telephonyManager = mock(TelephonyManager.class);
             when(TelephonyManager.from(any(Context.class))).thenReturn(telephonyManager);
-            when(telephonyManager.getNetworkOperator()).thenReturn("123456");
+            when(telephonyManager.getSimOperator()).thenReturn("123456");
             PasspointManager passpointManager = new PasspointManager(mContext, mWifiNative,
                     mWifiKeyStore, mClock,
                     mSimAccessor, mObjectFactory, mWifiConfigManager, mWifiConfigStore,
@@ -1611,8 +1612,8 @@ public class PasspointManagerTest {
             TelephonyManager telephonyManager = mock(TelephonyManager.class);
             String mccmnc = "123456";
             when(TelephonyManager.from(any(Context.class))).thenReturn(telephonyManager);
-            when(telephonyManager.getNetworkOperator()).thenReturn(mccmnc);
-            when(telephonyManager.getNetworkOperatorName()).thenReturn("test");
+            when(telephonyManager.getSimOperator()).thenReturn(mccmnc);
+            when(telephonyManager.getSimOperatorName()).thenReturn("test");
 
             PasspointManager passpointManager = new PasspointManager(mContext, mWifiNative,
                     mWifiKeyStore, mClock,
@@ -1693,7 +1694,7 @@ public class PasspointManagerTest {
         try {
             TelephonyManager telephonyManager = mock(TelephonyManager.class);
             when(TelephonyManager.from(any(Context.class))).thenReturn(telephonyManager);
-            when(telephonyManager.getNetworkOperator()).thenReturn(TEST_MCC_MNC);
+            when(telephonyManager.getSimOperator()).thenReturn(TEST_MCC_MNC);
             when(mWifiConfigManager.isSimPresent()).thenReturn(true);
             List<ScanDetail> scanDetails = new ArrayList<>();
             scanDetails.add(generateScanDetail(TEST_SSID, TEST_BSSID_STRING, TEST_HESSID,
@@ -1737,7 +1738,7 @@ public class PasspointManagerTest {
         try {
             TelephonyManager telephonyManager = mock(TelephonyManager.class);
             when(TelephonyManager.from(any(Context.class))).thenReturn(telephonyManager);
-            when(telephonyManager.getNetworkOperator()).thenReturn(TEST_MCC_MNC);
+            when(telephonyManager.getSimOperator()).thenReturn(TEST_MCC_MNC);
             when(mWifiConfigManager.isSimPresent()).thenReturn(true);
             List<ScanDetail> scanDetails = new ArrayList<>();
             scanDetails.add(generateScanDetail(TEST_SSID, TEST_BSSID_STRING, 0, 0, false));

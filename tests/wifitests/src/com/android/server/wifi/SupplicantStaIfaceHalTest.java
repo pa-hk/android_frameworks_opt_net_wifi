@@ -128,6 +128,7 @@ public class SupplicantStaIfaceHalTest {
     private @Mock PropertyService mPropertyService;
     private @Mock SupplicantStaNetworkHal mSupplicantStaNetworkMock;
     private @Mock WifiNative.SupplicantDeathEventHandler mSupplicantHalDeathHandler;
+
     SupplicantStatus mStatusSuccess;
     SupplicantStatus mStatusFailure;
     ISupplicant.IfaceInfo mStaIface0;
@@ -1247,11 +1248,13 @@ public class SupplicantStaIfaceHalTest {
         int reasonCode = 3;
         mISupplicantStaIfaceCallback.onDisconnected(
                 NativeUtil.macAddressToByteArray(BSSID), true, reasonCode);
-        verify(mWifiMonitor, times(0)).broadcastAuthenticationFailureEvent(any(), anyInt(), anyInt());
+        verify(mWifiMonitor, times(0))
+                .broadcastAuthenticationFailureEvent(any(), anyInt(), anyInt());
 
         mISupplicantStaIfaceCallback.onDisconnected(
                 NativeUtil.macAddressToByteArray(BSSID), false, reasonCode);
-        verify(mWifiMonitor, times(0)).broadcastAuthenticationFailureEvent(any(), anyInt(), anyInt());
+        verify(mWifiMonitor, times(0))
+                .broadcastAuthenticationFailureEvent(any(), anyInt(), anyInt());
 
         mISupplicantStaIfaceCallback.onStateChanged(
                 ISupplicantStaIfaceCallback.State.FOURWAY_HANDSHAKE,
@@ -1263,8 +1266,30 @@ public class SupplicantStaIfaceHalTest {
         mISupplicantStaIfaceCallback.onDisconnected(
                 NativeUtil.macAddressToByteArray(BSSID), false, reasonCode);
 
-        verify(mWifiMonitor, times(2)).broadcastAuthenticationFailureEvent(eq(WLAN0_IFACE_NAME),
+        verify(mWifiMonitor, times(2))
+                .broadcastAuthenticationFailureEvent(eq(WLAN0_IFACE_NAME),
+                        eq(WifiManager.ERROR_AUTH_FAILURE_WRONG_PSWD), eq(-1));
+    }
+
+    /**
+     * Tests the handling of incorrect network passwords for WPA3-Personal networks
+     */
+    @Test
+    public void testAuthRejectionPassword() throws Exception {
+        executeAndValidateInitializationSequence();
+        assertNotNull(mISupplicantStaIfaceCallback);
+
+        executeAndValidateConnectSequenceWithKeyMgmt(SUPPLICANT_NETWORK_ID, false,
+                WifiConfiguration.KeyMgmt.SAE);
+
+        int statusCode = ISupplicantStaIfaceCallback.StatusCode.UNSPECIFIED_FAILURE;
+
+        mISupplicantStaIfaceCallback.onAssociationRejected(
+                NativeUtil.macAddressToByteArray(BSSID), statusCode, false);
+        verify(mWifiMonitor).broadcastAuthenticationFailureEvent(eq(WLAN0_IFACE_NAME),
                 eq(WifiManager.ERROR_AUTH_FAILURE_WRONG_PSWD), eq(-1));
+        verify(mWifiMonitor).broadcastAssociationRejectionEvent(
+                eq(WLAN0_IFACE_NAME), eq(statusCode), eq(false), eq(BSSID));
     }
 
     /**
@@ -1515,7 +1540,7 @@ public class SupplicantStaIfaceHalTest {
      * and then the death notification.
      */
     @Test
-    public void testHandleRemoteExceptonAndDeathNotification() throws Exception {
+    public void testHandleRemoteExceptionAndDeathNotification() throws Exception {
         executeAndValidateInitializationSequence();
         assertTrue(mDut.registerDeathHandler(mSupplicantHalDeathHandler));
         assertTrue(mDut.isInitializationComplete());
@@ -1529,7 +1554,7 @@ public class SupplicantStaIfaceHalTest {
         // Check that remote exception cleared all internal state.
         assertFalse(mDut.isInitializationComplete());
 
-        // Ensure that futher calls fail because the remote exception clears any state.
+        // Ensure that further calls fail because the remote exception clears any state.
         assertFalse(mDut.setPowerSave(WLAN0_IFACE_NAME, true));
         //.. No call to ISupplicantStaIface object
 
@@ -1862,6 +1887,20 @@ public class SupplicantStaIfaceHalTest {
         assertEquals(WIFI_FEATURE_DPP, mDut.getAdvancedKeyMgmtCapabilities(WLAN0_IFACE_NAME));
     }
 
+    /**
+     * Test Easy Connect (DPP) calls return failure if hal version is less than 1_2
+     */
+    @Test
+    public void testDppFailsWithOldHal() throws Exception {
+        assertEquals(-1, mDut.addDppPeerUri(WLAN0_IFACE_NAME, "/blah"));
+        assertFalse(mDut.removeDppUri(WLAN0_IFACE_NAME, 0));
+        assertFalse(mDut.stopDppInitiator(WLAN0_IFACE_NAME));
+        assertFalse(mDut.startDppConfiguratorInitiator(WLAN0_IFACE_NAME,
+                1, 2, "Buckle", "My", "Shoe",
+                3, 4));
+        assertFalse(mDut.startDppEnrolleeInitiator(WLAN0_IFACE_NAME, 3, 14));
+    }
+
     private WifiConfiguration createTestWifiConfiguration() {
         WifiConfiguration config = new WifiConfiguration();
         config.networkId = SUPPLICANT_NETWORK_ID;
@@ -1924,7 +1963,7 @@ public class SupplicantStaIfaceHalTest {
                     .when(mISupplicantMock).getInterface(any(ISupplicant.IfaceInfo.class),
                     any(ISupplicant.getInterfaceCallback.class));
         }
-        /** Callback registeration */
+        /** Callback registration */
         if (causeCallbackRegFailure) {
             doAnswer(new MockAnswerUtil.AnswerWithArguments() {
                 public SupplicantStatus answer(ISupplicantStaIfaceCallback cb)
@@ -1957,7 +1996,7 @@ public class SupplicantStaIfaceHalTest {
         mServiceNotificationCaptor.getValue().onRegistration(ISupplicant.kInterfaceName, "", true);
 
         assertTrue(mDut.isInitializationComplete());
-        assertTrue(mDut.setupIface(WLAN0_IFACE_NAME) == shouldSucceed);
+        assertEquals(shouldSucceed, mDut.setupIface(WLAN0_IFACE_NAME));
         mInOrder.verify(mISupplicantMock).linkToDeath(mSupplicantDeathCaptor.capture(),
                 mDeathRecipientCookieCaptor.capture());
         // verify: listInterfaces is called
@@ -2254,9 +2293,25 @@ public class SupplicantStaIfaceHalTest {
      */
     private WifiConfiguration executeAndValidateConnectSequence(
             final int newFrameworkNetworkId, final boolean haveExistingNetwork) throws Exception {
+        return executeAndValidateConnectSequenceWithKeyMgmt(newFrameworkNetworkId,
+                haveExistingNetwork, WifiConfiguration.KeyMgmt.WPA_PSK);
+    }
+
+    /**
+     * Helper function to execute all the actions to perform connection to the network.
+     *
+     * @param newFrameworkNetworkId Framework Network Id of the new network to connect.
+     * @param haveExistingNetwork Removes the existing network.
+     * @param keyMgmt Key management of the new network
+     * @return the WifiConfiguration object of the new network to connect.
+     */
+    private WifiConfiguration executeAndValidateConnectSequenceWithKeyMgmt(
+            final int newFrameworkNetworkId, final boolean haveExistingNetwork,
+            int keyMgmt) throws Exception {
         setupMocksForConnectSequence(haveExistingNetwork);
         WifiConfiguration config = new WifiConfiguration();
         config.networkId = newFrameworkNetworkId;
+        config.allowedKeyManagement.set(keyMgmt);
         assertTrue(mDut.connectToNetwork(WLAN0_IFACE_NAME, config));
         validateConnectSequence(haveExistingNetwork, 1);
         return config;

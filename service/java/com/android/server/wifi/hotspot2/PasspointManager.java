@@ -241,7 +241,8 @@ public class PasspointManager {
                 mKeyStore, mSimAccessor, new UserDataSourceHandler()));
         wifiConfigStore.registerStoreData(objectFactory.makePasspointConfigSharedStoreData(
                 new SharedDataSourceHandler()));
-        mPasspointProvisioner = objectFactory.makePasspointProvisioner(context, wifiNative, this);
+        mPasspointProvisioner = objectFactory.makePasspointProvisioner(context, wifiNative,
+                this, wifiMetrics);
         sPasspointManager = this;
     }
 
@@ -338,7 +339,7 @@ public class PasspointManager {
             return -1;
         }
 
-        String mccMnc = mTelephonyManager.getNetworkOperator();
+        String mccMnc = mTelephonyManager.getSimOperator();
         if (mccMnc == null || mccMnc.length() < IMSIParameter.MCC_MNC_LENGTH - 1) {
             return -1;
         }
@@ -399,7 +400,7 @@ public class PasspointManager {
      * {@code null} otherwise.
      */
     public PasspointConfiguration createEphemeralPasspointConfigForCarrier(int eapMethod) {
-        String mccMnc = mTelephonyManager.getNetworkOperator();
+        String mccMnc = mTelephonyManager.getSimOperator();
         if (mccMnc == null || mccMnc.length() < IMSIParameter.MCC_MNC_LENGTH - 1) {
             Log.e(TAG, "invalid length of mccmnc");
             return null;
@@ -418,7 +419,7 @@ public class PasspointManager {
         PasspointConfiguration config = new PasspointConfiguration();
         HomeSp homeSp = new HomeSp();
         homeSp.setFqdn(domain);
-        homeSp.setFriendlyName(mTelephonyManager.getNetworkOperatorName());
+        homeSp.setFriendlyName(mTelephonyManager.getSimOperatorName());
         config.setHomeSp(homeSp);
 
         Credential credential = new Credential();
@@ -431,7 +432,7 @@ public class PasspointManager {
         credential.setSimCredential(simCredential);
         config.setCredential(credential);
         if (!config.validate()) {
-            Log.e(TAG, "Transient PasspointConfiguration is not a valid format");
+            Log.e(TAG, "Transient PasspointConfiguration is not a valid format: " + config);
             return null;
         }
         return config;

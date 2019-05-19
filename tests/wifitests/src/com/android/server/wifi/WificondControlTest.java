@@ -39,7 +39,6 @@ import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 import android.app.AlarmManager;
-import android.net.MacAddress;
 import android.net.wifi.IApInterface;
 import android.net.wifi.IApInterfaceEventCallback;
 import android.net.wifi.IClientInterface;
@@ -174,8 +173,8 @@ public class WificondControlTest {
     private static final int[] TEST_FREQUENCIES_1 = {};
     private static final int[] TEST_FREQUENCIES_2 = {2500, 5124};
 
-    private static final Set<String> SCAN_HIDDEN_NETWORK_SSID_SET =
-            new HashSet<String>() {{
+    private static final List<String> SCAN_HIDDEN_NETWORK_SSID_LIST =
+            new ArrayList<String>() {{
                 add(TEST_QUOTED_SSID_1);
                 add(TEST_QUOTED_SSID_2);
             }};
@@ -195,7 +194,6 @@ public class WificondControlTest {
                 networkList[1].flags = 0;
                 networkList[1].frequencies = TEST_FREQUENCIES_2;
             }};
-    private static final MacAddress TEST_MAC_ADDRESS = MacAddress.fromString("ee:33:a2:94:10:92");
 
     private static final int TEST_MCS_RATE = 5;
     private static final int TEST_SEND_MGMT_FRAME_ELAPSED_TIME_MS = 100;
@@ -343,7 +341,7 @@ public class WificondControlTest {
 
         assertFalse(mWificondControl.scan(
                 TEST_INTERFACE_NAME, WifiNative.SCAN_TYPE_LOW_LATENCY,
-                SCAN_FREQ_SET, SCAN_HIDDEN_NETWORK_SSID_SET));
+                SCAN_FREQ_SET, SCAN_HIDDEN_NETWORK_SSID_LIST));
         verify(mWifiScannerImpl, never()).scan(any());
     }
 
@@ -729,10 +727,31 @@ public class WificondControlTest {
         when(mWifiScannerImpl.scan(any(SingleScanSettings.class))).thenReturn(true);
         assertTrue(mWificondControl.scan(
                 TEST_INTERFACE_NAME, WifiNative.SCAN_TYPE_LOW_POWER,
-                SCAN_FREQ_SET, SCAN_HIDDEN_NETWORK_SSID_SET));
+                SCAN_FREQ_SET, SCAN_HIDDEN_NETWORK_SSID_LIST));
         verify(mWifiScannerImpl).scan(argThat(new ScanMatcher(
                 IWifiScannerImpl.SCAN_TYPE_LOW_POWER,
-                SCAN_FREQ_SET, SCAN_HIDDEN_NETWORK_SSID_SET)));
+                SCAN_FREQ_SET, SCAN_HIDDEN_NETWORK_SSID_LIST)));
+    }
+
+    /**
+     * Verifies that Scan() removes duplicates hiddenSsids passed in from input.
+     */
+    @Test
+    public void testScanWithDuplicateHiddenSsids() throws Exception {
+        when(mWifiScannerImpl.scan(any(SingleScanSettings.class))).thenReturn(true);
+        // Create a list of hiddenSsid that has a duplicate element
+        List<String> hiddenSsidWithDup = new ArrayList<>(SCAN_HIDDEN_NETWORK_SSID_LIST);
+        hiddenSsidWithDup.add(SCAN_HIDDEN_NETWORK_SSID_LIST.get(0));
+        assertEquals(hiddenSsidWithDup.get(0),
+                hiddenSsidWithDup.get(hiddenSsidWithDup.size() - 1));
+        // Pass the List with duplicate elements into scan()
+        assertTrue(mWificondControl.scan(
+                TEST_INTERFACE_NAME, WifiNative.SCAN_TYPE_LOW_POWER,
+                SCAN_FREQ_SET, hiddenSsidWithDup));
+        // But the argument passed down should have the duplicate removed.
+        verify(mWifiScannerImpl).scan(argThat(new ScanMatcher(
+                IWifiScannerImpl.SCAN_TYPE_LOW_POWER,
+                SCAN_FREQ_SET, SCAN_HIDDEN_NETWORK_SSID_LIST)));
     }
 
     /**
@@ -755,7 +774,7 @@ public class WificondControlTest {
         when(mWifiScannerImpl.scan(any(SingleScanSettings.class))).thenReturn(false);
         assertFalse(mWificondControl.scan(
                 TEST_INTERFACE_NAME, WifiNative.SCAN_TYPE_LOW_LATENCY,
-                SCAN_FREQ_SET, SCAN_HIDDEN_NETWORK_SSID_SET));
+                SCAN_FREQ_SET, SCAN_HIDDEN_NETWORK_SSID_LIST));
         verify(mWifiScannerImpl).scan(any(SingleScanSettings.class));
     }
 
@@ -766,7 +785,7 @@ public class WificondControlTest {
     public void testScanFailureDueToInvalidType() throws Exception {
         assertFalse(mWificondControl.scan(
                 TEST_INTERFACE_NAME, 100,
-                SCAN_FREQ_SET, SCAN_HIDDEN_NETWORK_SSID_SET));
+                SCAN_FREQ_SET, SCAN_HIDDEN_NETWORK_SSID_LIST));
         verify(mWifiScannerImpl, never()).scan(any(SingleScanSettings.class));
     }
 
@@ -953,27 +972,6 @@ public class WificondControlTest {
         // The handles should be cleared after death.
         assertNull(mWificondControl.getChannelsForBand(WifiScanner.WIFI_BAND_5_GHZ));
         verify(mWificond, never()).getAvailable5gNonDFSChannels();
-    }
-
-    /**
-     * Verifies setMacAddress() success.
-     */
-    @Test
-    public void testSetMacAddressSuccess() throws Exception {
-        byte[] macByteArray = TEST_MAC_ADDRESS.toByteArray();
-        assertTrue(mWificondControl.setMacAddress(TEST_INTERFACE_NAME, TEST_MAC_ADDRESS));
-        verify(mClientInterface).setMacAddress(macByteArray);
-    }
-
-    /**
-     * Verifies setMacAddress() can handle failure.
-     */
-    @Test
-    public void testSetMacAddressFailDueToExceptionInInterface() throws Exception {
-        byte[] macByteArray = TEST_MAC_ADDRESS.toByteArray();
-        doThrow(new RemoteException()).when(mClientInterface).setMacAddress(macByteArray);
-        assertFalse(mWificondControl.setMacAddress(TEST_INTERFACE_NAME, TEST_MAC_ADDRESS));
-        verify(mClientInterface).setMacAddress(macByteArray);
     }
 
     /**
@@ -1267,8 +1265,8 @@ public class WificondControlTest {
     private class ScanMatcher implements ArgumentMatcher<SingleScanSettings> {
         int mExpectedScanType;
         private final Set<Integer> mExpectedFreqs;
-        private final Set<String> mExpectedSsids;
-        ScanMatcher(int expectedScanType, Set<Integer> expectedFreqs, Set<String> expectedSsids) {
+        private final List<String> mExpectedSsids;
+        ScanMatcher(int expectedScanType, Set<Integer> expectedFreqs, List<String> expectedSsids) {
             this.mExpectedScanType = expectedScanType;
             this.mExpectedFreqs = expectedFreqs;
             this.mExpectedSsids = expectedSsids;
@@ -1296,7 +1294,7 @@ public class WificondControlTest {
             }
 
             if (mExpectedSsids != null) {
-                Set<String> ssidSet = new HashSet<String>();
+                List<String> ssidSet = new ArrayList<String>();
                 for (HiddenNetwork network : hiddenNetworks) {
                     ssidSet.add(NativeUtil.encodeSsid(
                             NativeUtil.byteArrayToArrayList(network.ssid)));

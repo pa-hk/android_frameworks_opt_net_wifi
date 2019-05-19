@@ -29,11 +29,14 @@ import android.net.wifi.hotspot2.PasspointConfiguration;
 import android.net.wifi.hotspot2.ProvisioningCallback;
 import android.net.wifi.hotspot2.omadm.PpsMoParser;
 import android.os.Handler;
+import android.os.HandlerThread;
 import android.os.Looper;
 import android.os.RemoteException;
 import android.os.UserHandle;
 import android.util.Log;
 
+import com.android.internal.annotations.VisibleForTesting;
+import com.android.server.wifi.WifiMetrics;
 import com.android.server.wifi.WifiNative;
 import com.android.server.wifi.hotspot2.anqp.ANQPElement;
 import com.android.server.wifi.hotspot2.anqp.Constants;
@@ -81,15 +84,18 @@ public class PasspointProvisioner {
     private final WfaKeyStore mWfaKeyStore;
     private final PasspointObjectFactory mObjectFactory;
     private final SystemInfo mSystemInfo;
-    private RedirectListener mRedirectListener;
     private int mCurrentSessionId = 0;
     private int mCallingUid;
     private boolean mVerboseLoggingEnabled = false;
     private WifiManager mWifiManager;
     private PasspointManager mPasspointManager;
+    private Looper mLooper;
+    private final WifiMetrics mWifiMetrics;
 
-    PasspointProvisioner(Context context, WifiNative wifiNative,
-            PasspointObjectFactory objectFactory, PasspointManager passpointManager) {
+    @VisibleForTesting(visibility = VisibleForTesting.Visibility.PACKAGE)
+    public PasspointProvisioner(Context context, WifiNative wifiNative,
+            PasspointObjectFactory objectFactory, PasspointManager passpointManager,
+            WifiMetrics wifiMetrics) {
         mContext = context;
         mOsuNetworkConnection = objectFactory.makeOsuNetworkConnection(context);
         mProvisioningStateMachine = new ProvisioningStateMachine();
@@ -99,6 +105,7 @@ public class PasspointProvisioner {
         mSystemInfo = objectFactory.getSystemInfo(context, wifiNative);
         mObjectFactory = objectFactory;
         mPasspointManager = passpointManager;
+        mWifiMetrics = wifiMetrics;
     }
 
     /**
@@ -107,12 +114,12 @@ public class PasspointProvisioner {
      * @param looper Looper on which the Provisioning state machine will run
      */
     public void init(Looper looper) {
+        mLooper = looper;
         mWifiManager = (WifiManager) mContext.getSystemService(Context.WIFI_SERVICE);
-        mProvisioningStateMachine.start(new Handler(looper));
+        mProvisioningStateMachine.start(new Handler(mLooper));
         mOsuNetworkConnection.init(mProvisioningStateMachine.getHandler());
         // Offload the heavy load job to another thread
         mProvisioningStateMachine.getHandler().post(() -> {
-            mRedirectListener = RedirectListener.createInstance(looper);
             mWfaKeyStore.load();
             mOsuServerConnection.init(mObjectFactory.getSSLContext(TLS_VERSION),
                     mObjectFactory.getTrustManagerImpl(mWfaKeyStore.get()));
@@ -142,10 +149,6 @@ public class PasspointProvisioner {
      */
     public boolean startSubscriptionProvisioning(int callingUid, OsuProvider provider,
             IProvisioningCallback callback) {
-        if (mRedirectListener == null) {
-            Log.e(TAG, "RedirectListener is not possible to run");
-            return false;
-        }
         mCallingUid = callingUid;
 
         Log.v(TAG, "Provisioning started with " + provider.toString());
@@ -181,12 +184,20 @@ public class PasspointProvisioner {
         private String mSessionId;
         private String mWebUrl;
         private PasspointConfiguration mPasspointConfiguration;
+        private RedirectListener mRedirectListener;
+        private HandlerThread mRedirectHandlerThread;
+        private Handler mRedirectStartStopHandler;
 
         /**
          * Initializes and starts the state machine with a handler to handle incoming events
          */
         public void start(Handler handler) {
             mHandler = handler;
+            if (mRedirectHandlerThread == null) {
+                mRedirectHandlerThread = new HandlerThread("RedirectListenerHandler");
+                mRedirectHandlerThread.start();
+                mRedirectStartStopHandler = new Handler(mRedirectHandlerThread.getLooper());
+            }
         }
 
         /**
@@ -216,9 +227,17 @@ public class PasspointProvisioner {
                 }
                 resetStateMachineForFailure(ProvisioningCallback.OSU_FAILURE_PROVISIONING_ABORTED);
             }
+            mProvisioningCallback = callback;
+            mRedirectListener = RedirectListener.createInstance(mLooper);
+
+            if (mRedirectListener == null) {
+                resetStateMachineForFailure(
+                        ProvisioningCallback.OSU_FAILURE_START_REDIRECT_LISTENER);
+                return;
+            }
+
             if (!mOsuServerConnection.canValidateServer()) {
                 Log.w(TAG, "Provisioning is not possible");
-                mProvisioningCallback = callback;
                 resetStateMachineForFailure(
                         ProvisioningCallback.OSU_FAILURE_PROVISIONING_NOT_AVAILABLE);
                 return;
@@ -228,12 +247,10 @@ public class PasspointProvisioner {
                 serverUrl = new URL(provider.getServerUri().toString());
             } catch (MalformedURLException e) {
                 Log.e(TAG, "Invalid Server URL");
-                mProvisioningCallback = callback;
                 resetStateMachineForFailure(ProvisioningCallback.OSU_FAILURE_SERVER_URL_INVALID);
                 return;
             }
             mServerUrl = serverUrl;
-            mProvisioningCallback = callback;
             mOsuProvider = provider;
             if (mOsuProvider.getOsuSsid() == null) {
                 // Find a best matching OsuProvider that has an OSU SSID from current scanResults
@@ -376,7 +393,7 @@ public class PasspointProvisioner {
 
             invokeProvisioningCallback(PROVISIONING_STATUS,
                     ProvisioningCallback.OSU_STATUS_REDIRECT_RESPONSE_RECEIVED);
-            mRedirectListener.stopServer();
+            mRedirectListener.stopServer(mRedirectStartStopHandler);
             secondSoapExchange();
         }
 
@@ -395,7 +412,7 @@ public class PasspointProvisioner {
                 resetStateMachineForFailure(ProvisioningCallback.OSU_FAILURE_PROVISIONING_ABORTED);
                 return;
             }
-            mRedirectListener.stopServer();
+            mRedirectListener.stopServer(mRedirectStartStopHandler);
             resetStateMachineForFailure(
                     ProvisioningCallback.OSU_FAILURE_TIMED_OUT_REDIRECT_LISTENER);
         }
@@ -676,6 +693,7 @@ public class PasspointProvisioner {
         }
 
         private void invokeProvisioningCompleteCallback() {
+            mWifiMetrics.incrementPasspointProvisionSuccess();
             if (mProvisioningCallback == null) {
                 Log.e(TAG, "No provisioning complete callback registered");
                 return;
@@ -754,7 +772,7 @@ public class PasspointProvisioner {
                     }
                     mProvisioningStateMachine.handleTimeOutForRedirectResponse();
                 }
-            })) {
+            }, mRedirectStartStopHandler)) {
                 Log.e(TAG, "fails to start redirect listener");
                 resetStateMachineForFailure(
                         ProvisioningCallback.OSU_FAILURE_START_REDIRECT_LISTENER);
@@ -939,17 +957,21 @@ public class PasspointProvisioner {
         }
 
         private void resetStateMachineForFailure(int failureCode) {
+            mWifiMetrics.incrementPasspointProvisionFailure(failureCode);
             invokeProvisioningCallback(PROVISIONING_FAILURE, failureCode);
             resetStateMachine();
         }
 
         private void resetStateMachine() {
-            mRedirectListener.stopServer();
+            if (mRedirectListener != null) {
+                mRedirectListener.stopServer(mRedirectStartStopHandler);
+            }
             mOsuNetworkConnection.setEventCallback(null);
             mOsuNetworkConnection.disconnectIfNeeded();
             mOsuServerConnection.setEventCallback(null);
             mOsuServerConnection.cleanup();
             mPasspointConfiguration = null;
+            mProvisioningCallback = null;
             changeState(STATE_INIT);
         }
 
