@@ -436,6 +436,9 @@ public class InformationElementUtil {
         public boolean isESS;
         public boolean isPrivacy;
         public boolean isWPS;
+        public boolean isHt;
+        public boolean isVht;
+        public boolean isHe;
 
         public Capabilities() {
         }
@@ -511,7 +514,7 @@ public class InformationElementUtil {
                             rsnKeyManagement.add(ScanResult.KEY_MGMT_OWE);
                             break;
                         case WPA2_AKM_DPP:
-                            rsnKeyManagement.add(ScanResult.KEY_MGMT_EAP_SUITE_B_192);
+                            rsnKeyManagement.add(ScanResult.KEY_MGMT_DPP);
                             break;
                         case WPA2_AKM_SAE:
                             rsnKeyManagement.add(ScanResult.KEY_MGMT_SAE);
@@ -721,6 +724,16 @@ public class InformationElementUtil {
                         keyManagement.add(oweKeyManagement);
                     }
                 }
+
+                if (ie.id == InformationElement.EID_HT_CAPABILITIES) {
+                    isHt = true;
+                } else if (ie.id == InformationElement.EID_VHT_CAPABILITIES) {
+                    isVht = true;
+                } else if (ie.id == InformationElement.EID_EXTENSION &&
+                      ie.bytes != null && ie.bytes.length > 0 &&
+                      ((ie.bytes[0] & 0xFF) == InformationElement.EID_EXT_HE_CAPABILITIES)) {
+                    isHe = true;
+                }
             }
         }
 
@@ -771,6 +784,8 @@ public class InformationElementUtil {
                     return "SAE";
                 case ScanResult.KEY_MGMT_EAP_SUITE_B_192:
                     return "EAP_SUITE_B_192";
+                case ScanResult.KEY_MGMT_DPP:
+                    return "DPP";
                 default:
                     return "?";
             }
@@ -825,6 +840,15 @@ public class InformationElementUtil {
             }
             if (isWPS) {
                 capabilities += "[WPS]";
+            }
+            if (isHt) {
+                capabilities += "[WFA-HT]";
+            }
+            if (isVht) {
+                capabilities += "[WFA-VHT]";
+            }
+            if (isHe) {
+                capabilities += "[WFA-HE]";
             }
 
             return capabilities;
