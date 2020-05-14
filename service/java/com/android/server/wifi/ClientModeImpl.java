@@ -822,6 +822,7 @@ public class ClientModeImpl extends StateMachine {
     private final BackupManagerProxy mBackupManagerProxy;
     private final WrongPasswordNotifier mWrongPasswordNotifier;
     private final ConnectionFailureNotifier mConnectionFailureNotifier;
+    private final NetworkConnectionAttemptResultNotifier mNetworkConnectionAttemptResultNotifier;
     private WifiNetworkSuggestionsManager mWifiNetworkSuggestionsManager;
     private boolean mConnectedMacRandomzationSupported;
     // Maximum duration to continue to log Wifi usability stats after a data stall is triggered.
@@ -852,6 +853,8 @@ public class ClientModeImpl extends StateMachine {
         mWifiTrafficPoller = wifiTrafficPoller;
         mLinkProbeManager = linkProbeManager;
 
+        mNetworkConnectionAttemptResultNotifier =
+                new NetworkConnectionAttemptResultNotifier(mContext, mFacade);
         mNetworkInfo = new NetworkInfo(ConnectivityManager.TYPE_WIFI, 0, NETWORKTYPE, "");
         mBatteryStats = IBatteryStats.Stub.asInterface(mFacade.getService(
                 BatteryStats.SERVICE_NAME));
@@ -3466,10 +3469,18 @@ public class ClientModeImpl extends StateMachine {
         mWifiScoreCard.noteIpConfiguration(mWifiInfo);
     }
 
+    /* Do Broadcast DHCP FAILURE Intent with reason code i.e. REPORT_REASON_DHCP_FAILURE */
+    private void NotifyBroadcastDhcpFailure() {
+        Intent intent = new Intent(WifiManager.WIFI_DHCP_FAILURE);
+        intent.putExtra(WifiManager.EXTRA_WIFI_DHCP_FAILURE_REASON, WifiDiagnostics.REPORT_REASON_DHCP_FAILURE);
+        mContext.sendBroadcastAsUser(intent, UserHandle.ALL);
+    }
+
     private void handleIPv4Failure() {
         // TODO: Move this to provisioning failure, not DHCP failure.
         // DHCPv4 failure is expected on an IPv6-only network.
         mWifiDiagnostics.captureBugReportData(WifiDiagnostics.REPORT_REASON_DHCP_FAILURE);
+        NotifyBroadcastDhcpFailure();
         if (mVerboseLoggingEnabled) {
             int count = -1;
             WifiConfiguration config = getCurrentWifiConfiguration();
@@ -3496,6 +3507,7 @@ public class ClientModeImpl extends StateMachine {
     private void handleIpConfigurationLost() {
         mWifiInfo.setInetAddress(null);
         mWifiInfo.setMeteredHint(false);
+        NotifyBroadcastDhcpFailure();
 
         mWifiConfigManager.updateNetworkSelectionStatus(mLastNetworkId,
                 WifiConfiguration.NetworkSelectionStatus.DISABLED_DHCP_FAILURE);
@@ -4339,8 +4351,12 @@ public class ClientModeImpl extends StateMachine {
                         WifiConfiguration targetedNetwork =
                                 mWifiConfigManager.getConfiguredNetwork(mTargetNetworkId);
                         if (targetedNetwork != null) {
-                            mWrongPasswordNotifier.onWrongPasswordError(
+                            if (mWifiConfigManager.isLinkedEphemeralNetwork(mTargetNetworkId)) {
+                                Log.e(TAG, "Connection attempt on unsaved linked network " + targetedNetwork.getPrintableSsid() + " failed");
+                            } else {
+                                mWrongPasswordNotifier.onWrongPasswordError(
                                     targetedNetwork.SSID);
+                            }
                         }
                     } else if (reasonCode == WifiManager.ERROR_AUTH_FAILURE_EAP_FAILURE) {
                         int errorCode = message.arg2;
@@ -4821,6 +4837,10 @@ public class ClientModeImpl extends StateMachine {
                     // network.
                     config = getCurrentWifiConfiguration();
                     if (config != null) {
+                        if (mWifiConfigManager.saveToStoreIfLinkedEphemeralNetwork(config.networkId)) {
+                            Log.i(TAG, "Successfully connected to unsaved linked network " + config.getPrintableSsid());
+                            mNetworkConnectionAttemptResultNotifier.onConnectionAttemptSuccess(config.SSID);
+                        }
                         mWifiInfo.setBSSID(mLastBssid);
                         mWifiInfo.setNetworkId(mLastNetworkId);
                         mWifiInfo.setMacAddress(mWifiNative.getMacAddress(mInterfaceName));
