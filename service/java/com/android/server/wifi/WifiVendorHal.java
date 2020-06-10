@@ -2233,7 +2233,18 @@ public class WifiVendorHal {
                     for (String ssidStr : config.whitelistSsids) {
                         byte[] ssid = NativeUtil.byteArrayFromArrayList(
                                 NativeUtil.decodeSsid(ssidStr));
-                        roamingConfig.ssidWhitelist.add(ssid);
+                        if (ssid.length > 32) {
+                            throw new IllegalArgumentException("configureRoaming: ssid too long");
+                        }
+
+                        // StaRoamingConfig.ssidWhitelist is a list of byte arrays with fixed array size 32
+                        // Due to this HAL code is doesn't take byte arrays of length less than 32
+                        // Thus convert all ssids to byte arrays of 32 length
+                        byte[] ssid_32 = new byte[32];
+                        for (int i = 0; i < ssid.length; i++) {
+                            ssid_32[i] = ssid[i];
+                        }
+                        roamingConfig.ssidWhitelist.add(ssid_32);
                     }
                 }
 
