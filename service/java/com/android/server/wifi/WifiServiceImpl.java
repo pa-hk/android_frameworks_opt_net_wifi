@@ -30,6 +30,7 @@ import static android.net.wifi.WifiManager.WIFI_AP_STATE_DISABLED;
 import static android.net.wifi.WifiManager.WIFI_AP_STATE_DISABLING;
 import static android.net.wifi.WifiManager.WIFI_AP_STATE_FAILED;
 import static android.net.wifi.WifiManager.WIFI_FEATURE_INFRA_5G;
+import static android.net.wifi.WifiManager.STA_SHARED;
 import static android.net.wifi.WifiManager.STA_PRIMARY;
 import static android.net.wifi.WifiManager.STA_SECONDARY;
 
@@ -443,9 +444,9 @@ public class WifiServiceImpl extends BaseWifiService {
                 wifiId = config.staId;
             } else if (config == null
                     && networkId != WifiConfiguration.INVALID_NETWORK_ID) {
-                    int tmpWifiId = getIdentityForNetwork(networkId);
-                    if (tmpWifiId > STA_PRIMARY)
-                        wifiId = tmpWifiId;
+                config = mWifiInjector.getWifiConfigManager().getConfiguredNetwork(networkId);
+                if (config != null && config.staId > STA_PRIMARY)
+                    wifiId = config.staId;
             }
             if (wifiId == -1)
                 return false;
@@ -592,6 +593,7 @@ public class WifiServiceImpl extends BaseWifiService {
         mRegisteredWifiCallbacks =
                 new ExternalCallbackTracker<IWifiNotificationCallback>(mClientModeImplHandler);
         mWifiInjector.getActiveModeWarden().registerQtiClientModeCallback(new WifiNotificationCallbackImpl());
+        mWifiInjector.getWifiConfigManager().configureNumIfaces(getNumConcurrentStaSupported());
 
         mPowerProfile = mWifiInjector.getPowerProfile();
         mWifiNetworkSuggestionsManager = mWifiInjector.getWifiNetworkSuggestionsManager();
@@ -2135,7 +2137,7 @@ public class WifiServiceImpl extends BaseWifiService {
         }
 
         List<WifiConfiguration> configs = null;
-        if (mClientModeImplChannel != null && (staId == STA_PRIMARY)) {
+        if (mClientModeImplChannel != null && ((staId == STA_PRIMARY) || (staId == STA_SHARED))) {
             configs = mClientModeImpl.syncGetConfiguredNetworks(
                           callingUid, mClientModeImplChannel, targetConfigUid);
         } else if (staId > STA_PRIMARY) {
@@ -2147,6 +2149,18 @@ public class WifiServiceImpl extends BaseWifiService {
             }
             configs = qtiClientModeImpl.syncGetConfiguredNetworks(
                           callingUid, channel, targetConfigUid);
+        }
+
+        if (configs != null && staId == STA_SHARED) {
+            List<WifiConfiguration> tconfigs = new ArrayList<WifiConfiguration>();
+            for (WifiConfiguration config : configs) {
+                // Handle for SHARED-only request.
+                if (config.staId != STA_SHARED)
+                    continue;
+                tconfigs.add(config);
+            }
+                configs.clear();
+                configs.addAll(tconfigs);
         }
 
         if (configs != null) {
@@ -2342,10 +2356,6 @@ public class WifiServiceImpl extends BaseWifiService {
             Slog.e(TAG, "bad network configuration");
             return -1;
         }
-        if (config.staId < STA_PRIMARY || config.staId > getNumConcurrentStaSupported()) {
-            Slog.e(TAG, "Invalid Interface selected");
-            return -1;
-        }
         mWifiMetrics.incrementNumAddOrUpdateNetworkCalls();
 
         // Previously, this API is overloaded for installing Passpoint profiles.  Now
@@ -2453,13 +2463,14 @@ public class WifiServiceImpl extends BaseWifiService {
 
     /**
      * See {@link android.net.wifi.WifiManager#enableNetwork(int, boolean)}
+     * @param staId the integer that identifies the station interface.
      * @param netId the integer that identifies the network configuration
      * to the supplicant
      * @param disableOthers if true, disable all other networks.
      * @return {@code true} if the operation succeeded
      */
     @Override
-    public boolean enableNetwork(int netId, boolean disableOthers, String packageName) {
+    public boolean enableNetwork2(int staId, int netId, boolean disableOthers, String packageName) {
         if (enforceChangePermission(packageName) != MODE_ALLOWED) {
             return false;
         }
@@ -2477,7 +2488,7 @@ public class WifiServiceImpl extends BaseWifiService {
         mWifiMetrics.incrementNumEnableNetworkCalls();
 
         // check if this was intended for non primary interface.
-        int wifiId = getIdentityForNetwork(netId);
+        int wifiId = getIdentityForNetwork(staId, netId);
         if (wifiId > STA_PRIMARY) {
             QtiClientModeImpl qtiClientModeImpl = mActiveModeWarden.getQtiClientModeImpl(wifiId);
             AsyncChannel channel = mActiveModeWarden.getQtiClientImplChannel(wifiId);
@@ -2495,6 +2506,17 @@ public class WifiServiceImpl extends BaseWifiService {
         }
     }
 
+    /**
+     * See {@link android.net.wifi.WifiManager#enableNetwork(int, boolean)}
+     * @param netId the integer that identifies the network configuration
+     * to the supplicant
+     * @param disableOthers if true, disable all other networks.
+     * @return {@code true} if the operation succeeded
+     */
+    @Override
+    public boolean enableNetwork(int netId, boolean disableOthers, String packageName) {
+        return enableNetwork2(STA_PRIMARY, netId, disableOthers, packageName);
+    }
 
     /**
      * See {@link android.net.wifi.WifiManager#disableNetwork(int)}
@@ -4317,19 +4339,17 @@ public class WifiServiceImpl extends BaseWifiService {
         }
     }
 
-    private int getIdentityForNetwork(int netId) {
+    private int getIdentityForNetwork(int staId, int netId) {
         WifiConfiguration config = mWifiInjector.getWifiConfigManager().getConfiguredNetwork(netId);
-        if (config == null) {
-            for(int i = STA_SECONDARY; i <= getNumConcurrentStaSupported();i++) {
-                config = mActiveModeWarden.getQtiClientModeImpl(i).getConfiguredNetwork(netId);
-                if (config != null) {
-                    break;
-                }
-            }
-            if (config == null)
-                return -1;
+        if (config == null)
+            return -1;
+
+        if(config.staId == STA_SHARED) {
+            // For Shared profile use interface id as staId.
+            return staId;
+        } else {
+            return config.staId;
         }
-        return config.staId;
     }
 
     @Override
