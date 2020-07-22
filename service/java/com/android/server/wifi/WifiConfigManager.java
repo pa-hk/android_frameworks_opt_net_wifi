@@ -77,8 +77,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import javax.crypto.Mac;
-
 /**
  * This class provides the APIs to manage configured Wi-Fi networks.
  * It deals with the following:
@@ -279,7 +277,6 @@ public class WifiConfigManager {
     private final WifiInjector mWifiInjector;
     private final MacAddressUtil mMacAddressUtil;
     private boolean mConnectedMacRandomzationSupported;
-    private final Mac mMac;
 
     /**
      * Local log used for debugging any WifiConfigManager issues.
@@ -471,11 +468,6 @@ public class WifiConfigManager {
             Log.e(TAG, "Unable to resolve SystemUI's UID.");
         }
         mMacAddressUtil = mWifiInjector.getMacAddressUtil();
-        mMac = WifiConfigurationUtil.obtainMacRandHashFunction(Process.WIFI_UID);
-        if (mMac == null) {
-            Log.wtf(TAG, "Failed to obtain secret for MAC randomization."
-                    + " All randomized MAC addresses are lost!");
-        }
     }
 
     /**
