@@ -3091,6 +3091,10 @@ public class ClientModeImpl extends StateMachine {
                 mInterfaceName, WifiNative.BLUETOOTH_COEXISTENCE_MODE_SENSE);
     }
 
+    public boolean is6GhzBandSupported() {
+        return mWifiNative.is6GhzBandSupported();
+    }
+
     /**
      * Set power save mode
      *

@@ -82,6 +82,8 @@ public class WifiNative {
     private final Handler mHandler;
     private final Random mRandom;
     private boolean mVerboseLoggingEnabled = false;
+    private boolean mIs6GhzBandSupportedInitialized = false;
+    private boolean mIs6GhzBandSupported = false;
 
     public WifiNative(WifiVendorHal vendorHal,
                       SupplicantStaIfaceHal staIfaceHal, HostapdHal hostapdHal,
@@ -1795,6 +1797,16 @@ public class WifiNative {
     public boolean setSuspendOptimizations(@NonNull String ifaceName, boolean enabled) {
         return mSupplicantStaIfaceHal.setSuspendModeEnabled(ifaceName, enabled);
     }
+
+    /**
+     * Get 6Ghz band supported info from driver
+     *
+     * @return false since 6Ghz band is not supported.
+     */
+
+     public boolean is6GhzBandSupported() {
+             return mIs6GhzBandSupported;
+     }
 
     /**
      * Set country code.
