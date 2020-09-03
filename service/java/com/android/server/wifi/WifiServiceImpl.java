@@ -230,7 +230,6 @@ public class WifiServiceImpl extends BaseWifiService {
     private int mWifiApState = WifiManager.WIFI_AP_STATE_DISABLED;
     private int mSoftApState = WifiManager.WIFI_AP_STATE_DISABLED;
     private int mSoftApNumClients = 0;
-    private int mQCSoftApNumClients = 0;
 
     /**
      * Power profile
@@ -1260,15 +1259,15 @@ public class WifiServiceImpl extends BaseWifiService {
          */
         @Override
         public void onStaConnected(String Macaddr,int numClients) {
-            mQCSoftApNumClients = numClients;
+            mSoftApNumClients = numClients;
 
             Iterator<ISoftApCallback> iterator = mRegisteredSoftApCallbacks.getCallbacks().iterator();
             while (iterator.hasNext()) {
                 ISoftApCallback callback = iterator.next();
                 try {
                     Log.d(TAG, "onStaConnected Macaddr: " + Macaddr +
-                          " with num of active client:" + mQCSoftApNumClients);
-                    callback.onStaConnected(Macaddr, mQCSoftApNumClients);
+                          " with num of active client:" + mSoftApNumClients);
+                    callback.onStaConnected(Macaddr, mSoftApNumClients);
                 } catch (RemoteException e) {
                     Log.e(TAG, "onStaConnected: remote exception -- " + e);
                     iterator.remove();
@@ -1284,15 +1283,15 @@ public class WifiServiceImpl extends BaseWifiService {
          */
         @Override
         public void onStaDisconnected(String Macaddr, int numClients) {
-            mQCSoftApNumClients = numClients;
+            mSoftApNumClients = numClients;
 
             Iterator<ISoftApCallback> iterator = mRegisteredSoftApCallbacks.getCallbacks().iterator();
             while (iterator.hasNext()) {
                 ISoftApCallback callback = iterator.next();
                 try {
                     Log.d(TAG, "onStaDisconnected Macaddr: " + Macaddr +
-                          " with num of active client:" + mQCSoftApNumClients);
-                    callback.onStaDisconnected(Macaddr, mQCSoftApNumClients);
+                          " with num of active client:" + mSoftApNumClients);
+                    callback.onStaDisconnected(Macaddr, mSoftApNumClients);
                 } catch (RemoteException e) {
                     Log.e(TAG, "onStaDisconnected: remote exception -- " + e);
                     iterator.remove();
@@ -1339,7 +1338,7 @@ public class WifiServiceImpl extends BaseWifiService {
             try {
                 callback.onStateChanged(mSoftApState, 0);
                 callback.onNumClientsChanged(mSoftApNumClients);
-                callback.onStaConnected("", mQCSoftApNumClients);
+                callback.onStaConnected("", mSoftApNumClients);
             } catch (RemoteException e) {
                 Log.e(TAG, "registerSoftApCallback: remote exception -- " + e);
             }
