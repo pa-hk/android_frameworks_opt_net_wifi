@@ -193,6 +193,7 @@ public class DeviceConfigFacadeTest extends WifiBaseTest {
                 mDeviceConfigFacade.getTxLinkSpeedLowThresholdMbps());
         assertEquals(DeviceConfigFacade.DEFAULT_RX_LINK_SPEED_LOW_THRESHOLD_MBPS,
                 mDeviceConfigFacade.getRxLinkSpeedLowThresholdMbps());
+        assertEquals(false, mDeviceConfigFacade.isWifiBatterySaverEnabled());
         assertEquals(DeviceConfigFacade.DEFAULT_HEALTH_MONITOR_RSSI_POLL_VALID_TIME_MS,
                 mDeviceConfigFacade.getHealthMonitorRssiPollValidTimeMs());
         assertEquals(DeviceConfigFacade.DEFAULT_HEALTH_MONITOR_SHORT_CONNECTION_DURATION_THR_MS,
@@ -295,6 +296,8 @@ public class DeviceConfigFacadeTest extends WifiBaseTest {
                 anyInt())).thenReturn(9);
         when(DeviceConfig.getInt(anyString(), eq("rx_link_speed_low_threshold_mbps"),
                 anyInt())).thenReturn(10);
+        when(DeviceConfig.getBoolean(anyString(), eq("battery_saver_enabled"), anyBoolean()))
+                .thenReturn(true);
         when(DeviceConfig.getInt(anyString(), eq("health_monitor_short_connection_duration_thr_ms"),
                 anyInt())).thenReturn(30_000);
         when(DeviceConfig.getLong(anyString(), eq("abnormal_disconnection_reason_code_mask"),
@@ -355,6 +358,7 @@ public class DeviceConfigFacadeTest extends WifiBaseTest {
         assertEquals(50000, mDeviceConfigFacade.getOverlappingConnectionDurationThresholdMs());
         assertEquals(9, mDeviceConfigFacade.getTxLinkSpeedLowThresholdMbps());
         assertEquals(10, mDeviceConfigFacade.getRxLinkSpeedLowThresholdMbps());
+        assertEquals(true, mDeviceConfigFacade.isWifiBatterySaverEnabled());
         assertEquals(30_000,
                 mDeviceConfigFacade.getHealthMonitorShortConnectionDurationThrMs());
         assertEquals(0xffff_fff3_0000_ffffL,

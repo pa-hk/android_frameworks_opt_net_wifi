@@ -3105,7 +3105,7 @@ public class SupplicantStaNetworkHal {
     }
 
     /** See ISupplicantStaNetwork.hal for documentation */
-    private boolean disable() {
+    public boolean disable() {
         synchronized (mLock) {
             final String methodStr = "disable";
             if (!checkISupplicantStaNetworkAndLogFailure(methodStr)) return false;

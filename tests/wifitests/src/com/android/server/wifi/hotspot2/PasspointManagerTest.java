@@ -74,7 +74,6 @@ import android.util.Pair;
 
 import androidx.test.filters.SmallTest;
 
-import com.android.server.wifi.ClientModeImpl;
 import com.android.server.wifi.Clock;
 import com.android.server.wifi.FakeKeys;
 import com.android.server.wifi.FrameworkFacade;
@@ -184,7 +183,6 @@ public class PasspointManagerTest extends WifiBaseTest {
     @Mock KeyStore mKeyStore;
     @Mock AppOpsManager mAppOpsManager;
     @Mock WifiInjector mWifiInjector;
-    @Mock ClientModeImpl mClientModeImpl;
     @Mock TelephonyManager mTelephonyManager;
     @Mock SubscriptionManager mSubscriptionManager;
     @Mock WifiNetworkSuggestionsManager mWifiNetworkSuggestionsManager;
@@ -213,7 +211,6 @@ public class PasspointManagerTest extends WifiBaseTest {
                 any(PasspointManager.class), any(WifiMetrics.class)))
                 .thenReturn(mPasspointProvisioner);
         when(mContext.getSystemService(Context.APP_OPS_SERVICE)).thenReturn(mAppOpsManager);
-        when(mWifiInjector.getClientModeImpl()).thenReturn(mClientModeImpl);
         when(mWifiInjector.getWifiNetworkSuggestionsManager())
                 .thenReturn(mWifiNetworkSuggestionsManager);
         mWifiCarrierInfoManager = new WifiCarrierInfoManager(mTelephonyManager,
@@ -1831,7 +1828,6 @@ public class PasspointManagerTest extends WifiBaseTest {
     public void verifyRemovingPasspointProfilesWhenAppIsDisabled() {
         WifiConfiguration currentConfiguration = WifiConfigurationTestUtil.createPasspointNetwork();
         currentConfiguration.FQDN = TEST_FQDN;
-        when(mClientModeImpl.getCurrentWifiConfiguration()).thenReturn(currentConfiguration);
         PasspointProvider passpointProvider =
                 addTestProvider(TEST_FQDN, TEST_FRIENDLY_NAME, TEST_PACKAGE, false, null);
         currentConfiguration.setPasspointUniqueId(passpointProvider.getConfig().getUniqueId());
@@ -1850,7 +1846,8 @@ public class PasspointManagerTest extends WifiBaseTest {
         mLooper.dispatchAll();
 
         verify(mAppOpsManager).stopWatchingMode(mAppOpChangedListenerCaptor.getValue());
-        verify(mClientModeImpl).disconnectCommand();
+        verify(mWifiConfigManager).removePasspointConfiguredNetwork(
+                passpointProvider.getWifiConfig().getKey());
         assertTrue(mManager.getProviderConfigs(TEST_CREATOR_UID, true).isEmpty());
     }
 

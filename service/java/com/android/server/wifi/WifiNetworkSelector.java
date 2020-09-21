@@ -101,13 +101,13 @@ public class WifiNetworkSelector {
     private final WifiScoreCard mWifiScoreCard;
     private final ScoringParams mScoringParams;
     private final WifiNative mWifiNative;
+    private final ThroughputPredictor mThroughputPredictor;
+    private final WifiChannelUtilization mWifiChannelUtilization;
+    private final WifiGlobals mWifiGlobals;
 
     private final Map<String, WifiCandidates.CandidateScorer> mCandidateScorers = new ArrayMap<>();
     private boolean mIsEnhancedOpenSupportedInitialized = false;
     private boolean mIsEnhancedOpenSupported;
-    private ThroughputPredictor mThroughputPredictor;
-    private boolean mIsBluetoothConnected = false;
-    private WifiChannelUtilization mWifiChannelUtilization;
 
     /**
      * Interface for WiFi Network Nominator
@@ -516,71 +516,6 @@ public class WifiNetworkSelector {
     public List<Pair<ScanDetail, WifiConfiguration>> getConnectableScanDetails() {
         return mConnectableNetworks;
     }
-
-    /**
-     * This API is called when user explicitly selects a network. Currently, it is used in following
-     * cases:
-     * (1) User explicitly chooses to connect to a saved network.
-     * (2) User saves a network after adding a new network.
-     * (3) User saves a network after modifying a saved network.
-     * Following actions will be triggered:
-     * 1. If this network is disabled, we need re-enable it again.
-     * 2. This network is favored over all the other networks visible in latest network
-     * selection procedure.
-     *
-     * @param netId ID for the network chosen by the user
-     * @return true -- There is change made to connection choice of any saved network.
-     * false -- There is no change made to connection choice of any saved network.
-     */
-    public boolean setUserConnectChoice(int netId) {
-        localLog("userSelectNetwork: network ID=" + netId);
-        WifiConfiguration selected = mWifiConfigManager.getConfiguredNetwork(netId);
-
-        if (selected == null || selected.SSID == null) {
-            localLog("userSelectNetwork: Invalid configuration with nid=" + netId);
-            return false;
-        }
-
-        // Enable the network if it is disabled.
-        if (!selected.getNetworkSelectionStatus().isNetworkEnabled()) {
-            mWifiConfigManager.updateNetworkSelectionStatus(netId,
-                    WifiConfiguration.NetworkSelectionStatus.DISABLED_NONE);
-        }
-        return setLegacyUserConnectChoice(selected);
-    }
-
-    /**
-     * This maintains the legacy user connect choice state in the config store
-     */
-    private boolean setLegacyUserConnectChoice(@NonNull final WifiConfiguration selected) {
-        boolean change = false;
-        String key = selected.getKey();
-        List<WifiConfiguration> configuredNetworks = mWifiConfigManager.getConfiguredNetworks();
-
-        for (WifiConfiguration network : configuredNetworks) {
-            WifiConfiguration.NetworkSelectionStatus status = network.getNetworkSelectionStatus();
-            if (network.networkId == selected.networkId) {
-                if (status.getConnectChoice() != null) {
-                    localLog("Remove user selection preference of " + status.getConnectChoice()
-                            + " from " + network.SSID + " : " + network.networkId);
-                    mWifiConfigManager.clearNetworkConnectChoice(network.networkId);
-                    change = true;
-                }
-                continue;
-            }
-
-            if (status.getSeenInLastQualifiedNetworkSelection()
-                    && !key.equals(status.getConnectChoice())) {
-                localLog("Add key: " + key + " to "
-                        + toNetworkString(network));
-                mWifiConfigManager.setNetworkConnectChoice(network.networkId, key);
-                change = true;
-            }
-        }
-
-        return change;
-    }
-
 
     /**
      * Iterate thru the list of configured networks (includes all saved network configurations +
@@ -1028,7 +963,7 @@ public class WifiNetworkSelector {
                 scanDetail.getNetworkDetail().getMaxNumberSpatialStreams(),
                 scanDetail.getNetworkDetail().getChannelUtilization(),
                 channelUtilizationLinkLayerStats,
-                mIsBluetoothConnected);
+                mWifiGlobals.isBluetoothConnected());
     }
 
     /**
@@ -1091,32 +1026,28 @@ public class WifiNetworkSelector {
     private static final int ID_PREFIX = 42;
     private static final int MIN_SCORER_EXP_ID = ID_PREFIX * ID_SUFFIX_MOD;
 
-    /**
-     * Set Wifi channel utilization calculated from link layer stats
-     */
-    public void setWifiChannelUtilization(WifiChannelUtilization wifiChannelUtilization) {
-        mWifiChannelUtilization = wifiChannelUtilization;
-    }
-
-    /**
-     * Set whether bluetooth is in the connected state
-     */
-    public void setBluetoothConnected(boolean isBlueToothConnected) {
-        mIsBluetoothConnected = isBlueToothConnected;
-    }
-
-    WifiNetworkSelector(Context context, WifiScoreCard wifiScoreCard, ScoringParams scoringParams,
-            WifiConfigManager configManager, Clock clock, LocalLog localLog,
-            WifiMetrics wifiMetrics, WifiNative wifiNative,
-            ThroughputPredictor throughputPredictor) {
+    WifiNetworkSelector(
+            Context context,
+            WifiScoreCard wifiScoreCard,
+            ScoringParams scoringParams,
+            WifiConfigManager configManager,
+            Clock clock,
+            LocalLog localLog,
+            WifiMetrics wifiMetrics,
+            WifiNative wifiNative,
+            ThroughputPredictor throughputPredictor,
+            WifiChannelUtilization wifiChannelUtilization,
+            WifiGlobals wifiGlobals) {
         mContext = context;
-        mWifiConfigManager = configManager;
-        mClock = clock;
         mWifiScoreCard = wifiScoreCard;
         mScoringParams = scoringParams;
+        mWifiConfigManager = configManager;
+        mClock = clock;
         mLocalLog = localLog;
         mWifiMetrics = wifiMetrics;
         mWifiNative = wifiNative;
         mThroughputPredictor = throughputPredictor;
+        mWifiChannelUtilization = wifiChannelUtilization;
+        mWifiGlobals = wifiGlobals;
     }
 }

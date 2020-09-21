@@ -113,8 +113,9 @@ public class WifiNative {
     /**
      * Enable verbose logging for all sub modules.
      */
-    public void enableVerboseLogging(int verbose) {
-        mVerboseLoggingEnabled = verbose > 0 ? true : false;
+    public void enableVerboseLogging(boolean verbose) {
+        mVerboseLoggingEnabled = verbose;
+        setSupplicantLogLevel(mVerboseLoggingEnabled);
         mWifiCondManager.enableVerboseLogging(mVerboseLoggingEnabled);
         mSupplicantStaIfaceHal.enableVerboseLogging(mVerboseLoggingEnabled);
         mHostapdHal.enableVerboseLogging(mVerboseLoggingEnabled);
@@ -2579,12 +2580,21 @@ public class WifiNative {
     }
 
     /**
+     * Disable the currently configured network in supplicant
+     *
+     * @param ifaceName Name of the interface.
+     */
+    public boolean disableNetwork(@NonNull String ifaceName) {
+        return mSupplicantStaIfaceHal.disableCurrentNetwork(ifaceName);
+    }
+
+    /**
      * Set the BSSID for the currently configured network in wpa_supplicant.
      *
      * @param ifaceName Name of the interface.
      * @return true if successful, false otherwise.
      */
-    public boolean setConfiguredNetworkBSSID(@NonNull String ifaceName, String bssid) {
+    public boolean setNetworkBSSID(@NonNull String ifaceName, String bssid) {
         return mSupplicantStaIfaceHal.setCurrentNetworkBssid(ifaceName, bssid);
     }
 
@@ -3750,17 +3760,6 @@ public class WifiNative {
         // Pass in an empty RoamingConfig object which translates to zero size
         // blacklist and whitelist to reset the firmware roaming configuration.
         return mWifiVendorHal.configureRoaming(ifaceName, new RoamingConfig());
-    }
-
-    /**
-     * Select one of the pre-configured transmit power level scenarios or reset it back to normal.
-     * Primarily used for meeting SAR requirements.
-     *
-     * @param sarInfo The collection of inputs used to select the SAR scenario.
-     * @return true for success; false for failure or if the HAL version does not support this API.
-     */
-    public boolean selectTxPowerScenario(SarInfo sarInfo) {
-        return mWifiVendorHal.selectTxPowerScenario(sarInfo);
     }
 
     /**

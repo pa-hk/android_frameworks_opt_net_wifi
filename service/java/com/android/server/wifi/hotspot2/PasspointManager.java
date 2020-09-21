@@ -183,7 +183,7 @@ public class PasspointManager {
         public void setProviders(List<PasspointProvider> providers) {
             mProviders.clear();
             for (PasspointProvider provider : providers) {
-                provider.enableVerboseLogging(mVerboseLoggingEnabled ? 1 : 0);
+                provider.enableVerboseLogging(mVerboseLoggingEnabled);
                 mProviders.put(provider.getConfig().getUniqueId(), provider);
                 if (provider.getPackageName() != null) {
                     startTrackingAppOpsChange(provider.getPackageName(),
@@ -256,7 +256,6 @@ public class PasspointManager {
                 packageName).entrySet()) {
             String uniqueId = entry.getValue().getConfig().getUniqueId();
             removeProvider(Process.WIFI_UID /* ignored */, true, uniqueId, null);
-            disconnectIfPasspointNetwork(uniqueId);
         }
     }
 
@@ -284,19 +283,6 @@ public class PasspointManager {
             return;
         }
         mAppOps.stopWatchingMode(appOpsChangedListener);
-    }
-
-    private void disconnectIfPasspointNetwork(String uniqueId) {
-        WifiConfiguration currentConfiguration =
-                mWifiInjector.getClientModeImpl().getCurrentWifiConfiguration();
-        if (currentConfiguration == null) return;
-        if (currentConfiguration.isPasspoint() && TextUtils.equals(currentConfiguration.getKey(),
-                uniqueId)) {
-            Log.i(TAG, "Disconnect current Passpoint network for FQDN: "
-                    + currentConfiguration.FQDN + " and ID: " + uniqueId
-                    + " because the profile was removed");
-            mWifiInjector.getClientModeImpl().disconnectCommand();
-        }
     }
 
     public PasspointManager(Context context, WifiInjector wifiInjector, Handler handler,
@@ -339,10 +325,10 @@ public class PasspointManager {
 
     /**
      * Enable verbose logging
-     * @param verbose more than 0 enables verbose logging
+     * @param verbose enables verbose logging
      */
-    public void enableVerboseLogging(int verbose) {
-        mVerboseLoggingEnabled = (verbose > 0) ? true : false;
+    public void enableVerboseLogging(boolean verbose) {
+        mVerboseLoggingEnabled = verbose;
         mPasspointProvisioner.enableVerboseLogging(verbose);
         for (PasspointProvider provider : mProviders.values()) {
             provider.enableVerboseLogging(verbose);
@@ -470,7 +456,7 @@ public class PasspointManager {
                         newProvider.getWifiConfig(), uid, packageName, isFromSuggestion);
             }
         }
-        newProvider.enableVerboseLogging(mVerboseLoggingEnabled ? 1 : 0);
+        newProvider.enableVerboseLogging(mVerboseLoggingEnabled);
         mProviders.put(config.getUniqueId(), newProvider);
         mWifiConfigManager.saveToStore(true /* forceWrite */);
         if (!isFromSuggestion && newProvider.getPackageName() != null) {
@@ -1205,7 +1191,7 @@ public class PasspointManager {
                 mProviderIndex++, wifiConfig.creatorUid, null, false,
                 Arrays.asList(enterpriseConfig.getCaCertificateAlias()),
                 enterpriseConfig.getClientCertificateAlias(), null, false, false);
-        provider.enableVerboseLogging(mVerboseLoggingEnabled ? 1 : 0);
+        provider.enableVerboseLogging(mVerboseLoggingEnabled);
         mProviders.put(passpointConfig.getUniqueId(), provider);
         return true;
     }

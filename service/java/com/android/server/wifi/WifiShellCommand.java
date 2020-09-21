@@ -106,7 +106,8 @@ public class WifiShellCommand extends BasicShellCommandHandler {
     private static final Map<String, Pair<NetworkRequest, ConnectivityManager.NetworkCallback>>
             sActiveRequests = new ConcurrentHashMap<>();
 
-    private final ClientModeImpl mClientModeImpl;
+    private final ClientModeManager mClientModeManager;
+    private final WifiGlobals mWifiGlobals;
     private final WifiLockManager mWifiLockManager;
     private final WifiNetworkSuggestionsManager mWifiNetworkSuggestionsManager;
     private final WifiConfigManager mWifiConfigManager;
@@ -118,9 +119,12 @@ public class WifiShellCommand extends BasicShellCommandHandler {
     private final Context mContext;
     private final ConnectivityManager mConnectivityManager;
     private final WifiCarrierInfoManager mWifiCarrierInfoManager;
+    private final WifiNetworkFactory mWifiNetworkFactory;
 
-    WifiShellCommand(WifiInjector wifiInjector, WifiServiceImpl wifiService, Context context) {
-        mClientModeImpl = wifiInjector.getClientModeImpl();
+    WifiShellCommand(WifiInjector wifiInjector, WifiServiceImpl wifiService, Context context,
+            ClientModeManager clientModeManager, WifiGlobals wifiGlobals) {
+        mClientModeManager = clientModeManager;
+        mWifiGlobals = wifiGlobals;
         mWifiLockManager = wifiInjector.getWifiLockManager();
         mWifiNetworkSuggestionsManager = wifiInjector.getWifiNetworkSuggestionsManager();
         mWifiConfigManager = wifiInjector.getWifiConfigManager();
@@ -132,6 +136,7 @@ public class WifiShellCommand extends BasicShellCommandHandler {
         mContext = context;
         mConnectivityManager = context.getSystemService(ConnectivityManager.class);
         mWifiCarrierInfoManager = wifiInjector.getWifiCarrierInfoManager();
+        mWifiNetworkFactory = wifiInjector.getWifiNetworkFactory();
     }
 
     @Override
@@ -154,12 +159,12 @@ public class WifiShellCommand extends BasicShellCommandHandler {
             switch (cmd) {
                 case "set-ipreach-disconnect": {
                     boolean enabled = getNextArgRequiredTrueOrFalse("enabled", "disabled");
-                    mClientModeImpl.setIpReachabilityDisconnectEnabled(enabled);
+                    mWifiGlobals.setIpReachabilityDisconnectEnabled(enabled);
                     return 0;
                 }
                 case "get-ipreach-disconnect":
                     pw.println("IPREACH_DISCONNECT state is "
-                            + mClientModeImpl.getIpReachabilityDisconnectEnabled());
+                            + mWifiGlobals.getIpReachabilityDisconnectEnabled());
                     return 0;
                 case "set-poll-rssi-interval-msecs":
                     int newPollIntervalMsecs;
@@ -179,11 +184,11 @@ public class WifiShellCommand extends BasicShellCommandHandler {
                         return -1;
                     }
 
-                    mClientModeImpl.setPollRssiIntervalMsecs(newPollIntervalMsecs);
+                    mWifiGlobals.setPollRssiIntervalMillis(newPollIntervalMsecs);
                     return 0;
                 case "get-poll-rssi-interval-msecs":
-                    pw.println("ClientModeImpl.mPollRssiIntervalMsecs = "
-                            + mClientModeImpl.getPollRssiIntervalMsecs());
+                    pw.println("WifiGlobals.getPollRssiIntervalMillis() = "
+                            + mWifiGlobals.getPollRssiIntervalMillis());
                     return 0;
                 case "force-hi-perf-mode": {
                     boolean enabled = getNextArgRequiredTrueOrFalse("enabled", "disabled");
@@ -260,7 +265,7 @@ public class WifiShellCommand extends BasicShellCommandHandler {
                 }
                 case "network-requests-remove-user-approved-access-points": {
                     String packageName = getNextArgRequired();
-                    mClientModeImpl.removeNetworkRequestUserApprovedAccessPointsForApp(packageName);
+                    mWifiNetworkFactory.removeUserApprovedAccessPointsForApp(packageName);
                     return 0;
                 }
                 case "clear-user-disabled-networks": {
@@ -431,8 +436,7 @@ public class WifiShellCommand extends BasicShellCommandHandler {
                         }
                     };
                     WifiConfiguration config = buildWifiConfiguration(pw);
-                    mWifiService.connect(
-                            config, -1, new Binder(), actionListener, actionListener.hashCode());
+                    mWifiService.connect(config, -1, actionListener);
                     // wait for status.
                     countDownLatch.await(500, TimeUnit.MILLISECONDS);
                     setAutoJoin(pw, config.SSID, config.allowAutojoin);
@@ -454,8 +458,7 @@ public class WifiShellCommand extends BasicShellCommandHandler {
                         }
                     };
                     WifiConfiguration config = buildWifiConfiguration(pw);
-                    mWifiService.save(
-                            config, new Binder(), actionListener, actionListener.hashCode());
+                    mWifiService.save(config, actionListener);
                     // wait for status.
                     countDownLatch.await(500, TimeUnit.MILLISECONDS);
                     setAutoJoin(pw, config.SSID, config.allowAutojoin);
@@ -477,9 +480,7 @@ public class WifiShellCommand extends BasicShellCommandHandler {
                             countDownLatch.countDown();
                         }
                     };
-                    mWifiService.forget(
-                            Integer.parseInt(networkId), new Binder(), actionListener,
-                            actionListener.hashCode());
+                    mWifiService.forget(Integer.parseInt(networkId), actionListener);
                     // wait for status.
                     countDownLatch.await(500, TimeUnit.MILLISECONDS);
                     return 0;
@@ -600,13 +601,12 @@ public class WifiShellCommand extends BasicShellCommandHandler {
                 case "network-requests-set-user-approved": {
                     String packageName = getNextArgRequired();
                     boolean approved = getNextArgRequiredTrueOrFalse("yes", "no");
-                    mClientModeImpl.setNetworkRequestUserApprovedApp(packageName, approved);
+                    mWifiNetworkFactory.setUserApprovedApp(packageName, approved);
                     return 0;
                 }
                 case "network-requests-has-user-approved": {
                     String packageName = getNextArgRequired();
-                    boolean hasUserApproved =
-                            mClientModeImpl.hasNetworkRequestUserApprovedApp(packageName);
+                    boolean hasUserApproved = mWifiNetworkFactory.hasUserApprovedApp(packageName);
                     pw.println(hasUserApproved ? "yes" : "no");
                     return 0;
                 }
@@ -868,7 +868,7 @@ public class WifiShellCommand extends BasicShellCommandHandler {
         final int sendMgmtFrameTimeoutMs = 1000;
 
         ArrayBlockingQueue<String> queue = new ArrayBlockingQueue<>(1);
-        mClientModeImpl.probeLink(new WifiNl80211Manager.SendMgmtFrameCallback() {
+        mClientModeManager.probeLink(new WifiNl80211Manager.SendMgmtFrameCallback() {
             @Override
             public void onAck(int elapsedTimeMs) {
                 queue.offer("Link probe succeeded after " + elapsedTimeMs + " ms");

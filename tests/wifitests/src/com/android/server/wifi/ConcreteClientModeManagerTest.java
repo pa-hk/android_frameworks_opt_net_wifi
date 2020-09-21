@@ -28,7 +28,6 @@ import static android.net.wifi.WifiManager.WIFI_STATE_UNKNOWN;
 import static com.android.dx.mockito.inline.extended.ExtendedMockito.mockitoSession;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
@@ -73,10 +72,10 @@ import java.util.List;
 import java.util.concurrent.Executor;
 
 /**
- * Unit tests for {@link ClientModeManager}.
+ * Unit tests for {@link ConcreteClientModeManager}.
  */
 @SmallTest
-public class ClientModeManagerTest extends WifiBaseTest {
+public class ConcreteClientModeManagerTest extends WifiBaseTest {
     private static final String TAG = "ClientModeManagerTest";
     private static final String TEST_INTERFACE_NAME = "testif0";
     private static final String OTHER_INTERFACE_NAME = "notTestIf";
@@ -85,14 +84,13 @@ public class ClientModeManagerTest extends WifiBaseTest {
 
     TestLooper mLooper;
 
-    ClientModeManager mClientModeManager;
+    ConcreteClientModeManager mClientModeManager;
 
     @Mock Context mContext;
     @Mock WifiMetrics mWifiMetrics;
     @Mock WifiNative mWifiNative;
     @Mock Clock mClock;
     @Mock ClientModeManager.Listener mListener;
-    @Mock SarManager mSarManager;
     @Mock WakeupController mWakeupController;
     @Mock ClientModeImpl mClientModeImpl;
     @Mock CarrierConfigManager mCarrierConfigManager;
@@ -101,6 +99,8 @@ public class ClientModeManagerTest extends WifiBaseTest {
     @Mock ConnectivityManager mConnectivityManager;
     @Mock SubscriptionManager mSubscriptionManager;
     @Mock SubscriptionInfo mActiveSubscriptionInfo;
+    @Mock SelfRecovery mSelfRecovery;
+    @Mock WifiGlobals mWifiGlobals;
     private RegistrationManager.RegistrationCallback mImsMmTelManagerRegistrationCallback = null;
     private @RegistrationManager.ImsRegistrationState int mCurrentImsRegistrationState =
             RegistrationManager.REGISTRATION_STATE_NOT_REGISTERED;
@@ -228,9 +228,10 @@ public class ClientModeManagerTest extends WifiBaseTest {
         mStaticMockSession.finishMocking();
     }
 
-    private ClientModeManager createClientModeManager() {
-        return new ClientModeManager(mContext, mLooper.getLooper(), mClock, mWifiNative, mListener,
-                mWifiMetrics, mSarManager, mWakeupController, mClientModeImpl);
+    private ConcreteClientModeManager createClientModeManager() {
+        return new ConcreteClientModeManager(mContext, mLooper.getLooper(), mClock, mWifiNative,
+                mListener, mWifiMetrics, mWakeupController, mClientModeImpl, mSelfRecovery,
+                mWifiGlobals);
     }
 
     private void startClientInScanOnlyModeAndVerifyEnabled() throws Exception {
@@ -242,8 +243,7 @@ public class ClientModeManagerTest extends WifiBaseTest {
         verify(mWifiNative).setupInterfaceForClientInScanMode(
                 mInterfaceCallbackCaptor.capture());
         verify(mClientModeImpl).setOperationalMode(
-                ClientModeImpl.SCAN_ONLY_MODE, TEST_INTERFACE_NAME);
-        verify(mSarManager).setScanOnlyWifiState(WIFI_STATE_ENABLED);
+                ClientModeImpl.SCAN_ONLY_MODE, TEST_INTERFACE_NAME, mClientModeManager);
 
         // now mark the interface as up
         mInterfaceCallbackCaptor.getValue().onUp(TEST_INTERFACE_NAME);
@@ -265,7 +265,7 @@ public class ClientModeManagerTest extends WifiBaseTest {
         verify(mWifiNative).setupInterfaceForClientInScanMode(
                 mInterfaceCallbackCaptor.capture());
         verify(mClientModeImpl).setOperationalMode(
-                ClientModeImpl.SCAN_ONLY_MODE, TEST_INTERFACE_NAME);
+                ClientModeImpl.SCAN_ONLY_MODE, TEST_INTERFACE_NAME, mClientModeManager);
         mLooper.dispatchAll();
 
         mClientModeManager.setRole(ActiveModeManager.ROLE_CLIENT_PRIMARY);
@@ -273,8 +273,7 @@ public class ClientModeManagerTest extends WifiBaseTest {
 
         verify(mWifiNative).switchClientInterfaceToConnectivityMode(TEST_INTERFACE_NAME);
         verify(mClientModeImpl).setOperationalMode(
-                ClientModeImpl.CONNECT_MODE, TEST_INTERFACE_NAME);
-        verify(mSarManager).setClientWifiState(WIFI_STATE_ENABLED);
+                ClientModeImpl.CONNECT_MODE, TEST_INTERFACE_NAME, mClientModeManager);
 
         // now mark the interface as up
         mInterfaceCallbackCaptor.getValue().onUp(TEST_INTERFACE_NAME);
@@ -291,8 +290,10 @@ public class ClientModeManagerTest extends WifiBaseTest {
                 WIFI_STATE_DISABLED);
         checkWifiConnectModeStateChangedBroadcast(intents.get(1), WIFI_STATE_ENABLED,
                 WIFI_STATE_ENABLING);
+        assertEquals(WIFI_STATE_ENABLED, mClientModeManager.syncGetWifiState());
 
-        verify(mListener, times(2)).onStarted();
+        verify(mListener).onStarted();
+        verify(mListener).onRoleChanged();
     }
 
     private void checkWifiConnectModeStateChangedBroadcast(
@@ -303,8 +304,6 @@ public class ClientModeManagerTest extends WifiBaseTest {
         assertEquals(expectedCurrentState, currentState);
         int prevState = intent.getIntExtra(EXTRA_PREVIOUS_WIFI_STATE, WIFI_STATE_UNKNOWN);
         assertEquals(expectedPrevState, prevState);
-
-        verify(mClientModeImpl, atLeastOnce()).setWifiStateForApiCalls(expectedCurrentState);
     }
 
     private void verifyConnectModeNotificationsForCleanShutdown(int fromState) {
@@ -318,6 +317,7 @@ public class ClientModeManagerTest extends WifiBaseTest {
                 WIFI_STATE_DISABLING, fromState);
         checkWifiConnectModeStateChangedBroadcast(intents.get(intents.size() - 1),
                 WIFI_STATE_DISABLED, WIFI_STATE_DISABLING);
+        assertEquals(WIFI_STATE_DISABLED, mClientModeManager.syncGetWifiState());
     }
 
     private void verifyConnectModeNotificationsForFailure() {
@@ -331,6 +331,7 @@ public class ClientModeManagerTest extends WifiBaseTest {
                 WIFI_STATE_UNKNOWN);
         checkWifiConnectModeStateChangedBroadcast(intents.get(1), WIFI_STATE_DISABLED,
                 WIFI_STATE_DISABLING);
+        assertEquals(WIFI_STATE_DISABLED, mClientModeManager.syncGetWifiState());
     }
 
     /**
@@ -361,12 +362,10 @@ public class ClientModeManagerTest extends WifiBaseTest {
         mClientModeManager.setRole(ActiveModeManager.ROLE_CLIENT_PRIMARY);
         mLooper.dispatchAll();
 
-        verify(mSarManager).setScanOnlyWifiState(WIFI_STATE_DISABLED);
         verify(mClientModeImpl).setOperationalMode(
-                ClientModeImpl.SCAN_ONLY_MODE, TEST_INTERFACE_NAME);
+                ClientModeImpl.SCAN_ONLY_MODE, TEST_INTERFACE_NAME, mClientModeManager);
         verify(mClientModeImpl).setOperationalMode(
-                ClientModeImpl.CONNECT_MODE, TEST_INTERFACE_NAME);
-        verify(mSarManager).setClientWifiState(WIFI_STATE_ENABLED);
+                ClientModeImpl.CONNECT_MODE, TEST_INTERFACE_NAME, mClientModeManager);
 
         ArgumentCaptor<Intent> intentCaptor = ArgumentCaptor.forClass(Intent.class);
         verify(mContext, atLeastOnce()).sendStickyBroadcastAsUser(intentCaptor.capture(),
@@ -379,8 +378,10 @@ public class ClientModeManagerTest extends WifiBaseTest {
                 WIFI_STATE_DISABLED);
         checkWifiConnectModeStateChangedBroadcast(intents.get(1), WIFI_STATE_ENABLED,
                 WIFI_STATE_ENABLING);
+        assertEquals(WIFI_STATE_ENABLED, mClientModeManager.syncGetWifiState());
 
-        verify(mListener, times(2)).onStarted();
+        verify(mListener).onStarted();
+        verify(mListener).onRoleChanged();
     }
 
     /**
@@ -397,13 +398,11 @@ public class ClientModeManagerTest extends WifiBaseTest {
 
         verifyConnectModeNotificationsForCleanShutdown(WIFI_STATE_ENABLED);
 
-        verify(mSarManager).setClientWifiState(WIFI_STATE_DISABLED);
         verify(mWifiNative).setupInterfaceForClientInScanMode(
                 mInterfaceCallbackCaptor.capture());
         verify(mWifiNative).switchClientInterfaceToScanMode(TEST_INTERFACE_NAME);
         verify(mClientModeImpl, times(2)).setOperationalMode(
-                ClientModeImpl.SCAN_ONLY_MODE, TEST_INTERFACE_NAME);
-        verify(mSarManager, times(2)).setScanOnlyWifiState(WIFI_STATE_ENABLED);
+                ClientModeImpl.SCAN_ONLY_MODE, TEST_INTERFACE_NAME, mClientModeManager);
 
         verify(mContext).getSystemService(anyString());
         verify(mImsMmTelManager, never()).registerImsRegistrationCallback(any(), any());
@@ -411,7 +410,8 @@ public class ClientModeManagerTest extends WifiBaseTest {
 
         // Ensure that no public broadcasts were sent.
         verifyNoMoreInteractions(mContext);
-        verify(mListener, times(3)).onStarted();
+        verify(mListener).onStarted();
+        verify(mListener, times(2)).onRoleChanged();
     }
 
     /**
@@ -439,6 +439,7 @@ public class ClientModeManagerTest extends WifiBaseTest {
                 WIFI_STATE_DISABLED);
         checkWifiConnectModeStateChangedBroadcast(intents.get(1), WIFI_STATE_DISABLED,
                 WIFI_STATE_UNKNOWN);
+        assertEquals(WIFI_STATE_DISABLED, mClientModeManager.syncGetWifiState());
         verify(mListener).onStartFailure();
     }
 
@@ -463,10 +464,8 @@ public class ClientModeManagerTest extends WifiBaseTest {
         reset(mContext, mListener);
         setUpSystemServiceForContext();
         mClientModeManager.stop();
-        assertTrue(mClientModeManager.isStopping());
         mLooper.dispatchAll();
         verify(mListener).onStopped();
-        assertFalse(mClientModeManager.isStopping());
 
         verify(mImsMmTelManager, never()).registerImsRegistrationCallback(any(), any());
         verify(mImsMmTelManager, never()).unregisterImsRegistrationCallback(any());
@@ -506,10 +505,10 @@ public class ClientModeManagerTest extends WifiBaseTest {
         startClientInConnectModeAndVerifyEnabled();
         reset(mContext);
         setUpSystemServiceForContext();
-        when(mClientModeImpl.isConnectedMacRandomizationEnabled()).thenReturn(false);
+        when(mWifiGlobals.isConnectedMacRandomizationEnabled()).thenReturn(false);
         mInterfaceCallbackCaptor.getValue().onDown(TEST_INTERFACE_NAME);
         mLooper.dispatchAll();
-        verify(mClientModeImpl).failureDetected(eq(SelfRecovery.REASON_STA_IFACE_DOWN));
+        verify(mSelfRecovery).trigger(SelfRecovery.REASON_STA_IFACE_DOWN);
         verifyConnectModeNotificationsForFailure();
         verify(mListener).onStopped();
     }
@@ -524,10 +523,10 @@ public class ClientModeManagerTest extends WifiBaseTest {
         startClientInConnectModeAndVerifyEnabled();
         reset(mContext);
         setUpSystemServiceForContext();
-        when(mClientModeImpl.isConnectedMacRandomizationEnabled()).thenReturn(true);
+        when(mWifiGlobals.isConnectedMacRandomizationEnabled()).thenReturn(true);
         mInterfaceCallbackCaptor.getValue().onDown(TEST_INTERFACE_NAME);
         mLooper.dispatchAll();
-        verify(mClientModeImpl, never()).failureDetected(eq(SelfRecovery.REASON_STA_IFACE_DOWN));
+        verify(mSelfRecovery, never()).trigger(SelfRecovery.REASON_STA_IFACE_DOWN);
         verify(mContext, never()).sendStickyBroadcastAsUser(any(), any());
     }
 
@@ -1188,8 +1187,40 @@ public class ClientModeManagerTest extends WifiBaseTest {
         verify(mListener, never()).onStarted(); // no callback sent.
 
         // Change the connectivity role.
-        mClientModeManager.setRole(ActiveModeManager.ROLE_CLIENT_SECONDARY);
+        mClientModeManager.setRole(ActiveModeManager.ROLE_CLIENT_SECONDARY_TRANSIENT);
+        mLooper.dispatchAll();
+        verify(mListener).onRoleChanged(); // callback sent.
+    }
+
+    @Test
+    public void setRoleBeforeInvokingListener() throws Exception {
+        when(mWifiNative.setupInterfaceForClientInScanMode(any()))
+                .thenReturn(TEST_INTERFACE_NAME);
+        when(mWifiNative.switchClientInterfaceToConnectivityMode(any()))
+                .thenReturn(true);
+
+        doAnswer(new AnswerWithArguments() {
+            public void answer() throws Exception {
+                assertEquals(ActiveModeManager.ROLE_CLIENT_SCAN_ONLY, mClientModeManager.getRole());
+            }
+        }).when(mListener).onStarted();
+        mClientModeManager.start();
+        mLooper.dispatchAll();
+
+        verify(mWifiNative).setupInterfaceForClientInScanMode(
+                mInterfaceCallbackCaptor.capture());
+        mInterfaceCallbackCaptor.getValue().onUp(TEST_INTERFACE_NAME);
         mLooper.dispatchAll();
         verify(mListener).onStarted(); // callback sent.
+
+        // Change to connectivity role.
+        doAnswer(new AnswerWithArguments() {
+            public void answer() throws Exception {
+                assertEquals(ActiveModeManager.ROLE_CLIENT_PRIMARY, mClientModeManager.getRole());
+            }
+        }).when(mListener).onRoleChanged();
+        mClientModeManager.setRole(ActiveModeManager.ROLE_CLIENT_PRIMARY);
+        mLooper.dispatchAll();
+        verify(mListener).onRoleChanged(); // callback sent.
     }
 }

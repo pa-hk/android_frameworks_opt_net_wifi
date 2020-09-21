@@ -76,6 +76,8 @@ public class WifiApConfigStoreTest extends WifiBaseTest {
     private static final String TEST_STRING_UTF8_WITH_34_BYTES = "Ευπροσηγοροςγινου";
     private static final MacAddress TEST_RANDOMIZED_MAC =
             MacAddress.fromString("d2:11:19:34:a5:20");
+    private static final MacAddress TEST_SAP_BSSID_MAC =
+            MacAddress.fromString("aa:bb:cc:11:22:33");
 
     private final int mBand25G = SoftApConfiguration.BAND_2GHZ | SoftApConfiguration.BAND_5GHZ;
 
@@ -474,13 +476,12 @@ public class WifiApConfigStoreTest extends WifiBaseTest {
     @Test
     public void generateLohsConfig_forwardsCustomMac() {
         SoftApConfiguration customConfig = new SoftApConfiguration.Builder()
-                .setBssid(MacAddress.fromString("11:22:33:44:55:66"))
+                .setBssid(TEST_SAP_BSSID_MAC)
                 .build();
         SoftApConfiguration softApConfig = WifiApConfigStore.generateLocalOnlyHotspotConfig(
                 mContext, SoftApConfiguration.BAND_2GHZ, customConfig);
         assertThat(softApConfig.getBssid().toString()).isNotEmpty();
-        assertThat(softApConfig.getBssid()).isEqualTo(
-                MacAddress.fromString("11:22:33:44:55:66"));
+        assertThat(softApConfig.getBssid()).isEqualTo(TEST_SAP_BSSID_MAC);
     }
 
     @Test
@@ -524,15 +525,29 @@ public class WifiApConfigStoreTest extends WifiBaseTest {
     public void randomizeBssid_forwardsCustomMac() throws Exception {
         mResources.setBoolean(R.bool.config_wifi_ap_mac_randomization_supported, true);
         Builder baseConfigBuilder = new SoftApConfiguration.Builder();
-        baseConfigBuilder.setBssid(MacAddress.fromString("11:22:33:44:55:66"));
+        baseConfigBuilder.setBssid(TEST_SAP_BSSID_MAC);
 
         WifiApConfigStore store = createWifiApConfigStore();
         SoftApConfiguration config = store.randomizeBssidIfUnset(mContext,
                 baseConfigBuilder.build());
 
         assertThat(config.getBssid().toString()).isNotEmpty();
-        assertThat(config.getBssid()).isEqualTo(
-                MacAddress.fromString("11:22:33:44:55:66"));
+        assertThat(config.getBssid()).isEqualTo(TEST_SAP_BSSID_MAC);
+    }
+
+    @Test
+    public void randomizeBssid__usesFactoryMacWhenRandomizationOffInConfig() throws Exception {
+        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.R) {
+            return;
+        }
+        mResources.setBoolean(R.bool.config_wifi_ap_mac_randomization_supported, true);
+        SoftApConfiguration baseConfig = new SoftApConfiguration.Builder()
+                .setMacRandomizationSetting(SoftApConfiguration.RANDOMIZATION_NONE).build();
+
+        WifiApConfigStore store = createWifiApConfigStore();
+        SoftApConfiguration config = store.randomizeBssidIfUnset(mContext, baseConfig);
+
+        assertThat(config.getBssid()).isNull();
     }
 
     /**
@@ -769,7 +784,7 @@ public class WifiApConfigStoreTest extends WifiBaseTest {
     public void testBssidDenyIfCallerWithoutPrivileged() throws Exception {
         WifiApConfigStore store = createWifiApConfigStore();
         SoftApConfiguration config = new SoftApConfiguration.Builder(store.getApConfiguration())
-                .setBssid(MacAddress.fromString("aa:bb:cc:dd:ee:ff")).build();
+                .setBssid(TEST_SAP_BSSID_MAC).build();
         assertFalse(WifiApConfigStore.validateApWifiConfiguration(config, false));
     }
 
@@ -780,7 +795,7 @@ public class WifiApConfigStoreTest extends WifiBaseTest {
     public void testBssidAllowIfCallerOwnPrivileged() throws Exception {
         WifiApConfigStore store = createWifiApConfigStore();
         SoftApConfiguration config = new SoftApConfiguration.Builder(store.getApConfiguration())
-                .setBssid(MacAddress.fromString("aa:bb:cc:dd:ee:ff")).build();
+                .setBssid(TEST_SAP_BSSID_MAC).build();
         assertTrue(WifiApConfigStore.validateApWifiConfiguration(config, true));
     }
 }

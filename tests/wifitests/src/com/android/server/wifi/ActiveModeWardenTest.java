@@ -16,6 +16,7 @@
 
 package com.android.server.wifi;
 
+import static com.android.server.wifi.ActiveModeManager.ROLE_CLIENT_LOCAL_ONLY;
 import static com.android.server.wifi.ActiveModeManager.ROLE_CLIENT_PRIMARY;
 import static com.android.server.wifi.ActiveModeManager.ROLE_CLIENT_SCAN_ONLY;
 import static com.android.server.wifi.ActiveModeManager.ROLE_SOFTAP_LOCAL_ONLY;
@@ -23,9 +24,12 @@ import static com.android.server.wifi.ActiveModeManager.ROLE_SOFTAP_TETHERED;
 
 import static com.google.common.truth.Truth.assertThat;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.anyInt;
 import static org.mockito.Mockito.anyString;
@@ -45,9 +49,9 @@ import static org.mockito.Mockito.when;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
-import android.content.IntentFilter;
 import android.content.res.Resources;
 import android.location.LocationManager;
+import android.net.wifi.IWifiConnectedNetworkScorer;
 import android.net.wifi.SoftApCapability;
 import android.net.wifi.SoftApConfiguration;
 import android.net.wifi.SoftApConfiguration.Builder;
@@ -55,11 +59,14 @@ import android.net.wifi.SoftApInfo;
 import android.net.wifi.WifiClient;
 import android.net.wifi.WifiManager;
 import android.os.BatteryStatsManager;
+import android.os.IBinder;
 import android.os.test.TestLooper;
+import android.telephony.TelephonyManager;
 import android.util.Log;
 
 import androidx.test.filters.SmallTest;
 
+import com.android.server.wifi.ActiveModeManager.SoftApRole;
 import com.android.server.wifi.WifiNative.InterfaceAvailableForRequestListener;
 import com.android.server.wifi.util.GeneralUtil;
 import com.android.server.wifi.util.WifiPermissionsUtil;
@@ -102,18 +109,18 @@ public class ActiveModeWardenTest extends WifiBaseTest {
     @Mock Resources mResources;
     @Mock WifiNative mWifiNative;
     @Mock WifiApConfigStore mWifiApConfigStore;
-    @Mock ClientModeManager mClientModeManager;
+    @Mock ConcreteClientModeManager mClientModeManager;
     @Mock SoftApManager mSoftApManager;
-    @Mock DefaultModeManager mDefaultModeManager;
+    @Mock DefaultClientModeManager mDefaultClientModeManager;
     @Mock BatteryStatsManager mBatteryStats;
     @Mock SelfRecovery mSelfRecovery;
     @Mock BaseWifiDiagnostics mWifiDiagnostics;
     @Mock ScanRequestProxy mScanRequestProxy;
-    @Mock ClientModeImpl mClientModeImpl;
     @Mock FrameworkFacade mFacade;
     @Mock WifiSettingsStore mSettingsStore;
     @Mock WifiPermissionsUtil mWifiPermissionsUtil;
     @Mock SoftApCapability mSoftApCapability;
+    @Mock ActiveModeWarden.ModeChangeCallback mModeChangeCallback;
 
     ActiveModeManager.Listener mClientListener;
     ActiveModeManager.Listener mSoftApListener;
@@ -131,6 +138,9 @@ public class ActiveModeWardenTest extends WifiBaseTest {
             ArgumentCaptor.forClass(InterfaceAvailableForRequestListener.class);
     final ArgumentCaptor<InterfaceAvailableForRequestListener> mSoftApIfaceAvailableListener =
             ArgumentCaptor.forClass(InterfaceAvailableForRequestListener.class);
+
+    private BroadcastReceiver mEmergencyCallbackModeChangedBr;
+    private BroadcastReceiver mEmergencyCallStateChangedBr;
 
     /**
      * Set up the test environment.
@@ -153,6 +163,8 @@ public class ActiveModeWardenTest extends WifiBaseTest {
                 .thenReturn(TEST_WIFI_RECOVERY_DELAY_MS);
         when(mResources.getBoolean(R.bool.config_wifiScanHiddenNetworksScanOnlyMode))
                 .thenReturn(false);
+        when(mResources.getBoolean(R.bool.config_wifi_turn_off_during_emergency_call))
+                .thenReturn(true);
 
         when(mSettingsStore.isWifiToggleEnabled()).thenReturn(false);
         when(mSettingsStore.isAirplaneModeOn()).thenReturn(false);
@@ -176,12 +188,14 @@ public class ActiveModeWardenTest extends WifiBaseTest {
             }
         }).when(mWifiInjector).makeSoftApManager(any(ActiveModeManager.Listener.class),
                 any(WifiManager.SoftApCallback.class), any());
+        when(mWifiNative.initialize()).thenReturn(true);
 
         mActiveModeWarden = createActiveModeWarden();
         mActiveModeWarden.start();
         mLooper.dispatchAll();
 
         verify(mWifiNative).registerStatusListener(mStatusListenerCaptor.capture());
+        verify(mWifiNative).initialize();
         mWifiNativeStatusListener = mStatusListenerCaptor.getValue();
 
         verify(mWifiNative).registerClientInterfaceAvailabilityListener(
@@ -191,9 +205,24 @@ public class ActiveModeWardenTest extends WifiBaseTest {
 
         mActiveModeWarden.registerSoftApCallback(mSoftApStateMachineCallback);
         mActiveModeWarden.registerLohsCallback(mLohsStateMachineCallback);
+        mActiveModeWarden.registerModeChangeCallback(mModeChangeCallback);
         mTestSoftApInfo = new SoftApInfo();
         mTestSoftApInfo.setFrequency(TEST_AP_FREQUENCY);
         mTestSoftApInfo.setBandwidth(TEST_AP_BANDWIDTH);
+
+        ArgumentCaptor<BroadcastReceiver> bcastRxCaptor =
+                ArgumentCaptor.forClass(BroadcastReceiver.class);
+        verify(mContext).registerReceiver(
+                bcastRxCaptor.capture(),
+                argThat(filter ->
+                        filter.hasAction(TelephonyManager.ACTION_EMERGENCY_CALLBACK_MODE_CHANGED)));
+        mEmergencyCallbackModeChangedBr = bcastRxCaptor.getValue();
+
+        verify(mContext).registerReceiver(
+                bcastRxCaptor.capture(),
+                argThat(filter ->
+                        filter.hasAction(TelephonyManager.ACTION_EMERGENCY_CALL_STATE_CHANGED)));
+        mEmergencyCallStateChangedBr = bcastRxCaptor.getValue();
     }
 
     private ActiveModeWarden createActiveModeWarden() {
@@ -201,11 +230,10 @@ public class ActiveModeWardenTest extends WifiBaseTest {
                 mWifiInjector,
                 mLooper.getLooper(),
                 mWifiNative,
-                mDefaultModeManager,
+                mDefaultClientModeManager,
                 mBatteryStats,
                 mWifiDiagnostics,
                 mContext,
-                mClientModeImpl,
                 mSettingsStore,
                 mFacade,
                 mWifiPermissionsUtil);
@@ -224,6 +252,18 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         mLooper.dispatchAll();
     }
 
+    private void emergencyCallbackModeChanged(boolean enabled) {
+        Intent intent = new Intent(TelephonyManager.ACTION_EMERGENCY_CALLBACK_MODE_CHANGED);
+        intent.putExtra(TelephonyManager.EXTRA_PHONE_IN_ECM_STATE, enabled);
+        mEmergencyCallbackModeChangedBr.onReceive(mContext, intent);
+    }
+
+    private void emergencyCallStateChanged(boolean enabled) {
+        Intent intent = new Intent(TelephonyManager.ACTION_EMERGENCY_CALL_STATE_CHANGED);
+        intent.putExtra(TelephonyManager.EXTRA_PHONE_IN_EMERGENCY_CALL, enabled);
+        mEmergencyCallStateChangedBr.onReceive(mContext, intent);
+    }
+
     /**
      * Helper method to enter the EnabledState and set ClientModeManager in ConnectMode.
      */
@@ -233,7 +273,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         when(mSettingsStore.isWifiToggleEnabled()).thenReturn(true);
         mActiveModeWarden.wifiToggled();
         mLooper.dispatchAll();
-        mClientListener.onStarted();
+        mClientListener.onRoleChanged(); // ClientModeManager starts in SCAN_ONLY role.
         mLooper.dispatchAll();
 
         assertInEnabledState();
@@ -243,6 +283,8 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         if (fromState.equals(DISABLED_STATE_STRING)) {
             verify(mBatteryStats).reportWifiOn();
         }
+        assertEquals(mClientModeManager, mActiveModeWarden.getPrimaryClientModeManager());
+        verify(mModeChangeCallback).onActiveModeManagerRoleChanged(mClientModeManager);
     }
 
     /**
@@ -268,6 +310,31 @@ public class ActiveModeWardenTest extends WifiBaseTest {
             verify(mBatteryStats).reportWifiOn();
         }
         verify(mBatteryStats).reportWifiState(BatteryStatsManager.WIFI_STATE_OFF_SCANNING, null);
+        assertEquals(mClientModeManager, mActiveModeWarden.getScanOnlyClientModeManager());
+        verify(mModeChangeCallback).onActiveModeManagerAdded(mClientModeManager);
+    }
+
+    /**
+     * Helper method to enter the EnabledState and set ClientModeManager in ConnectMode.
+     */
+    private void enterLocalClientModeActiveState() throws Exception {
+        String fromState = mActiveModeWarden.getCurrentMode();
+        when(mClientModeManager.getRole()).thenReturn(ROLE_CLIENT_PRIMARY);
+        when(mSettingsStore.isWifiToggleEnabled()).thenReturn(true);
+        mActiveModeWarden.wifiToggled();
+        mLooper.dispatchAll();
+        mClientListener.onRoleChanged(); // ClientModeManager starts in SCAN_ONLY role.
+        mLooper.dispatchAll();
+
+        assertInEnabledState();
+        verify(mClientModeManager).start();
+        verify(mClientModeManager).setRole(ROLE_CLIENT_PRIMARY);
+        verify(mScanRequestProxy).enableScanning(true, true);
+        if (fromState.equals(DISABLED_STATE_STRING)) {
+            verify(mBatteryStats).reportWifiOn();
+        }
+        assertEquals(mClientModeManager, mActiveModeWarden.getPrimaryClientModeManager());
+        verify(mModeChangeCallback).onActiveModeManagerRoleChanged(mClientModeManager);
     }
 
     private void enterSoftApActiveMode() throws Exception {
@@ -283,7 +350,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
      */
     private void enterSoftApActiveMode(SoftApModeConfiguration softApConfig) throws Exception {
         String fromState = mActiveModeWarden.getCurrentMode();
-        int softApRole = softApConfig.getTargetMode() == WifiManager.IFACE_IP_MODE_TETHERED
+        SoftApRole softApRole = softApConfig.getTargetMode() == WifiManager.IFACE_IP_MODE_TETHERED
                 ? ROLE_SOFTAP_TETHERED : ROLE_SOFTAP_LOCAL_ONLY;
         when(mSoftApManager.getRole()).thenReturn(softApRole);
         mActiveModeWarden.startSoftAp(softApConfig);
@@ -298,6 +365,14 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         if (fromState.equals(DISABLED_STATE_STRING)) {
             verify(mBatteryStats).reportWifiOn();
         }
+        if (softApRole == ROLE_SOFTAP_TETHERED) {
+            assertEquals(mSoftApManager, mActiveModeWarden.getTetheredSoftApManager());
+            assertNull(mActiveModeWarden.getLocalOnlySoftApManager());
+        } else {
+            assertEquals(mSoftApManager, mActiveModeWarden.getLocalOnlySoftApManager());
+            assertNull(mActiveModeWarden.getTetheredSoftApManager());
+        }
+        verify(mModeChangeCallback).onActiveModeManagerAdded(mSoftApManager);
     }
 
     private void enterStaDisabledMode(boolean isSoftApModeManagerActive) {
@@ -310,6 +385,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         if (mClientListener != null) {
             mClientListener.onStopped();
             mLooper.dispatchAll();
+            verify(mModeChangeCallback).onActiveModeManagerRemoved(mClientModeManager);
         }
 
         if (isSoftApModeManagerActive) {
@@ -320,6 +396,8 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         if (fromState.equals(ENABLED_STATE_STRING)) {
             verify(mScanRequestProxy).enableScanning(false, false);
         }
+        // Ensure we return the default client mode manager when wifi is off.
+        assertEquals(mDefaultClientModeManager, mActiveModeWarden.getPrimaryClientModeManager());
     }
 
     private void shutdownWifi() {
@@ -539,7 +617,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         enterSoftApActiveMode();
         enterScanOnlyModeActiveState();
 
-        reset(mDefaultModeManager);
+        reset(mDefaultClientModeManager);
         enterStaDisabledMode(true);
         verify(mSoftApManager, never()).stop();
         verify(mBatteryStats, never()).reportWifiOff();
@@ -602,7 +680,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         mLooper.dispatchAll();
         assertInDisabledState();
         // clear the first call to start SoftApManager
-        reset(mSoftApManager, mBatteryStats);
+        reset(mSoftApManager, mBatteryStats, mModeChangeCallback);
 
         enterSoftApActiveMode();
     }
@@ -828,7 +906,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
     public void handleWifiNativeFailureDeviceNotShuttingDown() throws Exception {
         mWifiNativeStatusListener.onStatusChanged(false);
         mLooper.dispatchAll();
-        verify(mWifiDiagnostics).captureBugReportData(
+        verify(mWifiDiagnostics).triggerBugReportDataCapture(
                 WifiDiagnostics.REPORT_REASON_WIFINATIVE_FAILURE);
         verify(mSelfRecovery).trigger(eq(SelfRecovery.REASON_WIFINATIVE_FAILURE));
     }
@@ -841,7 +919,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         mActiveModeWarden.notifyShuttingDown();
         mWifiNativeStatusListener.onStatusChanged(false);
         mLooper.dispatchAll();
-        verify(mWifiDiagnostics, never()).captureBugReportData(
+        verify(mWifiDiagnostics, never()).triggerBugReportDataCapture(
                 WifiDiagnostics.REPORT_REASON_WIFINATIVE_FAILURE);
         verify(mSelfRecovery, never()).trigger(eq(SelfRecovery.REASON_WIFINATIVE_FAILURE));
     }
@@ -853,7 +931,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
     public void handleWifiNativeStatusReady() throws Exception {
         mWifiNativeStatusListener.onStatusChanged(true);
         mLooper.dispatchAll();
-        verify(mWifiDiagnostics, never()).captureBugReportData(
+        verify(mWifiDiagnostics, never()).triggerBugReportDataCapture(
                 WifiDiagnostics.REPORT_REASON_WIFINATIVE_FAILURE);
         verify(mSelfRecovery, never()).trigger(eq(SelfRecovery.REASON_WIFINATIVE_FAILURE));
     }
@@ -919,6 +997,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         mLooper.dispatchAll();
 
         verify(mSoftApStateMachineCallback).onStateChanged(WifiManager.WIFI_AP_STATE_DISABLED, 0);
+        verify(mModeChangeCallback).onActiveModeManagerRemoved(mSoftApManager);
     }
 
     /**
@@ -1003,6 +1082,9 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         mLooper.dispatchAll();
         verify(mSoftApManager).stop();
         verify(lohsSoftapManager, never()).stop();
+
+        mSoftApListener.onStopped();
+        verify(mModeChangeCallback).onActiveModeManagerRemoved(mSoftApManager);
     }
 
     /**
@@ -1107,7 +1189,9 @@ public class ActiveModeWardenTest extends WifiBaseTest {
 
         ArgumentCaptor<BroadcastReceiver> bcastRxCaptor =
                 ArgumentCaptor.forClass(BroadcastReceiver.class);
-        verify(mContext).registerReceiver(bcastRxCaptor.capture(), any(IntentFilter.class));
+        verify(mContext).registerReceiver(
+                bcastRxCaptor.capture(),
+                argThat(filter -> filter.hasAction(LocationManager.MODE_CHANGED_ACTION)));
         BroadcastReceiver broadcastReceiver = bcastRxCaptor.getValue();
 
         assertInDisabledState();
@@ -1140,7 +1224,9 @@ public class ActiveModeWardenTest extends WifiBaseTest {
 
         ArgumentCaptor<BroadcastReceiver> bcastRxCaptor =
                 ArgumentCaptor.forClass(BroadcastReceiver.class);
-        verify(mContext).registerReceiver(bcastRxCaptor.capture(), any(IntentFilter.class));
+        verify(mContext).registerReceiver(
+                bcastRxCaptor.capture(),
+                argThat(filter -> filter.hasAction(LocationManager.MODE_CHANGED_ACTION)));
         BroadcastReceiver broadcastReceiver = bcastRxCaptor.getValue();
 
         assertInEnabledState();
@@ -1169,7 +1255,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
 
         assertWifiShutDown(() -> {
             // test ecm changed
-            mActiveModeWarden.emergencyCallbackModeChanged(true);
+            emergencyCallbackModeChanged(true);
             mLooper.dispatchAll();
         });
     }
@@ -1187,7 +1273,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
 
         assertEnteredEcmMode(() -> {
             // test ecm changed
-            mActiveModeWarden.emergencyCallbackModeChanged(true);
+            emergencyCallbackModeChanged(true);
             mLooper.dispatchAll();
         });
     }
@@ -1205,12 +1291,12 @@ public class ActiveModeWardenTest extends WifiBaseTest {
 
         assertWifiShutDown(() -> {
             // test ecm changed
-            mActiveModeWarden.emergencyCallbackModeChanged(true);
+            emergencyCallbackModeChanged(true);
             mLooper.dispatchAll();
         });
 
         // test ecm changed
-        mActiveModeWarden.emergencyCallbackModeChanged(false);
+        emergencyCallbackModeChanged(false);
         mLooper.dispatchAll();
 
         assertInEnabledState();
@@ -1236,7 +1322,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
 
         assertWifiShutDown(() -> {
             // test ecm changed
-            mActiveModeWarden.emergencyCallbackModeChanged(true);
+            emergencyCallbackModeChanged(true);
             mLooper.dispatchAll();
         });
     }
@@ -1258,7 +1344,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
 
         assertEnteredEcmMode(() -> {
             // test ecm changed
-            mActiveModeWarden.emergencyCallbackModeChanged(true);
+            emergencyCallbackModeChanged(true);
             mLooper.dispatchAll();
         });
     }
@@ -1279,12 +1365,12 @@ public class ActiveModeWardenTest extends WifiBaseTest {
 
         assertWifiShutDown(() -> {
             // test ecm changed
-            mActiveModeWarden.emergencyCallbackModeChanged(true);
+            emergencyCallbackModeChanged(true);
             mLooper.dispatchAll();
         });
 
         // test ecm changed
-        mActiveModeWarden.emergencyCallbackModeChanged(false);
+        emergencyCallbackModeChanged(false);
         mLooper.dispatchAll();
 
         assertInEnabledState();
@@ -1303,7 +1389,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
 
         assertEnteredEcmMode(() -> {
             // test ecm changed
-            mActiveModeWarden.emergencyCallbackModeChanged(true);
+            emergencyCallbackModeChanged(true);
             mLooper.dispatchAll();
         });
     }
@@ -1320,7 +1406,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         when(mFacade.getConfigWiFiDisableInECBM(mContext)).thenReturn(false);
 
         // test ecm changed
-        mActiveModeWarden.emergencyCallbackModeChanged(true);
+        emergencyCallbackModeChanged(true);
         mLooper.dispatchAll();
 
         verify(mSoftApManager).stop();
@@ -1344,14 +1430,16 @@ public class ActiveModeWardenTest extends WifiBaseTest {
 
         assertEnteredEcmMode(() -> {
             // test ecm changed
-            mActiveModeWarden.emergencyCallbackModeChanged(true);
+            emergencyCallbackModeChanged(true);
             mLooper.dispatchAll();
             mSoftApListener.onStopped();
             mLooper.dispatchAll();
         });
 
+        verify(mModeChangeCallback).onActiveModeManagerRemoved(mSoftApManager);
+
         // test ecm changed
-        mActiveModeWarden.emergencyCallbackModeChanged(false);
+        emergencyCallbackModeChanged(false);
         mLooper.dispatchAll();
 
         assertInDisabledState();
@@ -1374,7 +1462,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
 
         assertEnteredEcmMode(() -> {
             // test ecm changed
-            mActiveModeWarden.emergencyCallbackModeChanged(true);
+            emergencyCallbackModeChanged(true);
             mLooper.dispatchAll();
         });
     }
@@ -1395,13 +1483,13 @@ public class ActiveModeWardenTest extends WifiBaseTest {
 
         assertEnteredEcmMode(() -> {
             // test call state changed
-            mActiveModeWarden.emergencyCallStateChanged(true);
+            emergencyCallStateChanged(true);
             mLooper.dispatchAll();
             mClientListener.onStopped();
             mLooper.dispatchAll();
         });
 
-        mActiveModeWarden.emergencyCallStateChanged(false);
+        emergencyCallStateChanged(false);
         mLooper.dispatchAll();
 
         assertInEnabledState();
@@ -1421,21 +1509,21 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         when(mFacade.getConfigWiFiDisableInECBM(mContext)).thenReturn(true);
 
         assertWifiShutDown(() -> {
-            mActiveModeWarden.emergencyCallStateChanged(true);
+            emergencyCallStateChanged(true);
             mLooper.dispatchAll();
             mClientListener.onStopped();
             mLooper.dispatchAll();
         });
 
         assertWifiShutDown(() -> {
-            mActiveModeWarden.emergencyCallbackModeChanged(true);
+            emergencyCallbackModeChanged(true);
             mLooper.dispatchAll();
         }, 0); // does not cause another shutdown
 
         // client mode only started once so far
         verify(mClientModeManager).start();
 
-        mActiveModeWarden.emergencyCallStateChanged(false);
+        emergencyCallStateChanged(false);
         mLooper.dispatchAll();
 
         // stay in ecm, do not send an additional client mode trigger
@@ -1446,7 +1534,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         // client mode still only started once
         verify(mClientModeManager).start();
 
-        mActiveModeWarden.emergencyCallbackModeChanged(false);
+        emergencyCallbackModeChanged(false);
         mLooper.dispatchAll();
 
         // now we can re-enable wifi
@@ -1470,7 +1558,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         when(mFacade.getConfigWiFiDisableInECBM(mContext)).thenReturn(true);
 
         assertEnteredEcmMode(() -> {
-            mActiveModeWarden.emergencyCallbackModeChanged(true);
+            emergencyCallbackModeChanged(true);
             mLooper.dispatchAll();
             mClientListener.onStopped();
             mLooper.dispatchAll();
@@ -1478,11 +1566,11 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         assertInDisabledState();
 
         assertEnteredEcmMode(() -> {
-            mActiveModeWarden.emergencyCallStateChanged(true);
+            emergencyCallStateChanged(true);
             mLooper.dispatchAll();
         }, 0); // does not enter ECM state again
 
-        mActiveModeWarden.emergencyCallStateChanged(false);
+        emergencyCallStateChanged(false);
         mLooper.dispatchAll();
 
         // stay in ecm, do not send an additional client mode trigger
@@ -1493,7 +1581,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         // client mode still only started once
         verify(mClientModeManager).start();
 
-        mActiveModeWarden.emergencyCallbackModeChanged(false);
+        emergencyCallbackModeChanged(false);
         mLooper.dispatchAll();
 
         // now we can re-enable wifi
@@ -1518,7 +1606,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         when(mFacade.getConfigWiFiDisableInECBM(mContext)).thenReturn(true);
 
         assertEnteredEcmMode(() -> {
-            mActiveModeWarden.emergencyCallStateChanged(true);
+            emergencyCallStateChanged(true);
             mLooper.dispatchAll();
             mClientListener.onStopped();
             mLooper.dispatchAll();
@@ -1526,11 +1614,11 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         assertInDisabledState();
 
         assertEnteredEcmMode(() -> {
-            mActiveModeWarden.emergencyCallbackModeChanged(true);
+            emergencyCallbackModeChanged(true);
             mLooper.dispatchAll();
         }, 0); // still only 1 shutdown
 
-        mActiveModeWarden.emergencyCallbackModeChanged(false);
+        emergencyCallbackModeChanged(false);
         mLooper.dispatchAll();
 
         // stay in ecm, do not send an additional client mode trigger
@@ -1541,7 +1629,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         // client mode still only started once
         verify(mClientModeManager).start();
 
-        mActiveModeWarden.emergencyCallStateChanged(false);
+        emergencyCallStateChanged(false);
         mLooper.dispatchAll();
 
         // now we can re-enable wifi
@@ -1569,11 +1657,11 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         when(mFacade.getConfigWiFiDisableInECBM(mContext)).thenReturn(true);
 
         assertEnteredEcmMode(() -> {
-            mActiveModeWarden.emergencyCallbackModeChanged(true);
-            mActiveModeWarden.emergencyCallStateChanged(true);
-            mActiveModeWarden.emergencyCallStateChanged(true);
-            mActiveModeWarden.emergencyCallbackModeChanged(true);
-            mActiveModeWarden.emergencyCallbackModeChanged(true);
+            emergencyCallbackModeChanged(true);
+            emergencyCallStateChanged(true);
+            emergencyCallStateChanged(true);
+            emergencyCallbackModeChanged(true);
+            emergencyCallbackModeChanged(true);
             mLooper.dispatchAll();
             mClientListener.onStopped();
             mLooper.dispatchAll();
@@ -1581,13 +1669,13 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         assertInDisabledState();
 
         assertEnteredEcmMode(() -> {
-            mActiveModeWarden.emergencyCallbackModeChanged(false);
+            emergencyCallbackModeChanged(false);
             mLooper.dispatchAll();
-            mActiveModeWarden.emergencyCallbackModeChanged(false);
+            emergencyCallbackModeChanged(false);
             mLooper.dispatchAll();
-            mActiveModeWarden.emergencyCallbackModeChanged(false);
+            emergencyCallbackModeChanged(false);
             mLooper.dispatchAll();
-            mActiveModeWarden.emergencyCallbackModeChanged(false);
+            emergencyCallbackModeChanged(false);
             mLooper.dispatchAll();
         }, 0);
 
@@ -1596,7 +1684,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         assertInDisabledState();
 
         // now we will exit ECM
-        mActiveModeWarden.emergencyCallStateChanged(false);
+        emergencyCallStateChanged(false);
         mLooper.dispatchAll();
 
         // now we can re-enable wifi
@@ -1615,7 +1703,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         when(mFacade.getConfigWiFiDisableInECBM(mContext)).thenReturn(true);
         // test ecm changed
         assertEnteredEcmMode(() -> {
-            mActiveModeWarden.emergencyCallbackModeChanged(true);
+            emergencyCallbackModeChanged(true);
             mLooper.dispatchAll();
         });
 
@@ -1645,7 +1733,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         when(mFacade.getConfigWiFiDisableInECBM(mContext)).thenReturn(true);
         assertEnteredEcmMode(() -> {
             // test ecm changed
-            mActiveModeWarden.emergencyCallbackModeChanged(true);
+            emergencyCallbackModeChanged(true);
             mLooper.dispatchAll();
         });
 
@@ -1671,7 +1759,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         when(mFacade.getConfigWiFiDisableInECBM(mContext)).thenReturn(true);
         assertEnteredEcmMode(() -> {
             // test ecm changed
-            mActiveModeWarden.emergencyCallbackModeChanged(true);
+            emergencyCallbackModeChanged(true);
             mLooper.dispatchAll();
         });
 
@@ -1695,7 +1783,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         when(mFacade.getConfigWiFiDisableInECBM(mContext)).thenReturn(true);
         assertEnteredEcmMode(() -> {
             // test ecm changed
-            mActiveModeWarden.emergencyCallbackModeChanged(true);
+            emergencyCallbackModeChanged(true);
             mLooper.dispatchAll();
         });
 
@@ -1740,7 +1828,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         when(mFacade.getConfigWiFiDisableInECBM(mContext)).thenReturn(true);
         assertEnteredEcmMode(() -> {
             // test ecm changed
-            mActiveModeWarden.emergencyCallbackModeChanged(true);
+            emergencyCallbackModeChanged(true);
             mLooper.dispatchAll();
             mClientListener.onStopped();
             mLooper.dispatchAll();
@@ -1765,7 +1853,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         when(mFacade.getConfigWiFiDisableInECBM(mContext)).thenReturn(true);
         assertEnteredEcmMode(() -> {
             // test ecm changed
-            mActiveModeWarden.emergencyCallbackModeChanged(true);
+            emergencyCallbackModeChanged(true);
             mLooper.dispatchAll();
             mClientListener.onStopped();
             mLooper.dispatchAll();
@@ -1797,10 +1885,12 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         // add an "unexpected" sta mode stop to simulate a single interface device
         mClientListener.onStopped();
         mLooper.dispatchAll();
+        verify(mModeChangeCallback).onActiveModeManagerRemoved(mClientModeManager);
 
         // Now stop the AP
         mSoftApListener.onStopped();
         mLooper.dispatchAll();
+        verify(mModeChangeCallback).onActiveModeManagerRemoved(mSoftApManager);
 
         // We should re-enable client mode
         verify(mClientModeManager, times(2)).start();
@@ -1843,7 +1933,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         enableWifi();
         mActiveModeWarden.recoveryRestartWifi(SelfRecovery.REASON_WIFINATIVE_FAILURE);
         mLooper.dispatchAll();
-        verify(mClientModeImpl).takeBugReport(anyString(), anyString());
+        verify(mWifiDiagnostics).takeBugReport(anyString(), anyString());
     }
 
     @Test
@@ -1851,7 +1941,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         enableWifi();
         mActiveModeWarden.recoveryRestartWifi(SelfRecovery.REASON_LAST_RESORT_WATCHDOG);
         mLooper.dispatchAll();
-        verify(mClientModeImpl, never()).takeBugReport(anyString(), anyString());
+        verify(mWifiDiagnostics, never()).takeBugReport(anyString(), anyString());
     }
 
     /**
@@ -1867,6 +1957,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         mClientListener.onStopped();
         mLooper.dispatchAll();
         assertInDisabledState();
+        verify(mModeChangeCallback).onActiveModeManagerRemoved(mClientModeManager);
     }
 
     /**
@@ -1930,6 +2021,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         mClientListener.onStopped();
         mLooper.dispatchAll();
         assertInDisabledState();
+        verify(mModeChangeCallback).onActiveModeManagerRemoved(mClientModeManager);
 
         mLooper.moveTimeForward(TEST_WIFI_RECOVERY_DELAY_MS);
         mLooper.dispatchAll();
@@ -1963,6 +2055,8 @@ public class ActiveModeWardenTest extends WifiBaseTest {
             mLooper.dispatchAll();
         });
 
+        verify(mModeChangeCallback).onActiveModeManagerRemoved(mClientModeManager);
+
         // still only started once
         verify(mClientModeManager).start();
 
@@ -1986,11 +2080,12 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         enableWifi();
         assertInEnabledState();
         verify(mClientModeManager).start();
+        verify(mClientModeManager).enableVerboseLogging(false);
         verify(mClientModeManager).setRole(ROLE_CLIENT_PRIMARY);
 
         when(mFacade.getConfigWiFiDisableInECBM(mContext)).thenReturn(true);
         assertEnteredEcmMode(() -> {
-            mActiveModeWarden.emergencyCallStateChanged(true);
+            emergencyCallStateChanged(true);
             mLooper.dispatchAll();
             mClientListener.onStopped();
             mLooper.dispatchAll();
@@ -1999,6 +2094,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         assertInDisabledState();
         verify(mClientModeManager).stop();
         verify(mClientModeManager, atLeastOnce()).getRole();
+        verify(mModeChangeCallback).onActiveModeManagerRemoved(mClientModeManager);
 
         mActiveModeWarden.recoveryRestartWifi(SelfRecovery.REASON_LAST_RESORT_WATCHDOG);
         mLooper.dispatchAll();
@@ -2086,13 +2182,13 @@ public class ActiveModeWardenTest extends WifiBaseTest {
 
         when(mFacade.getConfigWiFiDisableInECBM(mContext)).thenReturn(true);
         assertEnteredEcmMode(() -> {
-            mActiveModeWarden.emergencyCallbackModeChanged(true);
+            emergencyCallbackModeChanged(true);
             mLooper.dispatchAll();
         });
         assertInEnabledState();
         verify(mClientModeManager).stop();
 
-        mActiveModeWarden.emergencyCallbackModeChanged(false);
+        emergencyCallbackModeChanged(false);
         mLooper.dispatchAll();
 
         assertThat(mActiveModeWarden.isInEmergencyMode()).isFalse();
@@ -2174,6 +2270,94 @@ public class ActiveModeWardenTest extends WifiBaseTest {
     }
 
     @Test
+    public void requestRemoveLocalOnlyClientModeManager() throws Exception {
+        enterClientModeActiveState();
+
+        // Ensure that we can create more client ifaces.
+        mClientIfaceAvailableListener.getValue().onAvailabilityChanged(true);
+        mLooper.dispatchAll();
+        assertTrue(mActiveModeWarden.canRequestMoreClientModeManagers());
+
+        ConcreteClientModeManager localOnlyClientModeManager =
+                mock(ConcreteClientModeManager.class);
+        GeneralUtil.Mutable<ActiveModeManager.Listener> localOnlyClientListener =
+                new GeneralUtil.Mutable<>();
+        doAnswer((invocation) -> {
+            Object[] args = invocation.getArguments();
+            localOnlyClientListener.value = (ActiveModeManager.Listener) args[0];
+            return localOnlyClientModeManager;
+        }).when(mWifiInjector).makeClientModeManager(any(ActiveModeManager.Listener.class));
+        when(localOnlyClientModeManager.getRole()).thenReturn(ROLE_CLIENT_LOCAL_ONLY);
+
+        ActiveModeWarden.ExternalClientModeManagerRequestListener externalRequestListener = mock(
+                ActiveModeWarden.ExternalClientModeManagerRequestListener.class);
+        mActiveModeWarden.requestLocalOnlyClientModeManager(externalRequestListener);
+        mLooper.dispatchAll();
+        verify(localOnlyClientModeManager).start();
+        verify(localOnlyClientModeManager).setRole(ROLE_CLIENT_LOCAL_ONLY);
+        localOnlyClientListener.value.onStarted();
+        mLooper.dispatchAll();
+        // Returns the new local only client mode manager.
+        ArgumentCaptor<ClientModeManager> requestedClientModeManager =
+                ArgumentCaptor.forClass(ClientModeManager.class);
+        verify(externalRequestListener).onAnswer(requestedClientModeManager.capture());
+        assertEquals(localOnlyClientModeManager, requestedClientModeManager.getValue());
+
+        mActiveModeWarden.removeLocalOnlyClientModeManager(requestedClientModeManager.getValue());
+        mLooper.dispatchAll();
+        verify(localOnlyClientModeManager).stop();
+        localOnlyClientListener.value.onStopped();
+        mLooper.dispatchAll();
+        verify(mModeChangeCallback).onActiveModeManagerRemoved(localOnlyClientModeManager);
+    }
+
+    @Test
+    public void requestRemoveLocalOnlyClientModeManagerWhenNotAllowed() throws Exception {
+        enterClientModeActiveState();
+
+        // Ensure that we cannot create more client ifaces.
+        mClientIfaceAvailableListener.getValue().onAvailabilityChanged(false);
+        mLooper.dispatchAll();
+        assertFalse(mActiveModeWarden.canRequestMoreClientModeManagers());
+
+        ClientModeManager localOnlyClientModeManager = mock(ClientModeManager.class);
+        GeneralUtil.Mutable<ActiveModeManager.Listener> localOnlyClientListener =
+                new GeneralUtil.Mutable<>();
+        doAnswer((invocation) -> {
+            Object[] args = invocation.getArguments();
+            localOnlyClientListener.value = (ActiveModeManager.Listener) args[0];
+            return localOnlyClientModeManager;
+        }).when(mWifiInjector).makeClientModeManager(any(ActiveModeManager.Listener.class));
+        when(localOnlyClientModeManager.getRole()).thenReturn(ROLE_CLIENT_LOCAL_ONLY);
+
+        ActiveModeWarden.ExternalClientModeManagerRequestListener externalRequestListener = mock(
+                ActiveModeWarden.ExternalClientModeManagerRequestListener.class);
+        mActiveModeWarden.requestLocalOnlyClientModeManager(externalRequestListener);
+        mLooper.dispatchAll();
+        verifyNoMoreInteractions(localOnlyClientModeManager);
+        // Returns the existing primary client mode manager.
+        ArgumentCaptor<ClientModeManager> requestedClientModeManager =
+                ArgumentCaptor.forClass(ClientModeManager.class);
+        verify(externalRequestListener).onAnswer(requestedClientModeManager.capture());
+        assertEquals(mClientModeManager, requestedClientModeManager.getValue());
+
+        mActiveModeWarden.removeLocalOnlyClientModeManager(requestedClientModeManager.getValue());
+        mLooper.dispatchAll();
+        verifyNoMoreInteractions(localOnlyClientModeManager);
+    }
+
+
+    @Test
+    public void requestLocalOnlyClientModeManagerWhenWifiIsOff() throws Exception {
+        ActiveModeWarden.ExternalClientModeManagerRequestListener externalRequestListener = mock(
+                ActiveModeWarden.ExternalClientModeManagerRequestListener.class);
+        mActiveModeWarden.requestLocalOnlyClientModeManager(externalRequestListener);
+        mLooper.dispatchAll();
+
+        verify(externalRequestListener).onAnswer(null);
+    }
+
+    @Test
     public void airplaneModeToggleOnDisablesWifi() throws Exception {
         enterClientModeActiveState();
         assertInEnabledState();
@@ -2221,7 +2405,6 @@ public class ActiveModeWardenTest extends WifiBaseTest {
 
         // APM toggle off before the stop is complete.
         assertInEnabledState();
-        when(mClientModeManager.isStopping()).thenReturn(true);
         when(mSettingsStore.isAirplaneModeOn()).thenReturn(false);
         mActiveModeWarden.airplaneModeToggled();
         mLooper.dispatchAll();
@@ -2255,7 +2438,6 @@ public class ActiveModeWardenTest extends WifiBaseTest {
 
         // APM toggle off before the stop is complete.
         assertInEnabledState();
-        when(mClientModeManager.isStopping()).thenReturn(true);
         when(mSettingsStore.isAirplaneModeOn()).thenReturn(false);
         mActiveModeWarden.airplaneModeToggled();
         // This test is identical to
@@ -2293,8 +2475,6 @@ public class ActiveModeWardenTest extends WifiBaseTest {
 
         // APM toggle off before the stop is complete.
         assertInEnabledState();
-        when(mClientModeManager.isStopping()).thenReturn(true);
-        when(mSoftApManager.isStopping()).thenReturn(true);
         when(mSettingsStore.isAirplaneModeOn()).thenReturn(false);
         mActiveModeWarden.airplaneModeToggled();
         mLooper.dispatchAll();
@@ -2316,5 +2496,32 @@ public class ActiveModeWardenTest extends WifiBaseTest {
 
         // We should be back to enabled state.
         assertInEnabledState();
+    }
+
+    @Test
+    public void propagateVerboseLoggingFlagToClientModeManager() throws Exception {
+        mActiveModeWarden.enableVerboseLogging(true);
+        enterClientModeActiveState();
+        assertInEnabledState();
+        verify(mClientModeManager).enableVerboseLogging(true);
+
+        mActiveModeWarden.enableVerboseLogging(false);
+        verify(mClientModeManager).enableVerboseLogging(false);
+    }
+
+    @Test
+    public void propagateConnectedWifiScorerToPrimaryClientModeManager() throws Exception {
+        IBinder iBinder = mock(IBinder.class);
+        IWifiConnectedNetworkScorer iScorer = mock(IWifiConnectedNetworkScorer.class);
+        mActiveModeWarden.setWifiConnectedNetworkScorer(iBinder, iScorer);
+        enterClientModeActiveState();
+        assertInEnabledState();
+        verify(mClientModeManager).setWifiConnectedNetworkScorer(iBinder, iScorer);
+
+        mActiveModeWarden.clearWifiConnectedNetworkScorer();
+        verify(mClientModeManager).clearWifiConnectedNetworkScorer();
+
+        mActiveModeWarden.setWifiConnectedNetworkScorer(iBinder, iScorer);
+        verify(mClientModeManager, times(2)).setWifiConnectedNetworkScorer(iBinder, iScorer);
     }
 }

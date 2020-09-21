@@ -20,7 +20,10 @@ import static android.net.wifi.WifiConfiguration.MeteredOverride;
 
 import static java.lang.StrictMath.toIntExact;
 
+import android.content.BroadcastReceiver;
 import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.hardware.wifi.supplicant.V1_0.ISupplicantStaIfaceCallback;
 import android.net.wifi.EAPConstants;
 import android.net.wifi.IOnWifiUsabilityStatsListener;
@@ -41,6 +44,7 @@ import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.Message;
+import android.os.PowerManager;
 import android.os.RemoteException;
 import android.os.SystemProperties;
 import android.telephony.TelephonyManager;
@@ -1239,7 +1243,6 @@ public class WifiMetrics {
         mFacade = facade;
         mClock = clock;
         mCurrentConnectionEvent = null;
-        mScreenOn = true;
         mWifiState = WifiMetricsProto.WifiLog.WIFI_DISABLED;
         mRecordStartTimeSec = mClock.getElapsedSinceBootMillis() / 1000;
         mWifiAwareMetrics = awareMetrics;
@@ -1263,6 +1266,23 @@ public class WifiMetrics {
         mCurrentDeviceMobilityStatePnoScanStartMs = -1;
         mOnWifiUsabilityListeners =
                 new ExternalCallbackTracker<IOnWifiUsabilityStatsListener>(mHandler);
+
+        IntentFilter filter = new IntentFilter();
+        filter.addAction(Intent.ACTION_SCREEN_ON);
+        filter.addAction(Intent.ACTION_SCREEN_OFF);
+        context.registerReceiver(
+                new BroadcastReceiver() {
+                    @Override
+                    public void onReceive(Context context, Intent intent) {
+                        String action = intent.getAction();
+                        if (action.equals(Intent.ACTION_SCREEN_ON)) {
+                            setScreenState(true);
+                        } else if (action.equals(Intent.ACTION_SCREEN_OFF)) {
+                            setScreenState(false);
+                        }
+                    }
+                }, filter, null, mHandler);
+        setScreenState(context.getSystemService(PowerManager.class).isInteractive());
     }
 
     /** Sets internal ScoringParams member */
@@ -4632,7 +4652,7 @@ public class WifiMetrics {
     /**
      *  Set screen state (On/Off)
      */
-    public void setScreenState(boolean screenOn) {
+    private void setScreenState(boolean screenOn) {
         synchronized (mLock) {
             mScreenOn = screenOn;
         }
@@ -4658,8 +4678,9 @@ public class WifiMetrics {
         switch (msg.what) {
             case WifiMonitor.ASSOCIATION_REJECTION_EVENT:
                 event.type = StaEvent.TYPE_ASSOCIATION_REJECTION_EVENT;
-                event.associationTimedOut = msg.arg1 > 0 ? true : false;
-                event.status = msg.arg2;
+                AssocRejectEventInfo assocRejectEventInfo = (AssocRejectEventInfo) msg.obj;
+                event.associationTimedOut = assocRejectEventInfo.timedOut;
+                event.status = assocRejectEventInfo.statusCode;
                 break;
             case WifiMonitor.AUTHENTICATION_FAILURE_EVENT:
                 event.type = StaEvent.TYPE_AUTHENTICATION_FAILURE_EVENT;
@@ -4685,8 +4706,9 @@ public class WifiMetrics {
                 break;
             case WifiMonitor.NETWORK_DISCONNECTION_EVENT:
                 event.type = StaEvent.TYPE_NETWORK_DISCONNECTION_EVENT;
-                event.reason = msg.arg2;
-                event.localGen = msg.arg1 == 0 ? false : true;
+                DisconnectEventInfo disconnectEventInfo = (DisconnectEventInfo) msg.obj;
+                event.reason = disconnectEventInfo.reasonCode;
+                event.localGen = disconnectEventInfo.locallyGenerated;
                 break;
             case WifiMonitor.SUPPLICANT_STATE_CHANGE_EVENT:
                 logEvent = false;
@@ -4997,10 +5019,6 @@ public class WifiMetrics {
             sb.append(" lastWifiUsabilityScore=").append(event.lastWifiUsabilityScore);
             sb.append(" lastPredictionHorizonSec=").append(event.lastPredictionHorizonSec);
         }
-        if (event.mobileTxBytes > 0) sb.append(" mobileTxBytes=").append(event.mobileTxBytes);
-        if (event.mobileRxBytes > 0) sb.append(" mobileRxBytes=").append(event.mobileRxBytes);
-        if (event.totalTxBytes > 0) sb.append(" totalTxBytes=").append(event.totalTxBytes);
-        if (event.totalRxBytes > 0) sb.append(" totalRxBytes=").append(event.totalRxBytes);
         sb.append(" screenOn=").append(event.screenOn);
         sb.append(" cellularData=").append(event.isCellularDataAvailable);
         if (event.supplicantStateChangesBitmask != 0) {
@@ -5010,7 +5028,10 @@ public class WifiMetrics {
         if (event.configInfo != null) {
             sb.append(", ").append(configInfoToString(event.configInfo));
         }
-
+        if (event.mobileTxBytes > 0) sb.append(" mobileTxBytes=").append(event.mobileTxBytes);
+        if (event.mobileRxBytes > 0) sb.append(" mobileRxBytes=").append(event.mobileRxBytes);
+        if (event.totalTxBytes > 0) sb.append(" totalTxBytes=").append(event.totalTxBytes);
+        if (event.totalRxBytes > 0) sb.append(" totalRxBytes=").append(event.totalRxBytes);
         return sb.toString();
     }
 

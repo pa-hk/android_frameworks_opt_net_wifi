@@ -42,7 +42,6 @@ import java.util.Set;
 /**
  * Listen for events from the wpa_supplicant & wificond and broadcast them on
  * to the various {@link ClientModeImpl} modules interested in handling these events.
- * @hide
  */
 public class WifiMonitor {
     private static final String TAG = "WifiMonitor";
@@ -50,10 +49,6 @@ public class WifiMonitor {
     /* Supplicant events reported to a state machine */
     private static final int BASE = Protocol.BASE_WIFI_MONITOR;
 
-    /* Connection to supplicant established */
-    public static final int SUP_CONNECTION_EVENT                 = BASE + 1;
-    /* Connection to supplicant lost */
-    public static final int SUP_DISCONNECTION_EVENT              = BASE + 2;
    /* Network connection completed */
     public static final int NETWORK_CONNECTION_EVENT             = BASE + 3;
     /* Network disconnection completed */
@@ -101,9 +96,6 @@ public class WifiMonitor {
     /* MBO/OCE events */
     public static final int MBO_OCE_BSS_TM_HANDLING_DONE         = BASE + 71;
 
-    /* Fils network connection completed */
-    public static final int FILS_NETWORK_CONNECTION_EVENT        = BASE + 62;
-
     /* Take some gap, start DPP event from 101*/
     public static final int DPP_EVENT                            = BASE + 101;
 
@@ -115,20 +107,10 @@ public class WifiMonitor {
     private static final int REASON_TKIP_ONLY_PROHIBITED = 1;
     private static final int REASON_WEP_PROHIBITED = 2;
 
-    private final WifiInjector mWifiInjector;
     private boolean mVerboseLoggingEnabled = false;
-    private boolean mConnected = false;
 
-    public WifiMonitor(WifiInjector wifiInjector) {
-        mWifiInjector = wifiInjector;
-    }
-
-    void enableVerboseLogging(int verbose) {
-        if (verbose > 0) {
-            mVerboseLoggingEnabled = true;
-        } else {
-            mVerboseLoggingEnabled = false;
-        }
+    void enableVerboseLogging(boolean verbose) {
+        mVerboseLoggingEnabled = verbose;
     }
 
     private final Map<String, SparseArray<Set<Handler>>> mHandlerMap = new HashMap<>();
@@ -185,12 +167,6 @@ public class WifiMonitor {
         mMonitoringMap.put(iface, enabled);
     }
 
-    private void setMonitoringNone() {
-        for (String iface : mMonitoringMap.keySet()) {
-            setMonitoring(iface, false);
-        }
-    }
-
     /**
      * Start Monitoring for wpa_supplicant events.
      *
@@ -199,7 +175,6 @@ public class WifiMonitor {
     public synchronized void startMonitoring(String iface) {
         if (mVerboseLoggingEnabled) Log.d(TAG, "startMonitoring(" + iface + ")");
         setMonitoring(iface, true);
-        broadcastSupplicantConnectionEvent(iface);
     }
 
     /**
@@ -210,18 +185,7 @@ public class WifiMonitor {
     public synchronized void stopMonitoring(String iface) {
         if (mVerboseLoggingEnabled) Log.d(TAG, "stopMonitoring(" + iface + ")");
         setMonitoring(iface, true);
-        broadcastSupplicantDisconnectionEvent(iface);
         setMonitoring(iface, false);
-    }
-
-    /**
-     * Stop Monitoring for wpa_supplicant events.
-     *
-     * TODO: Add unit tests for these once we remove the legacy code.
-     */
-    public synchronized void stopAllMonitoring() {
-        mConnected = false;
-        setMonitoringNone();
     }
 
 
@@ -274,6 +238,7 @@ public class WifiMonitor {
             for (Map.Entry<String, SparseArray<Set<Handler>>> entry : mHandlerMap.entrySet()) {
                 if (isMonitoring(entry.getKey())) {
                     Set<Handler> ifaceWhatHandlers = entry.getValue().get(message.what);
+                    if (ifaceWhatHandlers == null) continue;
                     for (Handler handler : ifaceWhatHandlers) {
                         if (handler != null) {
                             sendMessage(handler, Message.obtain(message));
@@ -472,11 +437,13 @@ public class WifiMonitor {
      * @param iface Name of iface on which this occurred.
      * @param status Status code for association rejection.
      * @param timedOut Indicates if the association timed out.
+     * @param ssid SSID of the access point.
      * @param bssid BSSID of the access point from which we received the reject.
      */
     public void broadcastAssociationRejectionEvent(String iface, int status, boolean timedOut,
-                                                   String bssid) {
-        sendMessage(iface, ASSOCIATION_REJECTION_EVENT, timedOut ? 1 : 0, status, bssid);
+            String ssid, String bssid) {
+        sendMessage(iface, ASSOCIATION_REJECTION_EVENT,
+                new AssocRejectEventInfo(ssid, bssid, status, timedOut));
     }
 
     /**
@@ -504,34 +471,27 @@ public class WifiMonitor {
      *
      * @param iface Name of iface on which this occurred.
      * @param networkId ID of the network in wpa_supplicant.
+     * @param filsHlpSent Whether the connection used FILS.
      * @param bssid BSSID of the access point.
      */
-    public void broadcastNetworkConnectionEvent(String iface, int networkId, String bssid) {
-        sendMessage(iface, NETWORK_CONNECTION_EVENT, networkId, 0, bssid);
-    }
-
-    /**
-     * Broadcast the fils network connection event to all the handlers registered for this event.
-     *
-     * @param iface Name of iface on which this occurred.
-     * @param networkId ID of the network in wpa_supplicant.
-     * @param bssid BSSID of the access point.
-     */
-    public void broadcastFilsNetworkConnectionEvent(String iface, int networkId, String bssid) {
-        sendMessage(iface, FILS_NETWORK_CONNECTION_EVENT, networkId, 0, bssid);
+    public void broadcastNetworkConnectionEvent(String iface, int networkId, boolean filsHlpSent,
+            String bssid) {
+        sendMessage(iface, NETWORK_CONNECTION_EVENT, networkId, filsHlpSent ? 1 : 0, bssid);
     }
 
     /**
      * Broadcast the network disconnection event to all the handlers registered for this event.
      *
      * @param iface Name of iface on which this occurred.
-     * @param local Whether the disconnect was locally triggered.
+     * @param locallyGenerated Whether the disconnect was locally triggered.
      * @param reason Disconnect reason code.
+     * @param ssid SSID of the access point.
      * @param bssid BSSID of the access point.
      */
-    public void broadcastNetworkDisconnectionEvent(String iface, int local, int reason,
-                                                   String bssid) {
-        sendMessage(iface, NETWORK_DISCONNECTION_EVENT, local, reason, bssid);
+    public void broadcastNetworkDisconnectionEvent(String iface, boolean locallyGenerated,
+            int reason, String ssid, String bssid) {
+        sendMessage(iface, NETWORK_DISCONNECTION_EVENT,
+                new DisconnectEventInfo(ssid, bssid, reason, locallyGenerated));
     }
 
     /**
@@ -547,26 +507,6 @@ public class WifiMonitor {
                                                     SupplicantState newSupplicantState) {
         sendMessage(iface, SUPPLICANT_STATE_CHANGE_EVENT, 0, 0,
                 new StateChangeResult(networkId, wifiSsid, bssid, newSupplicantState));
-    }
-
-    /**
-     * Broadcast the connection to wpa_supplicant event to all the handlers registered for
-     * this event.
-     *
-     * @param iface Name of iface on which this occurred.
-     */
-    public void broadcastSupplicantConnectionEvent(String iface) {
-        sendMessage(iface, SUP_CONNECTION_EVENT);
-    }
-
-    /**
-     * Broadcast the loss of connection to wpa_supplicant event to all the handlers registered for
-     * this event.
-     *
-     * @param iface Name of iface on which this occurred.
-     */
-    public void broadcastSupplicantDisconnectionEvent(String iface) {
-        sendMessage(iface, SUP_DISCONNECTION_EVENT);
     }
 
     /**

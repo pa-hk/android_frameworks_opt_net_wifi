@@ -54,7 +54,6 @@ import com.android.server.wifi.WifiScoreCard.PerNetwork;
 import com.android.server.wifi.proto.nano.WifiMetricsProto.UserActionEvent;
 import com.android.server.wifi.util.LruConnectionTracker;
 import com.android.server.wifi.util.WifiPermissionsUtil;
-import com.android.server.wifi.util.WifiPermissionsWrapper;
 import com.android.wifi.resources.R;
 
 import org.junit.After;
@@ -95,6 +94,7 @@ public class WifiConfigManagerTest extends WifiBaseTest {
     private static final int TEST_NO_PERM_UID = 7;
     private static final int TEST_UPDATE_UID = 4;
     private static final int TEST_SYSUI_UID = 56;
+    private static final int TEST_OTHER_USER_UID = 1000000000;
     private static final int TEST_DEFAULT_USER = UserHandle.USER_SYSTEM;
     private static final int TEST_MAX_NUM_ACTIVE_CHANNELS_FOR_PARTIAL_SCAN = 5;
     private static final Integer[] TEST_FREQ_LIST = {2400, 2450, 5150, 5175, 5650};
@@ -102,6 +102,7 @@ public class WifiConfigManagerTest extends WifiBaseTest {
     private static final String TEST_UPDATE_NAME = "com.wificonfigmanager.update";
     private static final String TEST_NO_PERM_NAME = "com.wificonfigmanager.noperm";
     private static final String TEST_WIFI_NAME = "android.uid.system";
+    private static final String TEST_OTHER_USER_NAME = "com.test.package";
     private static final String TEST_DEFAULT_GW_MAC_ADDRESS = "0f:67:ad:ef:09:34";
     private static final String TEST_STATIC_PROXY_HOST_1 = "192.168.48.1";
     private static final int    TEST_STATIC_PROXY_PORT_1 = 8000;
@@ -129,7 +130,6 @@ public class WifiConfigManagerTest extends WifiBaseTest {
     @Mock private WifiConfigStore mWifiConfigStore;
     @Mock private PackageManager mPackageManager;
     @Mock private WifiPermissionsUtil mWifiPermissionsUtil;
-    @Mock private WifiPermissionsWrapper mWifiPermissionsWrapper;
     @Mock private WifiInjector mWifiInjector;
     @Mock private WifiLastResortWatchdog mWifiLastResortWatchdog;
     @Mock private NetworkListSharedStoreData mNetworkListSharedStoreData;
@@ -196,6 +196,8 @@ public class WifiConfigManagerTest extends WifiBaseTest {
                     return TEST_NO_PERM_NAME;
                 } else if (uid == Process.WIFI_UID) {
                     return TEST_WIFI_NAME;
+                } else if (uid == TEST_OTHER_USER_UID) {
+                    return TEST_OTHER_USER_NAME;
                 }
                 fail("Unexpected UID: " + uid);
                 return "";
@@ -214,14 +216,7 @@ public class WifiConfigManagerTest extends WifiBaseTest {
         when(mWifiPermissionsUtil.checkNetworkSettingsPermission(anyInt())).thenReturn(true);
         when(mWifiPermissionsUtil.isDeviceOwner(anyInt(), any())).thenReturn(false);
         when(mWifiPermissionsUtil.isProfileOwner(anyInt(), any())).thenReturn(false);
-        when(mWifiInjector.getWifiNetworkSuggestionsManager())
-                .thenReturn(mWifiNetworkSuggestionsManager);
-        when(mWifiInjector.getBssidBlocklistMonitor()).thenReturn(mBssidBlocklistMonitor);
-        when(mWifiInjector.getWifiLastResortWatchdog()).thenReturn(mWifiLastResortWatchdog);
-        when(mWifiInjector.getWifiLastResortWatchdog().shouldIgnoreSsidUpdate())
-                .thenReturn(false);
-        when(mWifiInjector.getMacAddressUtil()).thenReturn(mMacAddressUtil);
-        when(mWifiInjector.getWifiMetrics()).thenReturn(mWifiMetrics);
+        when(mWifiLastResortWatchdog.shouldIgnoreSsidUpdate()).thenReturn(false);
         when(mMacAddressUtil.calculatePersistentMac(any(), any())).thenReturn(TEST_RANDOMIZED_MAC);
         when(mWifiScoreCard.lookupNetwork(any())).thenReturn(mPerNetwork);
 
@@ -1534,14 +1529,14 @@ public class WifiConfigManagerTest extends WifiBaseTest {
      * {@link WifiConfigManager#updateLastConnectUid(int, int)}.
      */
     @Test
-    public void testUpdateLastConnectUid() throws Exception {
+    public void testConnectNetworkUpdatesLastConnectUid() throws Exception {
         WifiConfiguration openNetwork = WifiConfigurationTestUtil.createOpenNetwork();
 
         NetworkUpdateResult result = verifyAddNetworkToWifiConfigManager(openNetwork);
 
-        assertTrue(
-                mWifiConfigManager.updateLastConnectUid(
-                        result.getNetworkId(), TEST_CREATOR_UID));
+        mWifiConfigManager
+                .updateBeforeConnect(result.getNetworkId(), TEST_CREATOR_UID);
+
         WifiConfiguration retrievedNetwork =
                 mWifiConfigManager.getConfiguredNetwork(result.getNetworkId());
         assertEquals(TEST_CREATOR_UID, retrievedNetwork.lastConnectUid);
@@ -1608,7 +1603,7 @@ public class WifiConfigManagerTest extends WifiBaseTest {
                 result.getNetworkId() + 1, TEST_CREATOR_UID, TEST_CREATOR_NAME));
         assertFalse(mWifiConfigManager.updateNetworkSelectionStatus(
                 result.getNetworkId() + 1, NetworkSelectionStatus.DISABLED_BY_WIFI_MANAGER));
-        assertFalse(mWifiConfigManager.updateLastConnectUid(
+        assertFalse(mWifiConfigManager.updateBeforeConnect(
                 result.getNetworkId() + 1, TEST_CREATOR_UID));
     }
 
@@ -2915,12 +2910,73 @@ public class WifiConfigManagerTest extends WifiBaseTest {
         Set<Integer> removedNetworks = mWifiConfigManager.handleUserSwitch(user2);
         verify(mWifiConfigStore).switchUserStoresAndRead(any(List.class));
         assertTrue((removedNetworks.size() == 1) && (removedNetworks.contains(user1NetworkId)));
+        verify(mWcmListener).onNetworkRemoved(any());
 
         // Set the expected networks to be |sharedNetwork| and |user2Network|.
         List<WifiConfiguration> expectedNetworks = new ArrayList<WifiConfiguration>() {
             {
                 add(sharedNetwork);
                 add(user2Network);
+            }
+        };
+        WifiConfigurationTestUtil.assertConfigurationsEqualForConfigManagerAddOrUpdate(
+                expectedNetworks, mWifiConfigManager.getConfiguredNetworksWithPasswords());
+
+        // Send another user switch  indication with the same user 2. This should be ignored and
+        // hence should not remove any new networks.
+        when(mUserManager.isUserUnlockingOrUnlocked(UserHandle.of(user2))).thenReturn(true);
+        removedNetworks = mWifiConfigManager.handleUserSwitch(user2);
+        assertTrue(removedNetworks.isEmpty());
+    }
+
+    @Test
+    public void testHandleUserSwitchRemovesOldUserEphemeralNetworks() throws Exception {
+        int user1 = TEST_DEFAULT_USER;
+        int user2 = TEST_DEFAULT_USER + 1;
+        setupUserProfiles(user2);
+
+        int appId = 674;
+
+        // Create 2 networks. 1 ephemeral network for user1 and 1 shared.
+        final WifiConfiguration sharedNetwork = WifiConfigurationTestUtil.createPskNetwork();
+
+        // Set up the store data that is loaded initially.
+        List<WifiConfiguration> sharedNetworks = new ArrayList<WifiConfiguration>() {
+            {
+                add(sharedNetwork);
+            }
+        };
+        setupStoreDataForRead(sharedNetworks, Collections.EMPTY_LIST);
+        assertTrue(mWifiConfigManager.loadFromStore());
+        verify(mWifiConfigStore).read();
+
+        WifiConfiguration ephemeralNetwork = WifiConfigurationTestUtil.createEphemeralNetwork();
+        verifyAddEphemeralNetworkToWifiConfigManager(ephemeralNetwork);
+
+        // Fetch the network ID assigned to the user 1 network initially.
+        int ephemeralNetworkId = WifiConfiguration.INVALID_NETWORK_ID;
+        List<WifiConfiguration> retrievedNetworks =
+                mWifiConfigManager.getConfiguredNetworksWithPasswords();
+        for (WifiConfiguration network : retrievedNetworks) {
+            if (network.getKey().equals(ephemeralNetwork.getKey())) {
+                ephemeralNetworkId = network.networkId;
+            }
+        }
+
+        // Now switch the user to user 2 and ensure that user 1's private network has been removed.
+        when(mUserManager.isUserUnlockingOrUnlocked(UserHandle.of(user2))).thenReturn(true);
+        Set<Integer> removedNetworks = mWifiConfigManager.handleUserSwitch(user2);
+        verify(mWifiConfigStore).switchUserStoresAndRead(any(List.class));
+        assertTrue((removedNetworks.size() == 1));
+        assertTrue(removedNetworks.contains(ephemeralNetworkId));
+        verifyNetworkRemoveBroadcast();
+        verify(mWcmListener).onNetworkRemoved(any());
+
+
+        // Set the expected networks to be |sharedNetwork|.
+        List<WifiConfiguration> expectedNetworks = new ArrayList<WifiConfiguration>() {
+            {
+                add(sharedNetwork);
             }
         };
         WifiConfigurationTestUtil.assertConfigurationsEqualForConfigManagerAddOrUpdate(
@@ -3595,6 +3651,17 @@ public class WifiConfigManagerTest extends WifiBaseTest {
         assertTrue(mWifiConfigManager.getConfiguredNetworks().isEmpty());
     }
 
+    private void setUserConnectChoice(int preferredNetId, int notPreferredNetId) {
+        assertTrue(mWifiConfigManager.setNetworkCandidateScanResult(
+                notPreferredNetId, mock(ScanResult.class), 54));
+        assertTrue(mWifiConfigManager.setUserConnectChoice(preferredNetId));
+        WifiConfiguration preferred = mWifiConfigManager.getConfiguredNetwork(preferredNetId);
+        assertNull(preferred.getNetworkSelectionStatus().getConnectChoice());
+        WifiConfiguration notPreferred = mWifiConfigManager.getConfiguredNetwork(notPreferredNetId);
+        assertEquals(preferred.getKey(),
+                notPreferred.getNetworkSelectionStatus().getConnectChoice());
+    }
+
     /**
      * Verifies that the connect choice is removed from all networks when
      * {@link WifiConfigManager#removeNetwork(int, int)} is invoked.
@@ -3609,9 +3676,7 @@ public class WifiConfigManagerTest extends WifiBaseTest {
         verifyAddNetworkToWifiConfigManager(network3);
 
         // Set connect choice of network 2 over network 1.
-        assertTrue(
-                mWifiConfigManager.setNetworkConnectChoice(
-                        network1.networkId, network2.getKey()));
+        setUserConnectChoice(network2.networkId, network1.networkId);
 
         WifiConfiguration retrievedNetwork =
                 mWifiConfigManager.getConfiguredNetwork(network1.networkId);
@@ -3653,12 +3718,8 @@ public class WifiConfigManagerTest extends WifiBaseTest {
         verifyAddNetworkToWifiConfigManager(network3);
 
         // Set connect choice of network 2 over network 1 and network 3.
-        assertTrue(
-                mWifiConfigManager.setNetworkConnectChoice(
-                        network1.networkId, network2.getKey()));
-        assertTrue(
-                mWifiConfigManager.setNetworkConnectChoice(
-                        network3.networkId, network2.getKey()));
+        setUserConnectChoice(network2.networkId, network1.networkId);
+        setUserConnectChoice(network2.networkId, network3.networkId);
 
         WifiConfiguration retrievedNetwork =
                 mWifiConfigManager.getConfiguredNetwork(network3.networkId);
@@ -4544,9 +4605,7 @@ public class WifiConfigManagerTest extends WifiBaseTest {
         verifyAddPasspointNetworkToWifiConfigManager(passpointNetwork);
 
         // Set connect choice of passpoint network over saved network.
-        assertTrue(
-                mWifiConfigManager.setNetworkConnectChoice(
-                        savedNetwork.networkId, passpointNetwork.getKey()));
+        setUserConnectChoice(passpointNetwork.networkId, savedNetwork.networkId);
 
         WifiConfiguration retrievedSavedNetwork =
                 mWifiConfigManager.getConfiguredNetwork(savedNetwork.networkId);
@@ -4562,7 +4621,7 @@ public class WifiConfigManagerTest extends WifiBaseTest {
     }
 
     @Test
-    public void  testUserEnableDisabledNetwork() {
+    public void testUserEnableDisabledNetwork() {
         when(mWifiPermissionsUtil.checkNetworkSettingsPermission(anyInt())).thenReturn(true);
         WifiConfiguration openNetwork = WifiConfigurationTestUtil.createOpenNetwork();
         List<WifiConfiguration> networks = new ArrayList<>();
@@ -4703,12 +4762,13 @@ public class WifiConfigManagerTest extends WifiBaseTest {
                 new WifiConfigManager(
                         mContext, mClock, mUserManager, mWifiCarrierInfoManager,
                         mWifiKeyStore, mWifiConfigStore,
-                        mWifiPermissionsUtil, mWifiPermissionsWrapper, mWifiInjector,
+                        mWifiPermissionsUtil, mMacAddressUtil, mWifiMetrics, mBssidBlocklistMonitor,
+                        mWifiLastResortWatchdog,
                         mNetworkListSharedStoreData, mNetworkListUserStoreData,
                         mRandomizedMacStoreData,
-                        mFrameworkFacade, new Handler(mLooper.getLooper()), mDeviceConfigFacade,
+                        mFrameworkFacade, mDeviceConfigFacade,
                         mWifiScoreCard, mLruConnectionTracker);
-        mWifiConfigManager.enableVerboseLogging(1);
+        mWifiConfigManager.enableVerboseLogging(true);
     }
 
     /**
@@ -5410,8 +5470,7 @@ public class WifiConfigManagerTest extends WifiBaseTest {
         WifiConfiguration openNetwork = WifiConfigurationTestUtil.createOpenNetwork();
         NetworkUpdateResult result = verifyAddNetworkToWifiConfigManager(openNetwork);
 
-        when(mWifiInjector.getWifiLastResortWatchdog().shouldIgnoreSsidUpdate())
-                .thenReturn(true);
+        when(mWifiLastResortWatchdog.shouldIgnoreSsidUpdate()).thenReturn(true);
 
         int networkId = result.getNetworkId();
         // First set it to enabled.
@@ -5547,5 +5606,202 @@ public class WifiConfigManagerTest extends WifiBaseTest {
         assertEquals(0, mLruConnectionTracker.getAgeIndexOfNetwork(network2));
         mWifiConfigManager.removeNetwork(network2.networkId, TEST_CREATOR_UID, TEST_CREATOR_NAME);
         assertEquals(Integer.MAX_VALUE, mLruConnectionTracker.getAgeIndexOfNetwork(network2));
+    }
+
+    /**
+     * Ensures that setting the user connect choice updates the
+     * NetworkSelectionStatus#mConnectChoice for all other WifiConfigurations in range in the last
+     * round of network selection.
+     *
+     * Expected behavior: WifiConfiguration.NetworkSelectionStatus#mConnectChoice is set to
+     *                    test1's configkey for test2. test3's WifiConfiguration is unchanged.
+     */
+    @Test
+    public void setUserConnectChoice() throws Exception {
+        WifiConfiguration selectedWifiConfig = WifiConfigurationTestUtil.createOpenNetwork();
+        selectedWifiConfig.getNetworkSelectionStatus().setCandidate(mock(ScanResult.class));
+        selectedWifiConfig.getNetworkSelectionStatus().setNetworkSelectionStatus(
+                NetworkSelectionStatus.NETWORK_SELECTION_PERMANENTLY_DISABLED);
+        selectedWifiConfig.getNetworkSelectionStatus().setConnectChoice("bogusKey");
+
+        WifiConfiguration configInLastNetworkSelection =
+                WifiConfigurationTestUtil.createOpenNetwork();
+        configInLastNetworkSelection.getNetworkSelectionStatus()
+                .setSeenInLastQualifiedNetworkSelection(true);
+
+        WifiConfiguration configNotInLastNetworkSelection =
+                WifiConfigurationTestUtil.createOpenNetwork();
+
+        List<WifiConfiguration> sharedConfigs = Arrays.asList(
+                selectedWifiConfig, configInLastNetworkSelection, configNotInLastNetworkSelection);
+        // Setup xml storage
+        setupStoreDataForRead(sharedConfigs, Arrays.asList());
+        assertTrue(mWifiConfigManager.loadFromStore());
+        verify(mWifiConfigStore).read();
+
+        assertTrue(mWifiConfigManager.setUserConnectChoice(selectedWifiConfig.networkId));
+
+        selectedWifiConfig = mWifiConfigManager.getConfiguredNetwork(selectedWifiConfig.networkId);
+        assertEquals(NetworkSelectionStatus.DISABLED_NONE,
+                selectedWifiConfig.getNetworkSelectionStatus().getNetworkSelectionStatus());
+        assertNull(selectedWifiConfig.getNetworkSelectionStatus().getConnectChoice());
+
+        configInLastNetworkSelection = mWifiConfigManager.getConfiguredNetwork(
+                configInLastNetworkSelection.networkId);
+        assertEquals(selectedWifiConfig.getKey(),
+                configInLastNetworkSelection.getNetworkSelectionStatus().getConnectChoice());
+
+        configNotInLastNetworkSelection = mWifiConfigManager.getConfiguredNetwork(
+                configNotInLastNetworkSelection.networkId);
+        assertNull(configNotInLastNetworkSelection.getNetworkSelectionStatus().getConnectChoice());
+    }
+
+    @Test
+    public void testConnectToExistingNetworkSuccess() throws Exception {
+        WifiConfiguration config = WifiConfigurationTestUtil.createOpenNetwork();
+        config.getNetworkSelectionStatus().setNetworkSelectionStatus(
+                NetworkSelectionStatus.NETWORK_SELECTION_TEMPORARY_DISABLED);
+        config.getNetworkSelectionStatus().setConnectChoice("bogusKey");
+
+        List<WifiConfiguration> sharedConfigs = Arrays.asList(config);
+        // Setup xml storage
+        setupStoreDataForRead(sharedConfigs, Arrays.asList());
+        assertTrue(mWifiConfigManager.loadFromStore());
+        verify(mWifiConfigStore).read();
+
+        config = mWifiConfigManager.getConfiguredNetwork(config.networkId);
+        assertFalse(config.getNetworkSelectionStatus().isNetworkEnabled());
+        assertNotEquals(TEST_CREATOR_UID, config.lastConnectUid);
+        assertEquals("bogusKey", config.getNetworkSelectionStatus().getConnectChoice());
+
+        when(mWifiPermissionsUtil.checkNetworkSettingsPermission(TEST_CREATOR_UID))
+                .thenReturn(true);
+
+        assertTrue(mWifiConfigManager.updateBeforeConnect(config.networkId, TEST_CREATOR_UID));
+
+        config = mWifiConfigManager.getConfiguredNetwork(config.networkId);
+        // network became enabled
+        assertTrue(config.getNetworkSelectionStatus().isNetworkEnabled());
+        // lastConnectUid updated
+        assertEquals(TEST_CREATOR_UID, config.lastConnectUid);
+        // connect choice was cleared
+        assertNull(config.getNetworkSelectionStatus().getConnectChoice());
+    }
+
+    /**
+     * Test that if callingUid doesn't have NETWORK_SETTINGS permission, the connect succeeds,
+     * but user connect choice isn't cleared.
+     */
+    @Test
+    public void testConnectToExistingNetworkSuccessNoNetworkSettingsPermission() throws Exception {
+        WifiConfiguration config = WifiConfigurationTestUtil.createOpenNetwork();
+        config.getNetworkSelectionStatus().setNetworkSelectionStatus(
+                NetworkSelectionStatus.NETWORK_SELECTION_TEMPORARY_DISABLED);
+        config.getNetworkSelectionStatus().setConnectChoice("bogusKey");
+
+        List<WifiConfiguration> sharedConfigs = Arrays.asList(config);
+        // Setup xml storage
+        setupStoreDataForRead(sharedConfigs, Arrays.asList());
+        assertTrue(mWifiConfigManager.loadFromStore());
+        verify(mWifiConfigStore).read();
+
+        config = mWifiConfigManager.getConfiguredNetwork(config.networkId);
+        assertFalse(config.getNetworkSelectionStatus().isNetworkEnabled());
+        assertNotEquals(TEST_CREATOR_UID, config.lastConnectUid);
+        assertEquals("bogusKey", config.getNetworkSelectionStatus().getConnectChoice());
+
+        when(mWifiPermissionsUtil.checkNetworkSettingsPermission(TEST_CREATOR_UID))
+                .thenReturn(false);
+
+        assertTrue(mWifiConfigManager.updateBeforeConnect(config.networkId, TEST_CREATOR_UID));
+
+        config = mWifiConfigManager.getConfiguredNetwork(config.networkId);
+        // network became enabled
+        assertTrue(config.getNetworkSelectionStatus().isNetworkEnabled());
+        // lastConnectUid updated
+        assertEquals(TEST_CREATOR_UID, config.lastConnectUid);
+        // connect choice not cleared
+        assertEquals("bogusKey", config.getNetworkSelectionStatus().getConnectChoice());
+    }
+
+    @Test
+    public void testConnectToExistingNetworkFailure_UidDoesNotBelongToCurrentUser()
+            throws Exception {
+        WifiConfiguration config = WifiConfigurationTestUtil.createOpenNetwork();
+        config.getNetworkSelectionStatus().setNetworkSelectionStatus(
+                NetworkSelectionStatus.NETWORK_SELECTION_TEMPORARY_DISABLED);
+        config.getNetworkSelectionStatus().setConnectChoice("bogusKey");
+
+        List<WifiConfiguration> sharedConfigs = Arrays.asList(config);
+        // Setup xml storage
+        setupStoreDataForRead(sharedConfigs, Arrays.asList());
+        assertTrue(mWifiConfigManager.loadFromStore());
+        verify(mWifiConfigStore).read();
+
+        config = mWifiConfigManager.getConfiguredNetwork(config.networkId);
+        assertFalse(config.getNetworkSelectionStatus().isNetworkEnabled());
+        assertNotEquals(TEST_OTHER_USER_UID, config.lastConnectUid);
+        assertEquals("bogusKey", config.getNetworkSelectionStatus().getConnectChoice());
+
+        when(mWifiPermissionsUtil.checkNetworkSettingsPermission(TEST_OTHER_USER_UID))
+                .thenReturn(false);
+        when(mUserManager.isSameProfileGroup(any(), any())).thenReturn(false);
+
+        assertFalse(mWifiConfigManager.updateBeforeConnect(config.networkId, TEST_OTHER_USER_UID));
+
+        // network still disabled
+        assertFalse(config.getNetworkSelectionStatus().isNetworkEnabled());
+        // lastConnectUid wasn't changed
+        assertNotEquals(TEST_OTHER_USER_UID, config.lastConnectUid);
+        // connect choice wasn't changed
+        assertEquals("bogusKey", config.getNetworkSelectionStatus().getConnectChoice());
+    }
+
+    @Test
+    public void updateBeforeSaveNetworkSuccess() throws Exception {
+        // initialize WifiConfigManager and start off with one network
+        verifyAddNetworkToWifiConfigManager(WifiConfigurationTestUtil.createOpenNetwork());
+
+        WifiConfiguration config = WifiConfigurationTestUtil.createOpenNetwork();
+
+        NetworkUpdateResult result =
+                mWifiConfigManager.updateBeforeSaveNetwork(config, TEST_CREATOR_UID);
+
+        assertTrue(result.isSuccess());
+
+        config = mWifiConfigManager.getConfiguredNetwork(result.getNetworkId());
+
+        assertNotNull(config);
+        assertTrue(config.getNetworkSelectionStatus().isNetworkEnabled());
+    }
+
+    /** Verifies that configs save fails with an invalid UID. */
+    @Test
+    public void updateBeforeSaveNetworkConfigFailsWithInvalidUid() throws Exception {
+        // initialize WifiConfigManager and start off with one network
+        verifyAddNetworkToWifiConfigManager(WifiConfigurationTestUtil.createOpenNetwork());
+
+        WifiConfiguration config = WifiConfigurationTestUtil.createOpenNetwork();
+
+        when(mWifiPermissionsUtil.checkNetworkSettingsPermission(TEST_OTHER_USER_UID))
+                .thenReturn(false);
+
+        NetworkUpdateResult result =
+                mWifiConfigManager.updateBeforeSaveNetwork(config, TEST_OTHER_USER_UID);
+
+        assertFalse(result.isSuccess());
+        assertNull(mWifiConfigManager.getConfiguredNetwork(config.networkId));
+    }
+
+    /** Verifies that save fails with a null config. */
+    @Test
+    public void updateBeforeSaveNetworkNullConfigFails() throws Exception {
+        // initialize WifiConfigManager and start off with one network
+        verifyAddNetworkToWifiConfigManager(WifiConfigurationTestUtil.createOpenNetwork());
+
+        NetworkUpdateResult result =
+                mWifiConfigManager.updateBeforeSaveNetwork(null, TEST_OTHER_USER_UID);
+
+        assertFalse(result.isSuccess());
     }
 }

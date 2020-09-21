@@ -101,6 +101,7 @@ public class WifiScoreReportTest extends WifiBaseTest {
     @Mock WifiNative mWifiNative;
     @Mock BssidBlocklistMonitor mBssidBlocklistMonitor;
     @Mock Network mNetwork;
+    @Mock WifiDataStall mWifiDataStall;
     private TestLooper mLooper;
 
     public class WifiConnectedNetworkScorerImpl extends IWifiConnectedNetworkScorer.Stub {
@@ -197,7 +198,7 @@ public class WifiScoreReportTest extends WifiBaseTest {
         mScoringParams = new ScoringParams();
         mWifiThreadRunner = new WifiThreadRunner(new Handler(mLooper.getLooper()));
         mWifiScoreReport = new WifiScoreReport(mScoringParams, mClock, mWifiMetrics, mWifiInfo,
-                mWifiNative, mBssidBlocklistMonitor, mWifiThreadRunner);
+                mWifiNative, mBssidBlocklistMonitor, mWifiThreadRunner, mWifiDataStall);
         mWifiScoreReport.setNetworkAgent(mNetworkAgent);
     }
 
@@ -781,7 +782,8 @@ public class WifiScoreReportTest extends WifiBaseTest {
         mLooper.dispatchAll();
         mWifiScoreReport.stopConnectedNetworkScorer();
         mLooper.dispatchAll();
-        verify(mBssidBlocklistMonitor, never()).blockBssidForDurationMs(any(), any(), anyLong());
+        verify(mBssidBlocklistMonitor, never()).blockBssidForDurationMs(any(), any(), anyLong(),
+                anyInt(), anyInt());
     }
 
     /**
@@ -805,7 +807,8 @@ public class WifiScoreReportTest extends WifiBaseTest {
         mLooper.dispatchAll();
         mWifiScoreReport.stopConnectedNetworkScorer();
         mLooper.dispatchAll();
-        verify(mBssidBlocklistMonitor).blockBssidForDurationMs(any(), any(), anyLong());
+        verify(mBssidBlocklistMonitor).blockBssidForDurationMs(any(), any(), anyLong(), anyInt(),
+                anyInt());
     }
 
     /**
@@ -831,6 +834,7 @@ public class WifiScoreReportTest extends WifiBaseTest {
         mLooper.dispatchAll();
         mWifiScoreReport.stopConnectedNetworkScorer();
         mLooper.dispatchAll();
-        verify(mBssidBlocklistMonitor, never()).blockBssidForDurationMs(any(), any(), anyLong());
+        verify(mBssidBlocklistMonitor, never()).blockBssidForDurationMs(any(), any(), anyLong(),
+                anyInt(), anyInt());
     }
 }

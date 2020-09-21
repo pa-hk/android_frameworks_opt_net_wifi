@@ -25,8 +25,10 @@ import android.app.ActivityManager;
 import android.app.AlarmManager;
 import android.app.AppOpsManager;
 import android.companion.CompanionDeviceManager;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.net.MacAddress;
@@ -42,12 +44,12 @@ import android.net.wifi.WifiConfiguration;
 import android.net.wifi.WifiConfiguration.SecurityType;
 import android.net.wifi.WifiNetworkSpecifier;
 import android.net.wifi.WifiScanner;
-import android.os.Binder;
 import android.os.Handler;
 import android.os.HandlerExecutor;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.PatternMatcher;
+import android.os.PowerManager;
 import android.os.Process;
 import android.os.RemoteException;
 import android.os.UserHandle;
@@ -57,7 +59,9 @@ import android.util.Log;
 import android.util.Pair;
 
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.server.wifi.ActiveModeManager.ClientConnectivityRole;
 import com.android.server.wifi.proto.nano.WifiMetricsProto;
+import com.android.server.wifi.util.ActionListenerWrapper;
 import com.android.server.wifi.util.ExternalCallbackTracker;
 import com.android.server.wifi.util.ScanResultUtil;
 import com.android.server.wifi.util.WifiPermissionsUtil;
@@ -117,15 +121,18 @@ public class WifiNetworkFactory extends NetworkFactory {
     private final WifiConfigStore mWifiConfigStore;
     private final WifiPermissionsUtil mWifiPermissionsUtil;
     private final WifiMetrics mWifiMetrics;
+    private final ActiveModeWarden mActiveModeWarden;
     private final WifiScanner.ScanSettings mScanSettings;
     private final NetworkFactoryScanListener mScanListener;
     private final PeriodicScanAlarmListener mPeriodicScanTimerListener;
     private final ConnectionTimeoutAlarmListener mConnectionTimeoutAlarmListener;
+    private final ConnectHelper mConnectHelper;
     private final ExternalCallbackTracker<INetworkRequestMatchCallback> mRegisteredCallbacks;
     // Store all user approved access points for apps.
     @VisibleForTesting
     public final Map<String, LinkedHashSet<AccessPoint>> mUserApprovedAccessPointMap;
     private WifiScanner mWifiScanner;
+    private ClientModeManager mClientModeManager;
     private CompanionDeviceManager mCompanionDeviceManager;
     // Temporary approval set by shell commands.
     private String mApprovedApp = null;
@@ -150,7 +157,7 @@ public class WifiNetworkFactory extends NetworkFactory {
     private boolean mIsPeriodicScanPaused = false;
     // We sent a new connection request and are waiting for connection success.
     private boolean mPendingConnectionSuccess = false;
-    private boolean mWifiEnabled = false;
+    private boolean mAwaitingClientModeManagerRetrieval = false;
     /**
      * Indicates that we have new data to serialize.
      */
@@ -317,6 +324,65 @@ public class WifiNetworkFactory extends NetworkFactory {
         }
     }
 
+    private final class ClientModeManagerRequestListener implements
+            ActiveModeWarden.ExternalClientModeManagerRequestListener {
+        @Override
+        public void onAnswer(@Nullable ClientModeManager modeManager) {
+            mAwaitingClientModeManagerRetrieval = false;
+            if (modeManager != null) {
+                // Remove the mode manager if the associated request is no longer active.
+                if (mActiveSpecificNetworkRequest == null
+                        && mConnectedSpecificNetworkRequest == null) {
+                    Log.w(TAG, "Client mode manager request answer received with no active"
+                            + " requests");
+                    mActiveModeWarden.removeLocalOnlyClientModeManager(modeManager);
+                    return;
+                }
+                mClientModeManager = modeManager;
+                handleClientModeManagerRetrieval();
+            } else {
+                handleClientModeManagerRemovalOrFailure();
+            }
+        }
+    }
+
+    private class ModeChangeCallback implements ActiveModeWarden.ModeChangeCallback {
+        @Override
+        public void onActiveModeManagerAdded(@NonNull ActiveModeManager activeModeManager) {
+            // ignored.
+            // Will get a dedicated ClientModeManager instance for our request via
+            // ClientModeManagerRequestListener.
+        }
+
+        @Override
+        public void onActiveModeManagerRemoved(@NonNull ActiveModeManager activeModeManager) {
+            if (!(activeModeManager instanceof ClientModeManager)) return;
+            if (mVerboseLoggingEnabled) {
+                Log.v(TAG, "ModeManager removed " + activeModeManager.getInterfaceName());
+            }
+            // Mode manager removed. Cleanup any ongoing requests.
+            if (activeModeManager == mClientModeManager) {
+                handleClientModeManagerRemovalOrFailure();
+            }
+        }
+
+        @Override
+        public void onActiveModeManagerRoleChanged(@NonNull ActiveModeManager activeModeManager) {
+            if (!(activeModeManager instanceof ClientModeManager)) return;
+            if (mVerboseLoggingEnabled) {
+                Log.v(TAG, "ModeManager role changed " + activeModeManager.getInterfaceName());
+            }
+            // Mode manager role changed. Cleanup any ongoing requests.
+            if (activeModeManager == mClientModeManager) {
+                // If the role changes to scan mode, tear down stuff. In case of primary client mode
+                // manager, wifi off may mean a role change to SCAN_ONLY role, not a removal.
+                if (!(activeModeManager.getRole() instanceof ClientConnectivityRole)) {
+                    handleClientModeManagerRemovalOrFailure();
+                }
+            }
+        }
+    }
+
     /**
      * Module to interact with the wifi config store.
      */
@@ -353,7 +419,9 @@ public class WifiNetworkFactory extends NetworkFactory {
             WifiConfigManager configManager,
             WifiConfigStore configStore,
             WifiPermissionsUtil wifiPermissionsUtil,
-            WifiMetrics wifiMetrics) {
+            WifiMetrics wifiMetrics,
+            ActiveModeWarden activeModeWarden,
+            ConnectHelper connectHelper) {
         super(looper, context, TAG, nc);
         mContext = context;
         mActivityManager = activityManager;
@@ -367,6 +435,8 @@ public class WifiNetworkFactory extends NetworkFactory {
         mWifiConfigStore = configStore;
         mWifiPermissionsUtil = wifiPermissionsUtil;
         mWifiMetrics = wifiMetrics;
+        mActiveModeWarden = activeModeWarden;
+        mConnectHelper = connectHelper;
         // Create the scan settings.
         mScanSettings = new WifiScanner.ScanSettings();
         mScanSettings.type = WifiScanner.SCAN_TYPE_HIGH_ACCURACY;
@@ -378,9 +448,28 @@ public class WifiNetworkFactory extends NetworkFactory {
         mRegisteredCallbacks = new ExternalCallbackTracker<INetworkRequestMatchCallback>(mHandler);
         mUserApprovedAccessPointMap = new HashMap<>();
 
+        IntentFilter filter = new IntentFilter();
+        filter.addAction(Intent.ACTION_SCREEN_ON);
+        filter.addAction(Intent.ACTION_SCREEN_OFF);
+        context.registerReceiver(
+                new BroadcastReceiver() {
+                    @Override
+                    public void onReceive(Context context, Intent intent) {
+                        String action = intent.getAction();
+                        if (action.equals(Intent.ACTION_SCREEN_ON)) {
+                            handleScreenStateChanged(true);
+                        } else if (action.equals(Intent.ACTION_SCREEN_OFF)) {
+                            handleScreenStateChanged(false);
+                        }
+                    }
+                }, filter, null, mHandler);
+        handleScreenStateChanged(context.getSystemService(PowerManager.class).isInteractive());
+
         // register the data store for serializing/deserializing data.
         configStore.registerStoreData(
                 wifiInjector.makeNetworkRequestStoreData(new NetworkRequestDataSource()));
+
+        activeModeWarden.registerModeChangeCallback(new ModeChangeCallback());
 
         setScoreFilter(SCORE_FILTER);
     }
@@ -396,8 +485,8 @@ public class WifiNetworkFactory extends NetworkFactory {
     /**
      * Enable verbose logging.
      */
-    public void enableVerboseLogging(int verbose) {
-        mVerboseLoggingEnabled = (verbose > 0);
+    public void enableVerboseLogging(boolean verbose) {
+        mVerboseLoggingEnabled = verbose;
     }
 
     /**
@@ -518,11 +607,6 @@ public class WifiNetworkFactory extends NetworkFactory {
                 releaseRequestAsUnfulfillableByAnyFactory(networkRequest);
                 return false;
             }
-            if (!mWifiEnabled) {
-                // Will re-evaluate when wifi is turned on.
-                Log.e(TAG, "Wifi off. Rejecting");
-                return false;
-            }
             WifiNetworkSpecifier wns = (WifiNetworkSpecifier) ns;
             // Only allow specific wifi network request from foreground app/service.
             if (!mWifiPermissionsUtil.checkNetworkSettingsPermission(
@@ -564,6 +648,30 @@ public class WifiNetworkFactory extends NetworkFactory {
         return true;
     }
 
+    private void requestClientModeManagerIfNecessary() {
+        // If we already have a ClientModeManager instance retrieved or requested for the
+        // previously active request, use that to handle the new request. Creating a new one for
+        // overlapping requests would result in unnecessary delay in turning down the old one &
+        // creating a new one.
+        if (mClientModeManager != null) {
+            if (mVerboseLoggingEnabled) Log.v(TAG, "Using cached ClientModeManager instance");
+            handleClientModeManagerRetrieval();
+        } else if (mAwaitingClientModeManagerRetrieval) {
+            // Note: If we have a pending request, then we will wait for the answer to that
+            // request to perform the next steps.
+            if (mVerboseLoggingEnabled) {
+                Log.v(TAG, "Waiting for previously requested ClientModeManager instance");
+            }
+        } else {
+            // No ClientModeManager instance retrieved or requested, request a new instance and
+            // then perform the next steps.
+            if (mVerboseLoggingEnabled) Log.v(TAG, "Requesting new ClientModeManager instance");
+            mAwaitingClientModeManagerRetrieval = true;
+            mActiveModeWarden.requestLocalOnlyClientModeManager(
+                    new ClientModeManagerRequestListener());
+        }
+    }
+
     /**
      * Handle new network connection requests.
      *
@@ -584,15 +692,9 @@ public class WifiNetworkFactory extends NetworkFactory {
                 releaseRequestAsUnfulfillableByAnyFactory(networkRequest);
                 return;
             }
-            if (!mWifiEnabled) {
-                // Will re-evaluate when wifi is turned on.
-                Log.e(TAG, "Wifi off. Rejecting");
-                return;
-            }
             retrieveWifiScanner();
             // Reset state from any previous request.
             setupForActiveRequest();
-
             // Store the active network request.
             mActiveSpecificNetworkRequest = networkRequest;
             WifiNetworkSpecifier wns = (WifiNetworkSpecifier) ns;
@@ -600,20 +702,8 @@ public class WifiNetworkFactory extends NetworkFactory {
                     wns.ssidPatternMatcher, wns.bssidPatternMatcher, wns.wifiConfiguration);
             mWifiMetrics.incrementNetworkRequestApiNumRequest();
 
-            if (!triggerConnectIfUserApprovedMatchFound()) {
-                // Start UI to let the user grant/disallow this request from the app.
-                startUi();
-                // Didn't find an approved match, send the matching results to UI and trigger
-                // periodic scans for finding a network in the request.
-                // Fetch the latest cached scan results to speed up network matching.
-                ScanResult[] cachedScanResults = getFilteredCachedScanResults();
-                if (mVerboseLoggingEnabled) {
-                    Log.v(TAG, "Using cached " + cachedScanResults.length + " scan results");
-                }
-                handleScanResults(cachedScanResults);
-                sendNetworkRequestMatchCallbacksForActiveRequest(mActiveMatchedScanResults);
-                startPeriodicScans();
-            }
+            // Request ClientModeManager instance to use if necessary.
+            requestClientModeManagerIfNecessary();
         }
     }
 
@@ -633,10 +723,6 @@ public class WifiNetworkFactory extends NetworkFactory {
             // Invalid network specifier.
             if (!(ns instanceof WifiNetworkSpecifier)) {
                 Log.e(TAG, "Invalid network specifier mentioned. Ignoring");
-                return;
-            }
-            if (!mWifiEnabled) {
-                Log.e(TAG, "Wifi off. Ignoring");
                 return;
             }
             if (mActiveSpecificNetworkRequest == null && mConnectedSpecificNetworkRequest == null) {
@@ -732,7 +818,7 @@ public class WifiNetworkFactory extends NetworkFactory {
     private void disconnectAndRemoveNetworkFromWifiConfigManager(
             @Nullable WifiConfiguration network) {
         // Trigger a disconnect first.
-        mWifiInjector.getClientModeImpl().disconnectCommand();
+        mClientModeManager.disconnect();
 
         if (network == null) return;
         WifiConfiguration wcmNetwork =
@@ -771,9 +857,11 @@ public class WifiNetworkFactory extends NetworkFactory {
 
         // Send the connect request to ClientModeImpl.
         // TODO(b/117601161): Refactor this.
-        ConnectActionListener connectActionListener = new ConnectActionListener();
-        mWifiInjector.getClientModeImpl().connect(null, networkId, new Binder(),
-                connectActionListener, connectActionListener.hashCode(),
+        ConnectActionListener listener = new ConnectActionListener();
+        mConnectHelper.connectToNetwork(
+                mClientModeManager,
+                new NetworkUpdateResult(networkId),
+                new ActionListenerWrapper(listener),
                 mActiveSpecificNetworkRequest.getRequestorUid());
 
         // Post an alarm to handle connection timeout.
@@ -919,7 +1007,7 @@ public class WifiNetworkFactory extends NetworkFactory {
     /**
      * Invoked by {@link ClientModeImpl} to indicate screen state changes.
      */
-    public void handleScreenStateChanged(boolean screenOn) {
+    private void handleScreenStateChanged(boolean screenOn) {
         // If there is no active request or if the user has already selected a network,
         // ignore screen state changes.
         if (mActiveSpecificNetworkRequest == null || !mIsPeriodicScanEnabled) return;
@@ -934,26 +1022,6 @@ public class WifiNetworkFactory extends NetworkFactory {
             cancelPeriodicScans();
             mIsPeriodicScanPaused = true;
         }
-    }
-
-    /**
-     * Invoked by {@link ClientModeImpl} to indicate wifi state toggle.
-     */
-    public void setWifiState(boolean enabled) {
-        if (mVerboseLoggingEnabled) Log.v(TAG, "setWifiState " + enabled);
-        if (enabled) {
-            reevaluateAllRequests(); // Re-evaluate any pending requests.
-        } else {
-            if (mActiveSpecificNetworkRequest != null) {
-                Log.w(TAG, "Wifi off, cancelling " + mActiveSpecificNetworkRequest);
-                teardownForActiveRequest();
-            }
-            if (mConnectedSpecificNetworkRequest != null) {
-                Log.w(TAG, "Wifi off, cancelling " + mConnectedSpecificNetworkRequest);
-                teardownForConnectedNetwork();
-            }
-        }
-        mWifiEnabled = enabled;
     }
 
     // Common helper method for start/end of active request processing.
@@ -1003,6 +1071,11 @@ public class WifiNetworkFactory extends NetworkFactory {
         // ensure there is no connected request in progress.
         if (mConnectedSpecificNetworkRequest == null) {
             mWifiConnectivityManager.setSpecificNetworkRequestInProgress(false);
+            if (mClientModeManager != null) {
+                mActiveModeWarden.removeLocalOnlyClientModeManager(mClientModeManager);
+                // For every connection attempt, get the appropriate client mode impl to use.
+                mClientModeManager = null;
+            }
         }
     }
 
@@ -1027,6 +1100,11 @@ public class WifiNetworkFactory extends NetworkFactory {
         // ensure there is no active request in progress.
         if (mActiveSpecificNetworkRequest == null) {
             mWifiConnectivityManager.setSpecificNetworkRequestInProgress(false);
+            if (mClientModeManager != null) {
+                mActiveModeWarden.removeLocalOnlyClientModeManager(mClientModeManager);
+                // For every connection attempt, get the appropriate client mode impl to use.
+                mClientModeManager = null;
+            }
         }
     }
 
@@ -1064,6 +1142,39 @@ public class WifiNetworkFactory extends NetworkFactory {
         if (mWifiScanner != null) return;
         mWifiScanner = mWifiInjector.getWifiScanner();
         checkNotNull(mWifiScanner);
+    }
+
+    private void handleClientModeManagerRetrieval() {
+        if (mVerboseLoggingEnabled) {
+            Log.v(TAG, "ClientModeManager retrieved: " + mClientModeManager.getInterfaceName());
+        }
+        if (!triggerConnectIfUserApprovedMatchFound()) {
+            // Start UI to let the user grant/disallow this request from the app.
+            startUi();
+            // Didn't find an approved match, send the matching results to UI and trigger
+            // periodic scans for finding a network in the request.
+            // Fetch the latest cached scan results to speed up network matching.
+            ScanResult[] cachedScanResults = getFilteredCachedScanResults();
+            if (mVerboseLoggingEnabled) {
+                Log.v(TAG, "Using cached " + cachedScanResults.length + " scan results");
+            }
+            handleScanResults(cachedScanResults);
+            sendNetworkRequestMatchCallbacksForActiveRequest(mActiveMatchedScanResults);
+            startPeriodicScans();
+        }
+    }
+
+    private void handleClientModeManagerRemovalOrFailure() {
+        if (mActiveSpecificNetworkRequest != null) {
+            Log.w(TAG, "ClientModeManager retrieval failed or removed, cancelling "
+                    + mActiveSpecificNetworkRequest);
+            teardownForActiveRequest();
+        }
+        if (mConnectedSpecificNetworkRequest != null) {
+            Log.w(TAG, "ClientModeManager retrieval failed or removed, cancelling "
+                    + mConnectedSpecificNetworkRequest);
+            teardownForConnectedNetwork();
+        }
     }
 
     private void startPeriodicScans() {

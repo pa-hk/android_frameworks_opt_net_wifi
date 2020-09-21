@@ -15,6 +15,8 @@
  */
 package com.android.server.wifi;
 
+import static android.content.Intent.ACTION_SCREEN_OFF;
+import static android.content.Intent.ACTION_SCREEN_ON;
 import static android.net.wifi.WifiManager.DEVICE_MOBILITY_STATE_HIGH_MVMT;
 import static android.net.wifi.WifiManager.DEVICE_MOBILITY_STATE_LOW_MVMT;
 import static android.net.wifi.WifiManager.DEVICE_MOBILITY_STATE_STATIONARY;
@@ -45,6 +47,7 @@ import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.anyBoolean;
 import static org.mockito.Mockito.anyInt;
 import static org.mockito.Mockito.anyString;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.mock;
@@ -52,7 +55,9 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import android.content.BroadcastReceiver;
 import android.content.Context;
+import android.content.Intent;
 import android.net.wifi.EAPConstants;
 import android.net.wifi.IOnWifiUsabilityStatsListener;
 import android.net.wifi.ScanResult;
@@ -70,6 +75,7 @@ import android.net.wifi.hotspot2.pps.Credential;
 import android.net.wifi.nl80211.WifiNl80211Manager;
 import android.os.Handler;
 import android.os.IBinder;
+import android.os.PowerManager;
 import android.os.RemoteException;
 import android.os.test.TestLooper;
 import android.telephony.TelephonyManager;
@@ -116,6 +122,7 @@ import com.android.wifi.resources.R;
 import org.junit.Before;
 import org.junit.Test;
 import org.mockito.ArgumentCaptor;
+import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 import org.mockito.MockitoSession;
@@ -169,6 +176,8 @@ public class WifiMetricsTest extends WifiBaseTest {
     @Mock WifiScoreCard.PerNetwork mPerNetwork;
     @Mock WifiScoreCard.NetworkConnectionStats mNetworkConnectionStats;
     @Mock WifiConfiguration mWifiConfig;
+    @Mock PowerManager mPowerManager;
+    @Captor ArgumentCaptor<BroadcastReceiver> mBroadcastReceiverCaptor;
 
     @Before
     public void setUp() throws Exception {
@@ -178,6 +187,8 @@ public class WifiMetricsTest extends WifiBaseTest {
         mTestLooper = new TestLooper();
         mResources = new MockResources();
         when(mContext.getResources()).thenReturn(mResources);
+        when(mContext.getSystemService(PowerManager.class)).thenReturn(mPowerManager);
+        when(mPowerManager.isInteractive()).thenReturn(true);
         mWifiMetrics = new WifiMetrics(mContext, mFacade, mClock, mTestLooper.getLooper(),
                 new WifiAwareMetrics(mClock), new RttMetrics(mClock), mWifiPowerMetrics,
                 mWifiP2pMetrics, mDppMetrics);
@@ -191,6 +202,8 @@ public class WifiMetricsTest extends WifiBaseTest {
         mWifiMetrics.setWifiScoreCard(mWifiScoreCard);
         when(mWifiScoreCard.lookupNetwork(anyString())).thenReturn(mPerNetwork);
         when(mPerNetwork.getRecentStats()).thenReturn(mNetworkConnectionStats);
+        verify(mContext, atLeastOnce()).registerReceiver(
+                mBroadcastReceiverCaptor.capture(), any(), any(), any());
     }
 
     /**
@@ -243,7 +256,7 @@ public class WifiMetricsTest extends WifiBaseTest {
         mDecodedProto = WifiMetricsProto.WifiLog.parseFrom(protoBytes);
     }
 
-    /**
+    /*, LOCAL_GEN, DEAUTH_REASON*
      * Gets the 'clean dump' proto bytes from mWifiMetrics & deserializes it into
      * mDecodedProto
      */
@@ -2182,8 +2195,8 @@ public class WifiMetricsTest extends WifiBaseTest {
 
     private static final int DEAUTH_REASON = 7;
     private static final int ASSOC_STATUS = 11;
-    private static final int ASSOC_TIMEOUT = 1;
-    private static final int LOCAL_GEN = 1;
+    private static final boolean ASSOC_TIMEOUT = true;
+    private static final boolean LOCAL_GEN = true;
     private static final int AUTH_FAILURE_REASON = WifiManager.ERROR_AUTH_FAILURE_WRONG_PSWD;
     private static final int NUM_TEST_STA_EVENTS = 19;
     private static final String   sSSID = "\"SomeTestSsid\"";
@@ -2202,10 +2215,10 @@ public class WifiMetricsTest extends WifiBaseTest {
     private final WifiConfiguration mTestWifiConfig = createComplexWifiConfig();
     // <msg.what> <msg.arg1> <msg.arg2>
     private int[][] mTestStaMessageInts = {
-        {WifiMonitor.ASSOCIATION_REJECTION_EVENT,   ASSOC_TIMEOUT,       ASSOC_STATUS},
+        {WifiMonitor.ASSOCIATION_REJECTION_EVENT,   0,                   0},
         {WifiMonitor.AUTHENTICATION_FAILURE_EVENT,  AUTH_FAILURE_REASON, -1},
         {WifiMonitor.NETWORK_CONNECTION_EVENT,      0,                   0},
-        {WifiMonitor.NETWORK_DISCONNECTION_EVENT,   LOCAL_GEN,           DEAUTH_REASON},
+        {WifiMonitor.NETWORK_DISCONNECTION_EVENT,   0,                   0},
         {WifiMonitor.SUPPLICANT_STATE_CHANGE_EVENT, 0,                   0},
         {WifiMonitor.ASSOCIATED_BSSID_EVENT,        0,                   0},
         {WifiMonitor.TARGET_BSSID_EVENT,            0,                   0},
@@ -2213,10 +2226,10 @@ public class WifiMetricsTest extends WifiBaseTest {
         {WifiMonitor.SUPPLICANT_STATE_CHANGE_EVENT, 0,                   0}
     };
     private Object[] mTestStaMessageObjs = {
+        new AssocRejectEventInfo(sSSID, sBSSID, ASSOC_STATUS, ASSOC_TIMEOUT),
         null,
         null,
-        null,
-        null,
+        new DisconnectEventInfo(sSSID, sBSSID, DEAUTH_REASON, LOCAL_GEN),
         mStateDisconnected,
         null,
         null,
@@ -2245,12 +2258,12 @@ public class WifiMetricsTest extends WifiBaseTest {
     // <auth_fail_reason>, <assoc_timed_out> <supplicantStateChangeBitmask> <1|0>(has ConfigInfo)
     private int[][] mExpectedValues = {
         {StaEvent.TYPE_ASSOCIATION_REJECTION_EVENT,     -1,  ASSOC_STATUS,         0,
-            /**/                               0, ASSOC_TIMEOUT,        0, 0},    /**/
+            /**/                               0, ASSOC_TIMEOUT ? 1 : 0,        0, 0},    /**/
         {StaEvent.TYPE_AUTHENTICATION_FAILURE_EVENT,    -1,            -1,         0,
             /**/StaEvent.AUTH_FAILURE_WRONG_PSWD,             0,        0, 0},    /**/
         {StaEvent.TYPE_NETWORK_CONNECTION_EVENT,        -1,            -1,         0,
             /**/                               0,             0,        0, 0},    /**/
-        {StaEvent.TYPE_NETWORK_DISCONNECTION_EVENT, DEAUTH_REASON,     -1, LOCAL_GEN,
+        {StaEvent.TYPE_NETWORK_DISCONNECTION_EVENT, DEAUTH_REASON,     -1, LOCAL_GEN ? 1 : 0,
             /**/                               0,             0,        0, 0},    /**/
         {StaEvent.TYPE_CMD_ASSOCIATED_BSSID,            -1,            -1,         0,
             /**/                               0,             0,  mSupBm1, 0},    /**/
@@ -2295,7 +2308,7 @@ public class WifiMetricsTest extends WifiBaseTest {
                     handler.obtainMessage(mia[0], mia[1], mia[2], mTestStaMessageObjs[i]));
         }
         mTestLooper.dispatchAll();
-        wifiMetrics.setScreenState(true);
+        setScreenState(true);
         when(mWifiDataStall.isCellularDataAvailable()).thenReturn(true);
         for (int i = 0; i < mTestStaLogInts.length; i++) {
             int[] lia = mTestStaLogInts[i];
@@ -2745,7 +2758,7 @@ public class WifiMetricsTest extends WifiBaseTest {
      */
     @Test
     public void testConnectionMaxSupportedLinkSpeedConsecutiveFailureCnt() throws Exception {
-        mWifiMetrics.setScreenState(true);
+        setScreenState(true);
         when(mNetworkConnectionStats.getCount(WifiScoreCard.CNT_CONSECUTIVE_CONNECTION_FAILURE))
                 .thenReturn(2);
         mWifiMetrics.startConnectionEvent(mTestWifiConfig, "TestNetwork",
@@ -2972,7 +2985,7 @@ public class WifiMetricsTest extends WifiBaseTest {
         mWifiMetrics.incrementWifiUsabilityScoreCount(1, trigger[8], 15);
         mWifiMetrics.updateWifiIsUnusableLinkLayerStats(trigger[2], trigger[3], trigger[4],
                 trigger[5], trigger[6]);
-        mWifiMetrics.setScreenState(true);
+        setScreenState(true);
         switch(trigger[0]) {
             case WifiIsUnusableEvent.TYPE_DATA_STALL_BAD_TX:
             case WifiIsUnusableEvent.TYPE_DATA_STALL_TX_WITHOUT_RX:
@@ -4704,7 +4717,7 @@ public class WifiMetricsTest extends WifiBaseTest {
      */
     @Test
     public void verifyLabelBadStatsAreNotSavedIfScreenIsOff() throws Exception {
-        mWifiMetrics.setScreenState(false);
+        setScreenState(false);
         WifiInfo info = mock(WifiInfo.class);
         when(info.getRssi()).thenReturn(nextRandInt());
         when(info.getLinkSpeed()).thenReturn(nextRandInt());
@@ -5018,5 +5031,12 @@ public class WifiMetricsTest extends WifiBaseTest {
         assertEquals(WifiMetricsProto.ConnectionEvent.TYPE_PASSPOINT,
                 mDecodedProto.connectionEvent[0].networkType);
         assertTrue(mDecodedProto.connectionEvent[0].isOsuProvisioned);
+    }
+
+    private void setScreenState(boolean screenOn) {
+        BroadcastReceiver broadcastReceiver = mBroadcastReceiverCaptor.getValue();
+        assertNotNull(broadcastReceiver);
+        Intent intent = new Intent(screenOn  ? ACTION_SCREEN_ON : ACTION_SCREEN_OFF);
+        broadcastReceiver.onReceive(mContext, intent);
     }
 }

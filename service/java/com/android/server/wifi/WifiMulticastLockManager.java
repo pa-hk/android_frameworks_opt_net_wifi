@@ -42,7 +42,7 @@ public class WifiMulticastLockManager {
     private int mMulticastDisabled = 0;
     private boolean mVerboseLoggingEnabled = false;
     private final BatteryStatsManager mBatteryStats;
-    private final FilterController mFilterController;
+    private final ActiveModeWarden mActiveModeWarden;
 
     /** Delegate for handling state change events for multicast filtering. */
     public interface FilterController {
@@ -53,10 +53,10 @@ public class WifiMulticastLockManager {
         void stopFilteringMulticastPackets();
     }
 
-    public WifiMulticastLockManager(FilterController filterController,
+    public WifiMulticastLockManager(ActiveModeWarden activeModeWarden,
             BatteryStatsManager batteryStats) {
         mBatteryStats = batteryStats;
-        mFilterController = filterController;
+        mActiveModeWarden = activeModeWarden;
     }
 
     private class Multicaster implements IBinder.DeathRecipient {
@@ -125,10 +125,10 @@ public class WifiMulticastLockManager {
     public void initializeFiltering() {
         synchronized (mMulticasters) {
             // if anybody had requested filters be off, leave off
-            if (mMulticasters.size() != 0) {
-                return;
-            } else {
-                mFilterController.startFilteringMulticastPackets();
+            if (mMulticasters.size() == 0) {
+                mActiveModeWarden.getPrimaryClientModeManager()
+                        .getMcastLockManagerFilterController()
+                        .startFilteringMulticastPackets();
             }
         }
     }
@@ -146,7 +146,9 @@ public class WifiMulticastLockManager {
             // our new size == 1 (first call), but this function won't
             // be called often and by making the stopPacket call each
             // time we're less fragile and self-healing.
-            mFilterController.stopFilteringMulticastPackets();
+            mActiveModeWarden.getPrimaryClientModeManager()
+                    .getMcastLockManagerFilterController()
+                    .stopFilteringMulticastPackets();
         }
 
         int uid = Binder.getCallingUid();
@@ -181,7 +183,9 @@ public class WifiMulticastLockManager {
             removed.unlinkDeathRecipient();
         }
         if (mMulticasters.size() == 0) {
-            mFilterController.startFilteringMulticastPackets();
+            mActiveModeWarden.getPrimaryClientModeManager()
+                    .getMcastLockManagerFilterController()
+                    .startFilteringMulticastPackets();
         }
 
         final long ident = Binder.clearCallingIdentity();

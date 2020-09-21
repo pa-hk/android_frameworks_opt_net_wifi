@@ -167,6 +167,7 @@ public class DeviceConfigFacade {
     private int mHealthMonitorMinNumConnectionAttempt;
     private int mBugReportMinWindowMs;
     private int mBugReportThresholdExtraRatio;
+    private boolean mWifiBatterySaverEnabled;
     private boolean mIsOverlappingConnectionBugreportEnabled;
     private int mOverlappingConnectionDurationThresholdMs;
     private int mTxLinkSpeedLowThresholdMbps;
@@ -305,6 +306,8 @@ public class DeviceConfigFacade {
         mRxLinkSpeedLowThresholdMbps = DeviceConfig.getInt(NAMESPACE,
                 "rx_link_speed_low_threshold_mbps",
                 DEFAULT_RX_LINK_SPEED_LOW_THRESHOLD_MBPS);
+        mWifiBatterySaverEnabled = DeviceConfig.getBoolean(NAMESPACE, "battery_saver_enabled",
+                false);
         mHealthMonitorShortConnectionDurationThrMs = DeviceConfig.getInt(NAMESPACE,
                 "health_monitor_short_connection_duration_thr_ms",
                 DEFAULT_HEALTH_MONITOR_SHORT_CONNECTION_DURATION_THR_MS);
@@ -324,7 +327,6 @@ public class DeviceConfigFacade {
                 "health_monitor_fw_alert_valid_time_ms",
                 DEFAULT_HEALTH_MONITOR_FW_ALERT_VALID_TIME_MS);
         mWifiMetrics.setHealthMonitorRssiPollValidTimeMs(mHealthMonitorRssiPollValidTimeMs);
-
     }
 
     private Set<String> getUnmodifiableSetQuoted(String key) {
@@ -629,6 +631,13 @@ public class DeviceConfigFacade {
      */
     public int getRxLinkSpeedLowThresholdMbps() {
         return mRxLinkSpeedLowThresholdMbps;
+    }
+
+    /**
+     * Gets the feature flag for Wifi battery saver.
+     */
+    public boolean isWifiBatterySaverEnabled() {
+        return mWifiBatterySaverEnabled;
     }
 
     /**

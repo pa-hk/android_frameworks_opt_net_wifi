@@ -17,12 +17,16 @@
 package com.android.server.wifi;
 
 import android.app.ActivityManager;
+import android.content.BroadcastReceiver;
 import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.net.wifi.WifiManager;
 import android.os.BatteryStatsManager;
 import android.os.Binder;
 import android.os.Handler;
 import android.os.IBinder;
+import android.os.PowerManager;
 import android.os.RemoteException;
 import android.os.WorkSource;
 import android.os.WorkSource.WorkChain;
@@ -59,7 +63,7 @@ public class WifiLockManager {
     private final Context mContext;
     private final BatteryStatsManager mBatteryStats;
     private final FrameworkFacade mFrameworkFacade;
-    private final ClientModeImpl mClientModeImpl;
+    private final ActiveModeWarden mActiveModeWarden;
     private final ActivityManager mActivityManager;
     private final Handler mHandler;
     private final WifiMetrics mWifiMetrics;
@@ -84,11 +88,11 @@ public class WifiLockManager {
     private long mCurrentSessionStartTimeMs;
 
     WifiLockManager(Context context, BatteryStatsManager batteryStats,
-            ClientModeImpl clientModeImpl, FrameworkFacade frameworkFacade, Handler handler,
-            WifiNative wifiNative, Clock clock, WifiMetrics wifiMetrics) {
+            ActiveModeWarden activeModeWarden, FrameworkFacade frameworkFacade,
+            Handler handler, WifiNative wifiNative, Clock clock, WifiMetrics wifiMetrics) {
         mContext = context;
         mBatteryStats = batteryStats;
-        mClientModeImpl = clientModeImpl;
+        mActiveModeWarden = activeModeWarden;
         mFrameworkFacade = frameworkFacade;
         mActivityManager = (ActivityManager) mContext.getSystemService(Context.ACTIVITY_SERVICE);
         mCurrentOpMode = WifiManager.WIFI_MODE_NO_LOCKS_HELD;
@@ -96,6 +100,23 @@ public class WifiLockManager {
         mHandler = handler;
         mClock = clock;
         mWifiMetrics = wifiMetrics;
+
+        IntentFilter filter = new IntentFilter();
+        filter.addAction(Intent.ACTION_SCREEN_ON);
+        filter.addAction(Intent.ACTION_SCREEN_OFF);
+        context.registerReceiver(
+                new BroadcastReceiver() {
+                    @Override
+                    public void onReceive(Context context, Intent intent) {
+                        String action = intent.getAction();
+                        if (action.equals(Intent.ACTION_SCREEN_ON)) {
+                            handleScreenStateChanged(true);
+                        } else if (action.equals(Intent.ACTION_SCREEN_OFF)) {
+                            handleScreenStateChanged(false);
+                        }
+                    }
+                }, filter, null, mHandler);
+        handleScreenStateChanged(context.getSystemService(PowerManager.class).isInteractive());
 
         // Register for UID fg/bg transitions
         registerUidImportanceTransitions();
@@ -334,7 +355,7 @@ public class WifiLockManager {
     /**
      * Handler for screen state (on/off) changes
      */
-    public void handleScreenStateChanged(boolean screenOn) {
+    private void handleScreenStateChanged(boolean screenOn) {
         if (mVerboseLoggingEnabled) {
             Log.d(TAG, "handleScreenStateChanged: screenOn = " + screenOn);
         }
@@ -578,7 +599,7 @@ public class WifiLockManager {
         // Otherwise, we need to change current mode, first reset it to normal
         switch (mCurrentOpMode) {
             case WifiManager.WIFI_MODE_FULL_HIGH_PERF:
-                if (!mClientModeImpl.setPowerSave(true)) {
+                if (!mActiveModeWarden.getPrimaryClientModeManager().setPowerSave(true)) {
                     Log.e(TAG, "Failed to reset the OpMode from hi-perf to Normal");
                     return false;
                 }
@@ -607,7 +628,8 @@ public class WifiLockManager {
         // Now switch to the new opMode
         switch (newLockMode) {
             case WifiManager.WIFI_MODE_FULL_HIGH_PERF:
-                if (!mClientModeImpl.setPowerSave(false)) {
+                if (!mActiveModeWarden.getPrimaryClientModeManager().setPowerSave(
+                        false)) {
                     Log.e(TAG, "Failed to set the OpMode to hi-perf");
                     return false;
                 }
@@ -666,20 +688,21 @@ public class WifiLockManager {
         }
 
         if (lowLatencySupport == LOW_LATENCY_SUPPORTED) {
-            if (!mClientModeImpl.setLowLatencyMode(enabled)) {
+            if (!mActiveModeWarden.getPrimaryClientModeManager().setLowLatencyMode(
+                    enabled)) {
                 Log.e(TAG, "Failed to set low latency mode");
                 return false;
             }
 
-            if (!mClientModeImpl.setPowerSave(!enabled)) {
+            if (!mActiveModeWarden.getPrimaryClientModeManager().setPowerSave(!enabled)) {
                 Log.e(TAG, "Failed to set power save mode");
                 // Revert the low latency mode
-                mClientModeImpl.setLowLatencyMode(!enabled);
+                mActiveModeWarden.getPrimaryClientModeManager().setLowLatencyMode(!enabled);
                 return false;
             }
         } else if (lowLatencySupport == LOW_LATENCY_NOT_SUPPORTED) {
             // Only set power save mode
-            if (!mClientModeImpl.setPowerSave(!enabled)) {
+            if (!mActiveModeWarden.getPrimaryClientModeManager().setPowerSave(!enabled)) {
                 Log.e(TAG, "Failed to set power save mode");
                 return false;
             }

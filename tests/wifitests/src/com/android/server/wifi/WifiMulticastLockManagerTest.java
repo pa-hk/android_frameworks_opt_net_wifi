@@ -35,13 +35,14 @@ import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
 /**
- * Unit tests for {@link com.android.server.wifi.WifiConfigStoreData}.
+ * Unit tests for {@link com.android.server.wifi.WifiMulticastLockManager}.
  */
 @SmallTest
 public class WifiMulticastLockManagerTest extends WifiBaseTest {
     private static final String WL_1_TAG = "Wakelock-1";
     private static final String WL_2_TAG = "Wakelock-2";
 
+    @Mock ClientModeManager mClientModeManager;
     @Mock WifiMulticastLockManager.FilterController mHandler;
     @Mock BatteryStatsManager mBatteryStats;
     WifiMulticastLockManager mManager;
@@ -52,7 +53,10 @@ public class WifiMulticastLockManagerTest extends WifiBaseTest {
     @Before
     public void setUp() throws Exception {
         MockitoAnnotations.initMocks(this);
-        mManager = new WifiMulticastLockManager(mHandler, mBatteryStats);
+        when(mClientModeManager.getMcastLockManagerFilterController()).thenReturn(mHandler);
+        ActiveModeWarden activeModeWarden = mock(ActiveModeWarden.class);
+        when(activeModeWarden.getPrimaryClientModeManager()).thenReturn(mClientModeManager);
+        mManager = new WifiMulticastLockManager(activeModeWarden, mBatteryStats);
     }
 
     /**
