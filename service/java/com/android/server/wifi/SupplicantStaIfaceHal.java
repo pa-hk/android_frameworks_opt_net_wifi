@@ -51,6 +51,7 @@ import android.hardware.wifi.supplicant.V1_0.WpsConfigMethods;
 import android.hardware.wifi.supplicant.V1_3.ConnectionCapabilities;
 import android.hardware.wifi.supplicant.V1_3.WifiTechnology;
 import android.hardware.wifi.supplicant.V1_3.WpaDriverCapabilitiesMask;
+import android.hardware.wifi.supplicant.V1_4.LegacyMode;
 import android.hidl.manager.V1_0.IServiceManager;
 import android.hidl.manager.V1_0.IServiceNotification;
 import android.net.MacAddress;
@@ -735,6 +736,10 @@ public class SupplicantStaIfaceHal {
                 Log.e(TAG, "ISupplicant.addInterface exception: " + e);
                 handleNoSuchElementException(e, "addInterface");
                 return null;
+            } catch (IllegalArgumentException e) {
+                handleIllegalArgumentException(e, "addInterface");
+                Log.e(TAG, "ISupplicant.addInterface exception: " + e);
+                return null;
             }
             return supplicantIface.value;
         }
@@ -1077,6 +1082,14 @@ public class SupplicantStaIfaceHal {
         }
     }
 
+    protected android.hardware.wifi.supplicant.V1_4.ISupplicantStaIface
+            getStaIfaceMockableV1_4(ISupplicantIface iface) {
+        synchronized (mLock) {
+            return android.hardware.wifi.supplicant.V1_4.ISupplicantStaIface
+                    .asInterface(iface.asBinder());
+        }
+    }
+
     /**
      * Uses the IServiceManager to check if the device is running V1_1 of the HAL from the VINTF for
      * the device.
@@ -1105,6 +1118,16 @@ public class SupplicantStaIfaceHal {
     private boolean isV1_3() {
         return checkHalVersionByInterfaceName(
                 android.hardware.wifi.supplicant.V1_3.ISupplicant.kInterfaceName);
+    }
+
+    /**
+     * Uses the IServiceManager to check if the device is running V1_4 of the HAL from the VINTF for
+     * the device.
+     * @return true if supported, false otherwise.
+     */
+    private boolean isV1_4() {
+        return checkHalVersionByInterfaceName(
+                android.hardware.wifi.supplicant.V1_4.ISupplicant.kInterfaceName);
     }
 
     private boolean checkHalVersionByInterfaceName(String interfaceName) {
@@ -2955,7 +2978,7 @@ public class SupplicantStaIfaceHal {
     private boolean checkStatusAndLogFailure(SupplicantStatus status,
             final String methodStr) {
         synchronized (mLock) {
-            if (status.code != SupplicantStatusCode.SUCCESS) {
+            if (status == null || status.code != SupplicantStatusCode.SUCCESS) {
                 Log.e(TAG, "ISupplicantStaIface." + methodStr + " failed: " + status);
                 return false;
             } else {
@@ -3024,6 +3047,13 @@ public class SupplicantStaIfaceHal {
     }
 
     private void handleRemoteException(RemoteException e, String methodStr) {
+        synchronized (mLock) {
+            clearState();
+            Log.e(TAG, "ISupplicantStaIface." + methodStr + " failed with exception", e);
+        }
+    }
+
+    private void handleIllegalArgumentException(IllegalArgumentException e, String methodStr) {
         synchronized (mLock) {
             clearState();
             Log.e(TAG, "ISupplicantStaIface." + methodStr + " failed with exception", e);
@@ -3469,8 +3499,8 @@ public class SupplicantStaIfaceHal {
         return featureSet;
     }
 
-    private @WifiStandard int getWifiStandardFromCap(ConnectionCapabilities capa) {
-        switch(capa.technology) {
+    private @WifiStandard int getWifiStandard(int technology) {
+        switch(technology) {
             case WifiTechnology.HE:
                 return ScanResult.WIFI_STANDARD_11AX;
             case WifiTechnology.VHT:
@@ -3484,8 +3514,8 @@ public class SupplicantStaIfaceHal {
         }
     }
 
-    private int getChannelBandwidthFromCap(ConnectionCapabilities cap) {
-        switch(cap.channelBandwidth) {
+    private int getChannelBandwidth(int channelBandwidth) {
+        switch(channelBandwidth) {
             case WifiChannelWidthInMhz.WIDTH_20:
                 return ScanResult.CHANNEL_WIDTH_20MHZ;
             case WifiChannelWidthInMhz.WIDTH_40:
@@ -3511,42 +3541,87 @@ public class SupplicantStaIfaceHal {
     public WifiNative.ConnectionCapabilities getConnectionCapabilities(@NonNull String ifaceName) {
         final String methodStr = "getConnectionCapabilities";
         WifiNative.ConnectionCapabilities capOut = new WifiNative.ConnectionCapabilities();
-        if (isV1_3()) {
-            ISupplicantStaIface iface = checkSupplicantStaIfaceAndLogFailure(ifaceName, methodStr);
-            if (iface == null) {
-                return capOut;
-            }
-
-            // Get a v1.3 supplicant STA Interface
-            android.hardware.wifi.supplicant.V1_3.ISupplicantStaIface staIfaceV13 =
-                    getStaIfaceMockableV1_3(iface);
-
-            if (staIfaceV13 == null) {
-                Log.e(TAG, methodStr
-                        + ": SupplicantStaIface is null, cannot get Connection Capabilities");
-                return capOut;
-            }
-
-            try {
-                staIfaceV13.getConnectionCapabilities(
-                        (SupplicantStatus statusInternal, ConnectionCapabilities cap) -> {
-                            if (statusInternal.code == SupplicantStatusCode.SUCCESS) {
-                                capOut.wifiStandard = getWifiStandardFromCap(cap);
-                                capOut.channelBandwidth = getChannelBandwidthFromCap(cap);
-                                capOut.maxNumberTxSpatialStreams = cap.maxNumberTxSpatialStreams;
-                                capOut.maxNumberRxSpatialStreams = cap.maxNumberRxSpatialStreams;
-                            }
-                            checkStatusAndLogFailure(statusInternal, methodStr);
-                        });
-            } catch (RemoteException e) {
-                handleRemoteException(e, methodStr);
-            }
+        ISupplicantStaIface iface = checkSupplicantStaIfaceAndLogFailure(ifaceName, methodStr);
+        if (iface == null) {
+            return capOut;
+        }
+        if (isV1_4()) {
+            return getConnectionCapabilities_1_4(iface);
+        } else if (isV1_3()) {
+            return getConnectionCapabilities_1_3(iface);
         } else {
             Log.e(TAG, "Method " + methodStr + " is not supported in existing HAL");
         }
         return capOut;
     }
 
+    private WifiNative.ConnectionCapabilities getConnectionCapabilities_1_3(
+            @NonNull ISupplicantStaIface iface) {
+        final String methodStr = "getConnectionCapabilities_1_3";
+        WifiNative.ConnectionCapabilities capOut = new WifiNative.ConnectionCapabilities();
+
+        // Get a v1.3 supplicant STA Interface
+        android.hardware.wifi.supplicant.V1_3.ISupplicantStaIface staIfaceV13 =
+                getStaIfaceMockableV1_3(iface);
+
+        if (staIfaceV13 == null) {
+            Log.e(TAG, methodStr
+                    + ": SupplicantStaIface is null, cannot get Connection Capabilities");
+            return capOut;
+        }
+
+        try {
+            staIfaceV13.getConnectionCapabilities(
+                    (SupplicantStatus statusInternal, ConnectionCapabilities cap) -> {
+                        if (statusInternal.code == SupplicantStatusCode.SUCCESS) {
+                            capOut.wifiStandard = getWifiStandard(cap.technology);
+                            capOut.channelBandwidth = getChannelBandwidth(
+                                    cap.channelBandwidth);
+                            capOut.maxNumberTxSpatialStreams = cap.maxNumberTxSpatialStreams;
+                            capOut.maxNumberRxSpatialStreams = cap.maxNumberRxSpatialStreams;
+                        }
+                        checkStatusAndLogFailure(statusInternal, methodStr);
+                    });
+        } catch (RemoteException e) {
+            handleRemoteException(e, methodStr);
+        }
+        return capOut;
+    }
+
+    private WifiNative.ConnectionCapabilities getConnectionCapabilities_1_4(
+            @NonNull ISupplicantStaIface iface) {
+        final String methodStr = "getConnectionCapabilities_1_4";
+        WifiNative.ConnectionCapabilities capOut = new WifiNative.ConnectionCapabilities();
+        // Get a v1.4 supplicant STA Interface
+        android.hardware.wifi.supplicant.V1_4.ISupplicantStaIface staIfaceV14 =
+                getStaIfaceMockableV1_4(iface);
+
+        if (staIfaceV14 == null) {
+            Log.e(TAG, methodStr
+                    + ": SupplicantStaIface is null, cannot get Connection Capabilities");
+            return capOut;
+        }
+
+        try {
+            staIfaceV14.getConnectionCapabilities_1_4(
+                    (SupplicantStatus statusInternal,
+                            android.hardware.wifi.supplicant.V1_4.ConnectionCapabilities cap)
+                            -> {
+                        if (statusInternal.code == SupplicantStatusCode.SUCCESS) {
+                            capOut.wifiStandard = getWifiStandard(cap.V1_3.technology);
+                            capOut.channelBandwidth = getChannelBandwidth(
+                                    cap.V1_3.channelBandwidth);
+                            capOut.is11bMode = (cap.legacyMode == LegacyMode.B_MODE);
+                            capOut.maxNumberTxSpatialStreams = cap.V1_3.maxNumberTxSpatialStreams;
+                            capOut.maxNumberRxSpatialStreams = cap.V1_3.maxNumberRxSpatialStreams;
+                        }
+                        checkStatusAndLogFailure(statusInternal, methodStr);
+                    });
+        } catch (RemoteException e) {
+            handleRemoteException(e, methodStr);
+        }
+        return capOut;
+    }
     /**
      * Add the DPP bootstrap info obtained from QR code.
      *

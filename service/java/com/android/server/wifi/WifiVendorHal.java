@@ -16,6 +16,7 @@
 package com.android.server.wifi;
 
 import android.annotation.NonNull;
+import android.annotation.Nullable;
 import android.hardware.wifi.V1_0.IWifiApIface;
 import android.hardware.wifi.V1_0.IWifiChip;
 import android.hardware.wifi.V1_0.IWifiChipEventCallback;
@@ -34,7 +35,6 @@ import android.hardware.wifi.V1_0.StaRoamingState;
 import android.hardware.wifi.V1_0.StaScanData;
 import android.hardware.wifi.V1_0.StaScanDataFlagMask;
 import android.hardware.wifi.V1_0.StaScanResult;
-import android.hardware.wifi.V1_0.WifiBand;
 import android.hardware.wifi.V1_0.WifiDebugHostWakeReasonStats;
 import android.hardware.wifi.V1_0.WifiDebugPacketFateFrameType;
 import android.hardware.wifi.V1_0.WifiDebugRingBufferFlags;
@@ -47,6 +47,7 @@ import android.hardware.wifi.V1_0.WifiInformationElement;
 import android.hardware.wifi.V1_0.WifiStatus;
 import android.hardware.wifi.V1_0.WifiStatusCode;
 import android.hardware.wifi.V1_2.IWifiChipEventCallback.IfaceInfo;
+import android.hardware.wifi.V1_5.WifiBand;
 import android.net.MacAddress;
 import android.net.apf.ApfCapabilities;
 import android.net.wifi.ScanResult;
@@ -55,6 +56,7 @@ import android.net.wifi.WifiScanner;
 import android.net.wifi.WifiSsid;
 import android.os.Handler;
 import android.os.RemoteException;
+import android.os.WorkSource;
 import android.text.TextUtils;
 import android.util.Log;
 import android.util.MutableBoolean;
@@ -63,7 +65,6 @@ import android.util.SparseArray;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.HexDump;
-import com.android.internal.util.Preconditions;
 import com.android.server.wifi.HalDeviceManager.InterfaceDestroyedListener;
 import com.android.server.wifi.WifiLinkLayerStats.ChannelStats;
 import com.android.server.wifi.util.ArrayUtils;
@@ -239,10 +240,6 @@ public class WifiVendorHal {
     private IWifiChip mIWifiChip;
     private HashMap<String, IWifiStaIface> mIWifiStaIfaces = new HashMap<>();
     private HashMap<String, IWifiApIface> mIWifiApIfaces = new HashMap<>();
-    private HalDeviceManager.InterfaceAvailableForRequestListener
-            mStaIfaceAvailableForRequestListener;
-    private HalDeviceManager.InterfaceAvailableForRequestListener
-            mApIfaceAvailableForRequestListener;
     private final HalDeviceManager mHalDeviceManager;
     private final HalDeviceManagerStatusListener mHalDeviceManagerStatusCallbacks;
     private final IWifiStaIfaceEventCallback mIWifiStaIfaceEventCallback;
@@ -326,7 +323,7 @@ public class WifiVendorHal {
             if (!startVendorHal()) {
                 return false;
             }
-            if (TextUtils.isEmpty(createApIface(null))) {
+            if (TextUtils.isEmpty(createApIface(null, null))) {
                 stopVendorHal();
                 return false;
             }
@@ -344,7 +341,7 @@ public class WifiVendorHal {
             if (!startVendorHal()) {
                 return false;
             }
-            if (TextUtils.isEmpty(createStaIface(null))) {
+            if (TextUtils.isEmpty(createStaIface(null, null))) {
                 stopVendorHal();
                 return false;
             }
@@ -367,44 +364,6 @@ public class WifiVendorHal {
         }
     }
 
-    /**
-     * Register a STA iface availability listener listed with {@link HalDeviceManager}.
-     *
-     * @param listener Instance of {@link WifiNative.InterfaceAvailableForRequestListener}.
-     */
-    public void registerStaIfaceAvailabilityListener(
-            @NonNull WifiNative.InterfaceAvailableForRequestListener listener) {
-        synchronized (sLock) {
-            Preconditions.checkState(mStaIfaceAvailableForRequestListener == null);
-            mStaIfaceAvailableForRequestListener =
-                    (isAvailable) -> listener.onAvailabilityChanged(isAvailable);
-            if (mHalDeviceManager.isStarted()) {
-                mHalDeviceManager.registerInterfaceAvailableForRequestListener(
-                        IfaceType.STA, mStaIfaceAvailableForRequestListener,
-                        mHalEventHandler);
-            }
-        }
-    }
-
-    /**
-     * Register a AP iface availability listener listed with {@link HalDeviceManager}.
-     *
-     * @param listener Instance of {@link WifiNative.InterfaceAvailableForRequestListener}.
-     *
-     */
-    public void registerApIfaceAvailabilityListener(
-            @NonNull WifiNative.InterfaceAvailableForRequestListener listener) {
-        synchronized (sLock) {
-            Preconditions.checkState(mApIfaceAvailableForRequestListener == null);
-            mApIfaceAvailableForRequestListener =
-                    (isAvailable) -> listener.onAvailabilityChanged(isAvailable);
-            if (mHalDeviceManager.isStarted()) {
-                mHalDeviceManager.registerInterfaceAvailableForRequestListener(
-                        IfaceType.AP, mApIfaceAvailableForRequestListener,
-                        mHalEventHandler);
-            }
-        }
-    }
 
     /** Helper method to lookup the corresponding STA iface object using iface name. */
     private IWifiStaIface getStaIface(@NonNull String ifaceName) {
@@ -435,12 +394,15 @@ public class WifiVendorHal {
      * Create a STA iface using {@link HalDeviceManager}.
      *
      * @param destroyedListener Listener to be invoked when the interface is destroyed.
+     * @param requestorWs Requestor worksource.
      * @return iface name on success, null otherwise.
      */
-    public String createStaIface(InterfaceDestroyedListener destroyedListener) {
+    public String createStaIface(@Nullable InterfaceDestroyedListener destroyedListener,
+            @NonNull WorkSource requestorWs) {
         synchronized (sLock) {
             IWifiStaIface iface = mHalDeviceManager.createStaIface(
-                    new StaInterfaceDestroyedListenerInternal(destroyedListener), null);
+                    new StaInterfaceDestroyedListenerInternal(destroyedListener), null,
+                    requestorWs);
             if (iface == null) {
                 mLog.err("Failed to create STA iface").flush();
                 return stringResult(null);
@@ -513,12 +475,15 @@ public class WifiVendorHal {
      * Create a AP iface using {@link HalDeviceManager}.
      *
      * @param destroyedListener Listener to be invoked when the interface is destroyed.
+     * @param requestorWs Requestor worksource.
      * @return iface name on success, null otherwise.
      */
-    public String createApIface(InterfaceDestroyedListener destroyedListener) {
+    public String createApIface(@Nullable InterfaceDestroyedListener destroyedListener,
+            @NonNull WorkSource requestorWs) {
         synchronized (sLock) {
             IWifiApIface iface = mHalDeviceManager.createApIface(
-                    new ApInterfaceDestroyedListenerInternal(destroyedListener), null);
+                    new ApInterfaceDestroyedListenerInternal(destroyedListener), null,
+                    requestorWs);
             if (iface == null) {
                 mLog.err("Failed to create AP iface").flush();
                 return stringResult(null);
@@ -770,6 +735,12 @@ public class WifiVendorHal {
                 return WifiBand.BAND_24GHZ_5GHZ;
             case WifiScanner.WIFI_BAND_BOTH_WITH_DFS:
                 return WifiBand.BAND_24GHZ_5GHZ_WITH_DFS;
+            case WifiScanner.WIFI_BAND_60_GHZ:
+                return WifiBand.BAND_60GHZ;
+            case WifiScanner.WIFI_BAND_24_5_6_60_GHZ:
+                return WifiBand.BAND_24GHZ_5GHZ_6GHZ_60GHZ;
+            case WifiScanner.WIFI_BAND_24_5_WITH_DFS_6_60_GHZ:
+                return WifiBand.BAND_24GHZ_5GHZ_WITH_DFS_6GHZ_60GHZ;
             default:
                 throw new IllegalArgumentException("bad band " + frameworkBand);
         }
@@ -1133,6 +1104,16 @@ public class WifiVendorHal {
 
     /**
      * Translation table used by getSupportedFeatureSet for translating IWifiChip caps for
+     * additional capabilities introduced in V1.5
+     */
+    private static final long[][] sChipFeatureCapabilityTranslation15 = {
+            {WifiManager.WIFI_FEATURE_INFRA_60G,
+                    android.hardware.wifi.V1_5.IWifiChip.ChipCapabilityMask.WIGIG
+            }
+    };
+
+    /**
+     * Translation table used by getSupportedFeatureSet for translating IWifiChip caps for
      * additional capabilities introduced in V1.3
      */
     private static final long[][] sChipFeatureCapabilityTranslation13 = {
@@ -1157,6 +1138,26 @@ public class WifiVendorHal {
         for (int i = 0; i < sChipFeatureCapabilityTranslation.length; i++) {
             if ((capabilities & sChipFeatureCapabilityTranslation[i][1]) != 0) {
                 features |= sChipFeatureCapabilityTranslation[i][0];
+            }
+        }
+        return features;
+    }
+
+    /**
+     * Feature bit mask translation for Chip V1.5
+     *
+     * @param capabilities bitmask defined IWifiChip.ChipCapabilityMask
+     * @return bitmask defined by WifiManager.WIFI_FEATURE_*
+     */
+    @VisibleForTesting
+    long wifiFeatureMaskFromChipCapabilities_1_5(int capabilities) {
+        // First collect features from previous versions
+        long features = wifiFeatureMaskFromChipCapabilities(capabilities);
+
+        // Next collect features for V1_5 version
+        for (int i = 0; i < sChipFeatureCapabilityTranslation15.length; i++) {
+            if ((capabilities & sChipFeatureCapabilityTranslation15[i][1]) != 0) {
+                features |= sChipFeatureCapabilityTranslation15[i][0];
             }
         }
         return features;
@@ -1258,7 +1259,13 @@ public class WifiVendorHal {
             final MutableLong feat = new MutableLong(0);
             synchronized (sLock) {
                 android.hardware.wifi.V1_3.IWifiChip iWifiChipV13 = getWifiChipForV1_3Mockable();
-                if (iWifiChipV13 != null) {
+                android.hardware.wifi.V1_5.IWifiChip iWifiChipV15 = getWifiChipForV1_5Mockable();
+                if (iWifiChipV15 != null) {
+                    iWifiChipV15.getCapabilities_1_5((status, capabilities) -> {
+                        if (!ok(status)) return;
+                        feat.value = wifiFeatureMaskFromChipCapabilities_1_5(capabilities);
+                    });
+                } else if (iWifiChipV13 != null) {
                     iWifiChipV13.getCapabilities_1_3((status, capabilities) -> {
                         if (!ok(status)) return;
                         feat.value = wifiFeatureMaskFromChipCapabilities_1_3(capabilities);
@@ -1308,27 +1315,41 @@ public class WifiVendorHal {
      * @param mac MAC address to change into
      * @return true for success
      */
-    public boolean setMacAddress(@NonNull String ifaceName, @NonNull MacAddress mac) {
+    public boolean setStaMacAddress(@NonNull String ifaceName, @NonNull MacAddress mac) {
         byte[] macByteArray = mac.toByteArray();
         synchronized (sLock) {
             try {
                 android.hardware.wifi.V1_2.IWifiStaIface sta12 =
                         getWifiStaIfaceForV1_2Mockable(ifaceName);
-                if (sta12 != null) {
-                    return ok(sta12.setMacAddress(macByteArray));
-                }
-
-                android.hardware.wifi.V1_4.IWifiApIface ap14 =
-                        getWifiApIfaceForV1_4Mockable(ifaceName);
-                if (ap14 != null) {
-                    return ok(ap14.setMacAddress(macByteArray));
-                }
+                if (sta12 == null) return boolResult(false);
+                return ok(sta12.setMacAddress(macByteArray));
             } catch (RemoteException e) {
                 handleRemoteException(e);
                 return false;
             }
         }
-        return boolResult(false);
+    }
+
+    /**
+     * Set Mac address on the given interface
+     *
+     * @param ifaceName Name of the interface
+     * @param mac MAC address to change into
+     * @return true for success
+     */
+    public boolean setApMacAddress(@NonNull String ifaceName, @NonNull MacAddress mac) {
+        byte[] macByteArray = mac.toByteArray();
+        synchronized (sLock) {
+            try {
+                android.hardware.wifi.V1_4.IWifiApIface ap14 =
+                        getWifiApIfaceForV1_4Mockable(ifaceName);
+                if (ap14 == null) return boolResult(false);
+                return ok(ap14.setMacAddress(macByteArray));
+            } catch (RemoteException e) {
+                handleRemoteException(e);
+                return false;
+            }
+        }
     }
 
     /**
@@ -1336,21 +1357,25 @@ public class WifiVendorHal {
      *
      * @param ifaceName Name of the interface
      */
-    public boolean isSetMacAddressSupported(@NonNull String ifaceName) {
+    public boolean isStaSetMacAddressSupported(@NonNull String ifaceName) {
         synchronized (sLock) {
             android.hardware.wifi.V1_2.IWifiStaIface sta12 =
                     getWifiStaIfaceForV1_2Mockable(ifaceName);
-            if (sta12 != null) {
-                return true;
-            }
+            return sta12 != null;
+        }
+    }
 
+    /**
+     * Returns true if Hal version supports setMacAddress, otherwise false.
+     *
+     * @param ifaceName Name of the interface
+     */
+    public boolean isApSetMacAddressSupported(@NonNull String ifaceName) {
+        synchronized (sLock) {
             android.hardware.wifi.V1_4.IWifiApIface ap14 =
                     getWifiApIfaceForV1_4Mockable(ifaceName);
-            if (ap14 != null) {
-                return true;
-            }
+            return ap14 != null;
         }
-        return false;
     }
 
     /**
@@ -1359,7 +1384,7 @@ public class WifiVendorHal {
      * @param ifaceName Name of the interface
      * @return factory MAC address of the interface or null.
      */
-    public MacAddress getFactoryMacAddress(@NonNull String ifaceName) {
+    public MacAddress getStaFactoryMacAddress(@NonNull String ifaceName) {
         class AnswerBox {
             public MacAddress mac = null;
         }
@@ -1369,29 +1394,45 @@ public class WifiVendorHal {
 
                 android.hardware.wifi.V1_3.IWifiStaIface sta13 =
                         getWifiStaIfaceForV1_3Mockable(ifaceName);
-                if (sta13 != null) {
-                    sta13.getFactoryMacAddress((status, macBytes) -> {
-                        if (!ok(status)) return;
-                        box.mac = MacAddress.fromBytes(macBytes);
-                    });
-                    return box.mac;
-                }
-
-                android.hardware.wifi.V1_4.IWifiApIface ap14 =
-                        getWifiApIfaceForV1_4Mockable(ifaceName);
-                if (ap14 != null) {
-                    ap14.getFactoryMacAddress((status, macBytes) -> {
-                        if (!ok(status)) return;
-                        box.mac = MacAddress.fromBytes(macBytes);
-                    });
-                    return box.mac;
-                }
+                if (sta13 == null) return null;
+                sta13.getFactoryMacAddress((status, macBytes) -> {
+                    if (!ok(status)) return;
+                    box.mac = MacAddress.fromBytes(macBytes);
+                });
+                return box.mac;
             } catch (RemoteException e) {
                 handleRemoteException(e);
                 return null;
             }
         }
-        return null;
+    }
+
+    /**
+     * Get factory MAC address of the given interface
+     *
+     * @param ifaceName Name of the interface
+     * @return factory MAC address of the interface or null.
+     */
+    public MacAddress getApFactoryMacAddress(@NonNull String ifaceName) {
+        class AnswerBox {
+            public MacAddress mac = null;
+        }
+        synchronized (sLock) {
+            try {
+                AnswerBox box = new AnswerBox();
+                android.hardware.wifi.V1_4.IWifiApIface ap14 =
+                        getWifiApIfaceForV1_4Mockable(ifaceName);
+                if (ap14 == null) return null;
+                ap14.getFactoryMacAddress((status, macBytes) -> {
+                    if (!ok(status)) return;
+                    box.mac = MacAddress.fromBytes(macBytes);
+                });
+                return box.mac;
+            } catch (RemoteException e) {
+                handleRemoteException(e);
+                return null;
+            }
+        }
     }
 
     /**
@@ -2212,8 +2253,8 @@ public class WifiVendorHal {
                 WifiNative.RoamingCapabilities out = capabilities;
                 iface.getRoamingCapabilities((status, cap) -> {
                     if (!ok(status)) return;
-                    out.maxBlacklistSize = cap.maxBlacklistSize;
-                    out.maxWhitelistSize = cap.maxWhitelistSize;
+                    out.maxBlocklistSize = cap.maxBlacklistSize;
+                    out.maxAllowlistSize = cap.maxWhitelistSize;
                     ok.value = true;
                 });
                 return ok.value;
@@ -2279,16 +2320,16 @@ public class WifiVendorHal {
                 StaRoamingConfig roamingConfig = new StaRoamingConfig();
 
                 // parse the blacklist BSSIDs if any
-                if (config.blacklistBssids != null) {
-                    for (String bssid : config.blacklistBssids) {
+                if (config.blocklistBssids != null) {
+                    for (String bssid : config.blocklistBssids) {
                         byte[] mac = NativeUtil.macAddressToByteArray(bssid);
                         roamingConfig.bssidBlacklist.add(mac);
                     }
                 }
 
                 // parse the whitelist SSIDs if any
-                if (config.whitelistSsids != null) {
-                    for (String ssidStr : config.whitelistSsids) {
+                if (config.allowlistSsids != null) {
+                    for (String ssidStr : config.allowlistSsids) {
                         byte[] ssid = NativeUtil.byteArrayFromArrayList(
                                 NativeUtil.decodeSsid(ssidStr));
                         if (ssid.length > 32) {
@@ -2353,6 +2394,17 @@ public class WifiVendorHal {
     protected android.hardware.wifi.V1_4.IWifiChip getWifiChipForV1_4Mockable() {
         if (mIWifiChip == null) return null;
         return android.hardware.wifi.V1_4.IWifiChip.castFrom(mIWifiChip);
+    }
+
+    /**
+     * Method to mock out the V1_5 IWifiChip retrieval in unit tests.
+     *
+     * @return 1.5 IWifiChip object if the device is running the 1.5 wifi hal service, null
+     * otherwise.
+     */
+    protected android.hardware.wifi.V1_5.IWifiChip getWifiChipForV1_5Mockable() {
+        if (mIWifiChip == null) return null;
+        return android.hardware.wifi.V1_5.IWifiChip.castFrom(mIWifiChip);
     }
 
     /**
@@ -2435,6 +2487,24 @@ public class WifiVendorHal {
                     put(IfaceType.STA, 1);
                     put(IfaceType.AP, 1);
                 }});
+        }
+    }
+
+    /**
+     * Returns whether a new AP iface can be created or not.
+     */
+    public boolean isItPossibleToCreateApIface(@NonNull WorkSource requestorWs) {
+        synchronized (sLock) {
+            return mHalDeviceManager.isItPossibleToCreateIface(IfaceType.AP, requestorWs);
+        }
+    }
+
+    /**
+     * Returns whether a new STA iface can be created or not.
+     */
+    public boolean isItPossibleToCreateStaIface(@NonNull WorkSource requestorWs) {
+        synchronized (sLock) {
+            return mHalDeviceManager.isItPossibleToCreateIface(IfaceType.STA, requestorWs);
         }
     }
 
@@ -2866,9 +2936,9 @@ public class WifiVendorHal {
         }
     }
 
-    /**
-     * Hal Device Manager callbacks.
-     */
+  /**
+   * Hal Device Manager callbacks.
+   */
     public class HalDeviceManagerStatusListener implements HalDeviceManager.ManagerStatusListener {
         @Override
         public void onStatusChanged() {
@@ -2887,20 +2957,6 @@ public class WifiVendorHal {
                     }
                     if (handler != null) {
                         handler.onDeath();
-                    }
-                }
-                if (isStarted) {
-                    synchronized (sLock) {
-                        if (mStaIfaceAvailableForRequestListener != null) {
-                            mHalDeviceManager.registerInterfaceAvailableForRequestListener(
-                                    IfaceType.STA, mStaIfaceAvailableForRequestListener,
-                                    mHalEventHandler);
-                        }
-                        if (mApIfaceAvailableForRequestListener != null) {
-                            mHalDeviceManager.registerInterfaceAvailableForRequestListener(
-                                    IfaceType.AP, mApIfaceAvailableForRequestListener,
-                                    mHalEventHandler);
-                        }
                     }
                 }
             });

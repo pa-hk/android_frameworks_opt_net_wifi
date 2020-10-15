@@ -37,6 +37,7 @@
     <string name="wifitrackerlib_wifi_limited_connection" msgid="4234326409980991740">"Limitadong koneksyon"</string>
     <string name="wifitrackerlib_private_dns_broken" msgid="6049401148262718707">"Hindi ma-access ang pribadong DNS server"</string>
     <string name="wifitrackerlib_wifi_connected_no_internet" msgid="2329345148045635995">"Walang internet"</string>
+    <string name="wifi_connected_low_quality" msgid="4478331645458058445">"Mababang kalidad"</string>
     <string name="wifitrackerlib_wifi_security_none" msgid="2686062484642847280">"Wala"</string>
     <string name="wifitrackerlib_wifi_passpoint_expired" msgid="7974960573887452566">"Nag-expire na"</string>
     <string name="wifitrackerlib_tap_to_sign_up" msgid="3897017015910817402">"I-tap para mag-sign up"</string>
@@ -46,7 +47,7 @@
     <string name="wifitrackerlib_osu_completing_sign_up" msgid="4359503050543182480">"Kinukumpleto ang pag-sign up…"</string>
     <string name="wifitrackerlib_osu_sign_up_failed" msgid="3964140125523395898">"Hindi makumpleto ang pag-sign up. I-tap para subukan ulit."</string>
     <string name="wifitrackerlib_osu_sign_up_complete" msgid="3279606633343124580">"Kumpleto na ang pag-sign up. Kumokonekta…"</string>
-    <string name="wifitrackerlib_imsi_protection_warning" msgid="5177588159471032092">"Tumatanggap ang network na ito ng natatanging ID na magagamit sa pagsubaybay ng lokasyon ng device. "<annotation id="url">"Matuto pa"</annotation></string>
+    <string name="wifitrackerlib_imsi_protection_warning" msgid="7202210931586169466">"Tumatanggap ang network na ito ng SIM ID na magagamit sa pag-track sa lokasyon ng device. "<annotation id="url">"Matuto pa"</annotation></string>
     <string name="wifitrackerlib_speed_label_very_slow" msgid="6606409259798814244">"Napakabagal"</string>
     <string name="wifitrackerlib_speed_label_slow" msgid="7327906382011957760">"Mabagal"</string>
     <string name="wifitrackerlib_speed_label_okay" msgid="6656684124654881956">"OK"</string>

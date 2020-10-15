@@ -18,6 +18,7 @@ package com.android.server.wifi;
 
 import android.annotation.IntDef;
 import android.annotation.NonNull;
+import android.annotation.Nullable;
 import android.content.Context;
 import android.net.wifi.ScanResult;
 import android.net.wifi.WifiManager;
@@ -36,6 +37,7 @@ import java.lang.annotation.RetentionPolicy;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Calendar;
+import java.util.Collections;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
@@ -59,7 +61,7 @@ public class BssidBlocklistMonitor {
     public static final int REASON_EAP_FAILURE = 3;
     // Other association rejection failures
     public static final int REASON_ASSOCIATION_REJECTION = 4;
-    // Associated timeout failures, when the RSSI is good
+    // Association timeout failures.
     public static final int REASON_ASSOCIATION_TIMEOUT = 5;
     // Other authentication failures
     public static final int REASON_AUTHENTICATION_FAILURE = 6;
@@ -328,8 +330,7 @@ public class BssidBlocklistMonitor {
             if (shouldWaitForWatchdogToTriggerFirst(bssid, reasonCode)) {
                 return false;
             }
-            int baseBlockDurationMs = mContext.getResources().getInteger(
-                    R.integer.config_wifiBssidBlocklistMonitorBaseBlockDurationMs);
+            int baseBlockDurationMs = getBaseBlockDurationForReason(reasonCode);
             addToBlocklist(entry,
                     getBlocklistDurationWithExponentialBackoff(currentStreak, baseBlockDurationMs),
                     reasonCode, rssi);
@@ -337,6 +338,17 @@ public class BssidBlocklistMonitor {
             return true;
         }
         return false;
+    }
+
+    private int getBaseBlockDurationForReason(int blockReason) {
+        switch (blockReason) {
+            case REASON_FRAMEWORK_DISCONNECT_CONNECTED_SCORE:
+                return mContext.getResources().getInteger(R.integer
+                        .config_wifiBssidBlocklistMonitorConnectedScoreBaseBlockDurationMs);
+            default:
+                return mContext.getResources().getInteger(
+                        R.integer.config_wifiBssidBlocklistMonitorBaseBlockDurationMs);
+        }
     }
 
     /**
@@ -381,6 +393,8 @@ public class BssidBlocklistMonitor {
                 ssid, bssid, connectionTime);
         if (connectionTime - prevConnectionTime > ABNORMAL_DISCONNECT_RESET_TIME_MS) {
             mWifiScoreCard.resetBssidBlocklistStreak(ssid, bssid, REASON_ABNORMAL_DISCONNECT);
+            mWifiScoreCard.resetBssidBlocklistStreak(ssid, bssid,
+                    REASON_FRAMEWORK_DISCONNECT_CONNECTED_SCORE);
         }
 
         BssidStatus status = mBssidStatusMap.get(bssid);
@@ -486,9 +500,34 @@ public class BssidBlocklistMonitor {
      * @param ssid
      * @return the number of BSSIDs currently in the blocklist for the |ssid|.
      */
-    public int getNumBlockedBssidsForSsid(@NonNull String ssid) {
+    public int updateAndGetNumBlockedBssidsForSsid(@NonNull String ssid) {
         return (int) updateAndGetBssidBlocklistInternal()
                 .filter(entry -> ssid.equals(entry.ssid)).count();
+    }
+
+    private int getNumBlockedBssidsForSsid(@Nullable String ssid) {
+        if (ssid == null) {
+            return 0;
+        }
+        return (int) mBssidStatusMap.values().stream()
+                .filter(entry -> entry.isInBlocklist && ssid.equals(entry.ssid))
+                .count();
+    }
+
+    /**
+     * Overloaded version of updateAndGetBssidBlocklist.
+     * Accepts a @Nullable String ssid as input, and updates the firmware roaming
+     * configuration if the blocklist for the input ssid has been changed.
+     * @param ssid to update firmware roaming configuration for.
+     * @return Set of BSSIDs currently in the blocklist
+     */
+    public Set<String> updateAndGetBssidBlocklistForSsid(@Nullable String ssid) {
+        int numBefore = getNumBlockedBssidsForSsid(ssid);
+        Set<String> bssidBlocklist = updateAndGetBssidBlocklist();
+        if (getNumBlockedBssidsForSsid(ssid) != numBefore) {
+            updateFirmwareRoamingConfiguration(ssid);
+        }
+        return bssidBlocklist;
     }
 
     /**
@@ -498,6 +537,20 @@ public class BssidBlocklistMonitor {
     public Set<String> updateAndGetBssidBlocklist() {
         return updateAndGetBssidBlocklistInternal()
                 .map(entry -> entry.bssid)
+                .collect(Collectors.toSet());
+    }
+
+    /**
+     * Gets the list of block reasons for BSSIDs currently in the blocklist.
+     * @return The set of unique reasons for blocking BSSIDs with this SSID.
+     */
+    public Set<Integer> getFailureReasonsForSsid(@NonNull String ssid) {
+        if (ssid == null) {
+            return Collections.emptySet();
+        }
+        return mBssidStatusMap.values().stream()
+                .filter(entry -> entry.isInBlocklist && ssid.equals(entry.ssid))
+                .map(entry -> entry.blockReason)
                 .collect(Collectors.toSet());
     }
 
@@ -563,7 +616,7 @@ public class BssidBlocklistMonitor {
                 .sorted((o1, o2) -> (int) (o2.blocklistEndTimeMs - o1.blocklistEndTimeMs))
                 .map(entry -> entry.bssid)
                 .collect(Collectors.toCollection(ArrayList::new));
-        int fwMaxBlocklistSize = mConnectivityHelper.getMaxNumBlacklistBssid();
+        int fwMaxBlocklistSize = mConnectivityHelper.getMaxNumBlocklistBssid();
         if (fwMaxBlocklistSize <= 0) {
             Log.e(TAG, "Invalid max BSSID blocklist size:  " + fwMaxBlocklistSize);
             return;
@@ -577,7 +630,7 @@ public class BssidBlocklistMonitor {
         }
         // plumb down to HAL
         if (!mConnectivityHelper.setFirmwareRoamingConfiguration(bssidBlocklist,
-                new ArrayList<String>())) {  // TODO(b/36488259): SSID whitelist management.
+                new ArrayList<String>())) {  // TODO(b/36488259): SSID allowlist management.
         }
     }
 

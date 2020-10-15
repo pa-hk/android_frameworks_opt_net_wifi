@@ -37,6 +37,7 @@
     <string name="wifitrackerlib_wifi_limited_connection" msgid="4234326409980991740">"ਸੀਮਤ ਕਨੈਕਸ਼ਨ"</string>
     <string name="wifitrackerlib_private_dns_broken" msgid="6049401148262718707">"ਨਿੱਜੀ DNS ਸਰਵਰ \'ਤੇ ਪਹੁੰਚ ਨਹੀਂ ਕੀਤੀ ਜਾ ਸਕਦੀ"</string>
     <string name="wifitrackerlib_wifi_connected_no_internet" msgid="2329345148045635995">"ਇੰਟਰਨੈੱਟ ਨਹੀਂ"</string>
+    <string name="wifi_connected_low_quality" msgid="4478331645458058445">"ਠੀਕ-ਠਾਕ ਕੁਆਲਿਟੀ"</string>
     <string name="wifitrackerlib_wifi_security_none" msgid="2686062484642847280">"ਕੋਈ ਨਹੀਂ"</string>
     <string name="wifitrackerlib_wifi_passpoint_expired" msgid="7974960573887452566">"ਮਿਆਦ ਮੁੱਕ ਗਈ"</string>
     <string name="wifitrackerlib_tap_to_sign_up" msgid="3897017015910817402">"ਸਾਈਨ-ਅੱਪ ਕਰਨ ਲਈ ਟੈਪ ਕਰੋ"</string>
@@ -46,7 +47,7 @@
     <string name="wifitrackerlib_osu_completing_sign_up" msgid="4359503050543182480">"ਸਾਈਨ-ਅੱਪ ਮੁਕੰਮਲ ਕੀਤਾ ਜਾ ਰਿਹਾ ਹੈ…"</string>
     <string name="wifitrackerlib_osu_sign_up_failed" msgid="3964140125523395898">"ਸਾਈਨ-ਅੱਪ ਮੁਕੰਮਲ ਨਹੀਂ ਕੀਤਾ ਜਾ ਸਕਿਆ। ਦੁਬਾਰਾ ਕੋਸ਼ਿਸ਼ ਕਰਨ ਲਈ ਟੈਪ ਕਰੋ।"</string>
     <string name="wifitrackerlib_osu_sign_up_complete" msgid="3279606633343124580">"ਸਾਈਨ-ਅੱਪ ਮੁਕੰਮਲ ਹੋਇਆ। ਕਨੈਕਟ ਹੋ ਰਿਹਾ ਹੈ…"</string>
-    <string name="wifitrackerlib_imsi_protection_warning" msgid="5177588159471032092">"ਇਹ ਨੈੱਟਵਰਕ ਇੱਕ ਵਿਲੱਖਣ ਆਈਡੀ ਪ੍ਰਾਪਤ ਕਰਦਾ ਹੈ ਜੋ ਡੀਵਾਈਸ ਦੇ ਟਿਕਾਣੇ ਨੂੰ ਟਰੈਕ ਕਰਨ ਲਈ ਵਰਤਿਆ ਦਾ ਸਕਦਾ ਹੈ। "<annotation id="url">"ਹੋਰ ਜਾਣੋ"</annotation></string>
+    <string name="wifitrackerlib_imsi_protection_warning" msgid="7202210931586169466">"ਇਹ ਨੈੱਟਵਰਕ ਇੱਕ ਸਿਮ ਆਈਡੀ ਪ੍ਰਾਪਤ ਕਰਦਾ ਹੈ ਜਿਸਨੂੰ ਡੀਵਾਈਸ ਦੇ ਟਿਕਾਣੇ ਨੂੰ ਟਰੈਕ ਕਰਨ ਲਈ ਵਰਤਿਆ ਜਾ ਸਕਦਾ ਹੈ। "<annotation id="url">"ਹੋਰ ਜਾਣੋ"</annotation></string>
     <string name="wifitrackerlib_speed_label_very_slow" msgid="6606409259798814244">"ਬਹੁਤ ਹੌਲੀ"</string>
     <string name="wifitrackerlib_speed_label_slow" msgid="7327906382011957760">"ਹੌਲੀ"</string>
     <string name="wifitrackerlib_speed_label_okay" msgid="6656684124654881956">"ਠੀਕ ਹੈ"</string>

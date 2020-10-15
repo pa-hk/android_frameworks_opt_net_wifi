@@ -247,7 +247,7 @@ public abstract class NetworkListStoreData implements WifiConfigStore.StoreData 
                     }
                     parsedConfig = WifiConfigurationXmlUtil.parseFromXml(in, outerTagDepth + 1,
                             version >= ENCRYPT_CREDENTIALS_CONFIG_STORE_DATA_VERSION,
-                            encryptionUtil);
+                            encryptionUtil, false);
                     break;
                 case XML_TAG_SECTION_HEADER_NETWORK_STATUS:
                     if (status != null) {
@@ -351,7 +351,9 @@ public abstract class NetworkListStoreData implements WifiConfigStore.StoreData 
         if (saeNetwork.allowedGroupCiphers.get(WifiConfiguration.GroupCipher.TKIP)) {
             saeNetwork.allowedGroupCiphers.clear(WifiConfiguration.GroupCipher.TKIP);
         }
+        saeNetwork.allowedPairwiseCiphers.set(WifiConfiguration.PairwiseCipher.GCMP_128);
         saeNetwork.allowedPairwiseCiphers.set(WifiConfiguration.PairwiseCipher.GCMP_256);
+        saeNetwork.allowedGroupCiphers.set(WifiConfiguration.GroupCipher.GCMP_128);
         saeNetwork.allowedGroupCiphers.set(WifiConfiguration.GroupCipher.GCMP_256);
     }
 }

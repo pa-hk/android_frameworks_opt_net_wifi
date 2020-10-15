@@ -616,7 +616,7 @@ public class WifiConfigManagerTest extends WifiBaseTest {
                 return (int) mBssidStatusMap.entrySet().stream()
                         .filter(e -> e.getValue().equals(ssid)).count();
             }
-        }).when(mBssidBlocklistMonitor).getNumBlockedBssidsForSsid(
+        }).when(mBssidBlocklistMonitor).updateAndGetNumBlockedBssidsForSsid(
                 anyString());
         // add bssid to the blocklist
         mBssidStatusMap.put(TEST_BSSID, openNetwork.SSID);
@@ -644,7 +644,8 @@ public class WifiConfigManagerTest extends WifiBaseTest {
         assertTrue(oldConfig.trusted);
         assertNull(oldConfig.BSSID);
 
-        assertEquals(0, mBssidBlocklistMonitor.getNumBlockedBssidsForSsid(openNetwork.SSID));
+        assertEquals(0, mBssidBlocklistMonitor.updateAndGetNumBlockedBssidsForSsid(
+                openNetwork.SSID));
     }
 
     /**
@@ -659,7 +660,7 @@ public class WifiConfigManagerTest extends WifiBaseTest {
         when(mWifiPermissionsUtil.checkNetworkSetupWizardPermission(anyInt())).thenReturn(false);
         when(mWifiPermissionsUtil.isDeviceOwner(anyInt(), any())).thenReturn(true);
         WifiConfiguration openNetwork = WifiConfigurationTestUtil.createOpenNetwork();
-        openNetwork.macRandomizationSetting = WifiConfiguration.RANDOMIZATION_PERSISTENT;
+        openNetwork.macRandomizationSetting = WifiConfiguration.RANDOMIZATION_AUTO;
 
         verifyAddNetworkToWifiConfigManager(openNetwork);
         verify(mWcmListener).onNetworkAdded(wifiConfigCaptor.capture());
@@ -687,7 +688,7 @@ public class WifiConfigManagerTest extends WifiBaseTest {
                 ArgumentCaptor.forClass(WifiConfiguration.class);
         when(mWifiPermissionsUtil.checkNetworkSetupWizardPermission(anyInt())).thenReturn(false);
         WifiConfiguration openNetwork = WifiConfigurationTestUtil.createOpenNetwork();
-        openNetwork.macRandomizationSetting = WifiConfiguration.RANDOMIZATION_PERSISTENT;
+        openNetwork.macRandomizationSetting = WifiConfiguration.RANDOMIZATION_AUTO;
         List<WifiConfiguration> networks = new ArrayList<>();
         networks.add(openNetwork);
 
@@ -723,7 +724,7 @@ public class WifiConfigManagerTest extends WifiBaseTest {
         when(mWifiPermissionsUtil.checkNetworkSetupWizardPermission(anyInt())).thenReturn(true);
         when(mWifiPermissionsUtil.isDeviceOwner(anyInt(), any())).thenReturn(true);
         WifiConfiguration openNetwork = WifiConfigurationTestUtil.createOpenNetwork();
-        openNetwork.macRandomizationSetting = WifiConfiguration.RANDOMIZATION_PERSISTENT;
+        openNetwork.macRandomizationSetting = WifiConfiguration.RANDOMIZATION_AUTO;
         List<WifiConfiguration> networks = new ArrayList<>();
         networks.add(openNetwork);
 
@@ -1370,7 +1371,7 @@ public class WifiConfigManagerTest extends WifiBaseTest {
         for (int i = 1; i < MAX_BLOCKED_BSSID_PER_NETWORK + 1; i++) {
             verifyDisableNetwork(result, disableReason);
             int numBssidsInBlocklist = i;
-            when(mBssidBlocklistMonitor.getNumBlockedBssidsForSsid(anyString()))
+            when(mBssidBlocklistMonitor.updateAndGetNumBlockedBssidsForSsid(anyString()))
                     .thenReturn(numBssidsInBlocklist);
             timeout = WifiConfigManager.getNetworkSelectionDisableTimeoutMillis(disableReason)
                     * multiplier;
@@ -1381,7 +1382,7 @@ public class WifiConfigManagerTest extends WifiBaseTest {
 
         // Verify one last time that the disable duration is capped at some maximum.
         verifyDisableNetwork(result, disableReason);
-        when(mBssidBlocklistMonitor.getNumBlockedBssidsForSsid(anyString()))
+        when(mBssidBlocklistMonitor.updateAndGetNumBlockedBssidsForSsid(anyString()))
                 .thenReturn(MAX_BLOCKED_BSSID_PER_NETWORK + 1);
         verifyNetworkIsEnabledAfter(result.getNetworkId(),
                 TEST_ELAPSED_UPDATE_NETWORK_SELECTION_TIME_MILLIS + timeout);
@@ -1399,7 +1400,7 @@ public class WifiConfigManagerTest extends WifiBaseTest {
 
         // Verify that with 0 BSSIDs in blocklist we enable the network immediately
         verifyDisableNetwork(result, disableReason);
-        when(mBssidBlocklistMonitor.getNumBlockedBssidsForSsid(anyString())).thenReturn(0);
+        when(mBssidBlocklistMonitor.updateAndGetNumBlockedBssidsForSsid(anyString())).thenReturn(0);
         when(mClock.getElapsedSinceBootMillis())
                 .thenReturn(TEST_ELAPSED_UPDATE_NETWORK_SELECTION_TIME_MILLIS);
         assertTrue(mWifiConfigManager.tryEnableNetwork(result.getNetworkId()));
@@ -1603,8 +1604,6 @@ public class WifiConfigManagerTest extends WifiBaseTest {
                 result.getNetworkId() + 1, TEST_CREATOR_UID, TEST_CREATOR_NAME));
         assertFalse(mWifiConfigManager.updateNetworkSelectionStatus(
                 result.getNetworkId() + 1, NetworkSelectionStatus.DISABLED_BY_WIFI_MANAGER));
-        assertFalse(mWifiConfigManager.updateBeforeConnect(
-                result.getNetworkId() + 1, TEST_CREATOR_UID));
     }
 
     /**
@@ -1828,7 +1827,7 @@ public class WifiConfigManagerTest extends WifiBaseTest {
         verifyAddNetworkToWifiConfigManager(oweNetwork);
         verifyAddNetworkToWifiConfigManager(eapSuiteBNetwork);
 
-        // Now create dummy scan detail corresponding to the networks.
+        // Now create fake scan detail corresponding to the networks.
         ScanDetail openNetworkScanDetail = createScanDetailForNetwork(openNetwork);
         ScanDetail wepNetworkScanDetail = createScanDetailForNetwork(wepNetwork);
         ScanDetail pskNetworkScanDetail = createScanDetailForNetwork(pskNetwork);
@@ -1889,7 +1888,7 @@ public class WifiConfigManagerTest extends WifiBaseTest {
         WifiConfiguration testNetwork = WifiConfigurationTestUtil.createOpenNetwork();
         NetworkUpdateResult result = verifyAddNetworkToWifiConfigManager(testNetwork);
 
-        // Now create a dummy scan detail corresponding to the network.
+        // Now create a fake scan detail corresponding to the network.
         ScanDetail scanDetail = createScanDetailForNetwork(testNetwork);
         ScanResult scanResult = scanDetail.getScanResult();
 
@@ -1913,7 +1912,7 @@ public class WifiConfigManagerTest extends WifiBaseTest {
         WifiConfiguration testNetwork = WifiConfigurationTestUtil.createOpenNetwork();
         NetworkUpdateResult result = verifyAddNetworkToWifiConfigManager(testNetwork);
 
-        // Now create a dummy scan detail corresponding to the network.
+        // Now create a fake scan detail corresponding to the network.
         ScanDetail scanDetail = createScanDetailForNetwork(testNetwork);
         ScanResult scanResult = scanDetail.getScanResult();
 
@@ -1945,7 +1944,7 @@ public class WifiConfigManagerTest extends WifiBaseTest {
         // |SCAN_CACHE_ENTRIES_MAX_SIZE| times.
         int scanDetailNum = 1;
         for (; scanDetailNum <= WifiConfigManager.SCAN_CACHE_ENTRIES_MAX_SIZE; scanDetailNum++) {
-            // Create dummy scan detail caches with different BSSID for the network.
+            // Create fake scan detail caches with different BSSID for the network.
             ScanDetail scanDetail =
                     createScanDetailForNetwork(
                             openNetwork, String.format("%s%02x", testBssidPrefix, scanDetailNum));
@@ -2272,24 +2271,46 @@ public class WifiConfigManagerTest extends WifiBaseTest {
     }
 
     /**
-     * Verify that the aggressive randomization whitelist works for passpoints. (by checking FQDN)
+     * Verify that the aggressive randomization allowlist works for passpoints. (by checking FQDN)
      */
     @Test
-    public void testShouldUseAggressiveRandomizationPasspoint() {
+    public void testshouldUseEnhancedRandomizationPasspoint() {
         WifiConfiguration c = WifiConfigurationTestUtil.createPasspointNetwork();
-        // Adds SSID to the whitelist.
+        // Adds SSID to the allowlist.
         Set<String> ssidList = new HashSet<>();
         ssidList.add(c.SSID);
         when(mDeviceConfigFacade.getAggressiveMacRandomizationSsidAllowlist())
                 .thenReturn(ssidList);
 
-        // Verify that if for passpoint networks we don't check for the SSID to be in the whitelist
-        assertFalse(mWifiConfigManager.shouldUseAggressiveRandomization(c));
+        // Verify that if for passpoint networks we don't check for the SSID to be in the allowlist
+        assertFalse(mWifiConfigManager.shouldUseEnhancedRandomization(c));
 
         // instead we check for the FQDN
         ssidList.clear();
         ssidList.add(c.FQDN);
-        assertTrue(mWifiConfigManager.shouldUseAggressiveRandomization(c));
+        assertTrue(mWifiConfigManager.shouldUseEnhancedRandomization(c));
+    }
+
+    /**
+     * Verify that macRandomizationSetting == RANDOMIZATION_ENHANCED enables
+     * enhanced MAC randomization.
+     */
+    @Test
+    public void testShouldUseEnhancedRandomization_randomizationEnhanced() {
+        WifiConfiguration c = WifiConfigurationTestUtil.createPasspointNetwork();
+        c.macRandomizationSetting = WifiConfiguration.RANDOMIZATION_ENHANCED;
+        assertTrue(mWifiConfigManager.shouldUseEnhancedRandomization(c));
+    }
+
+    /**
+     * Verify that macRandomizationSetting = RANDOMIZATION_PERSISTENT disables enhanced
+     * randomization.
+     */
+    @Test
+    public void testShouldUseEnhancedRandomization_randomizationPersistent() {
+        WifiConfiguration c = WifiConfigurationTestUtil.createPasspointNetwork();
+        c.macRandomizationSetting = WifiConfiguration.RANDOMIZATION_PERSISTENT;
+        assertFalse(mWifiConfigManager.shouldUseEnhancedRandomization(c));
     }
 
     /**
@@ -2302,10 +2323,10 @@ public class WifiConfigManagerTest extends WifiBaseTest {
                 eq(WifiConfigManager.ENHANCED_MAC_RANDOMIZATION_FEATURE_FORCE_ENABLE_FLAG),
                 anyInt())).thenReturn(1);
         WifiConfiguration config = WifiConfigurationTestUtil.createOpenNetwork();
-        assertTrue(mWifiConfigManager.shouldUseAggressiveRandomization(config));
+        assertTrue(mWifiConfigManager.shouldUseEnhancedRandomization(config));
 
         config.macRandomizationSetting = WifiConfiguration.RANDOMIZATION_NONE;
-        assertFalse(mWifiConfigManager.shouldUseAggressiveRandomization(config));
+        assertFalse(mWifiConfigManager.shouldUseEnhancedRandomization(config));
     }
 
     /**
@@ -2339,10 +2360,10 @@ public class WifiConfigManagerTest extends WifiBaseTest {
 
         // Now disable aggressive randomization and verify the randomized MAC is changed back to
         // the persistent MAC.
-        Set<String> blacklist = new HashSet<>();
-        blacklist.add(config.SSID);
+        Set<String> blocklist = new HashSet<>();
+        blocklist.add(config.SSID);
         when(mDeviceConfigFacade.getAggressiveMacRandomizationSsidBlocklist())
-                .thenReturn(blacklist);
+                .thenReturn(blocklist);
         MacAddress persistentMac = mWifiConfigManager.getRandomizedMacAndUpdateIfNeeded(config);
 
         // verify internal WifiConfiguration has MacAddress updated correctly by comparing the
@@ -2469,7 +2490,7 @@ public class WifiConfigManagerTest extends WifiBaseTest {
     private void setUpWifiConfigurationForAggressiveRandomization() {
         // sets up a WifiConfiguration for aggressive randomization.
         WifiConfiguration c = WifiConfigurationTestUtil.createOpenNetwork();
-        // Adds the WifiConfiguration to aggressive randomization whitelist.
+        // Adds the WifiConfiguration to aggressive randomization allowlist.
         Set<String> ssidList = new HashSet<>();
         ssidList.add(c.SSID);
         when(mDeviceConfigFacade.getAggressiveMacRandomizationSsidAllowlist())
@@ -2494,8 +2515,7 @@ public class WifiConfigManagerTest extends WifiBaseTest {
         // Verify macRandomizationSetting is not masked out when feature is supported.
         List<WifiConfiguration> configs = mWifiConfigManager.getSavedNetworks(Process.WIFI_UID);
         assertEquals(1, configs.size());
-        assertEquals(WifiConfiguration.RANDOMIZATION_PERSISTENT,
-                configs.get(0).macRandomizationSetting);
+        assertEquals(WifiConfiguration.RANDOMIZATION_AUTO, configs.get(0).macRandomizationSetting);
     }
 
     /**
@@ -2571,7 +2591,7 @@ public class WifiConfigManagerTest extends WifiBaseTest {
         assertTrue(mWifiConfigManager.setNetworkDefaultGwMacAddress(
                 network3.networkId, TEST_DEFAULT_GW_MAC_ADDRESS));
 
-        // Now create dummy scan detail corresponding to the networks.
+        // Now create fake scan detail corresponding to the networks.
         ScanDetail networkScanDetail1 = createScanDetailForNetwork(network1);
         ScanDetail networkScanDetail2 = createScanDetailForNetwork(network2);
         ScanDetail networkScanDetail3 = createScanDetailForNetwork(network3);
@@ -2749,7 +2769,7 @@ public class WifiConfigManagerTest extends WifiBaseTest {
         assertTrue(mWifiConfigManager.setNetworkDefaultGwMacAddress(
                 network2.networkId, "ad:de:fe:45:23:34"));
 
-        // Add some dummy scan results again to re-evaluate the linking of networks.
+        // Add some fake scan results again to re-evaluate the linking of networks.
         assertNotNull(mWifiConfigManager.getConfiguredNetworkForScanDetailAndCache(
                 createScanDetailForNetwork(network1, "af:89:56:34:45:67")));
         assertNotNull(mWifiConfigManager.getConfiguredNetworkForScanDetailAndCache(
@@ -5373,7 +5393,7 @@ public class WifiConfigManagerTest extends WifiBaseTest {
         // First add the provided network.
         verifyAddNetworkToWifiConfigManager(network);
 
-        // Now create a dummy scan detail corresponding to the network.
+        // Now create a fake scan detail corresponding to the network.
         ScanDetail scanDetail = createScanDetailForNetwork(network);
         ScanResult scanResult = scanDetail.getScanResult();
 
@@ -5459,13 +5479,13 @@ public class WifiConfigManagerTest extends WifiBaseTest {
     }
 
     /**
-     * Verifies SSID blacklist consistent with Watchdog trigger.
+     * Verifies SSID blocklist consistent with Watchdog trigger.
      *
-     * Expected behavior: A SSID won't gets blacklisted if there only signle SSID
+     * Expected behavior: A SSID won't gets blocklisted if there only single SSID
      * be observed and Watchdog trigger is activated.
      */
     @Test
-    public void verifyConsistentWatchdogAndSsidBlacklist() {
+    public void verifyConsistentWatchdogAndSsidBlocklist() {
 
         WifiConfiguration openNetwork = WifiConfigurationTestUtil.createOpenNetwork();
         NetworkUpdateResult result = verifyAddNetworkToWifiConfigManager(openNetwork);
@@ -5677,7 +5697,7 @@ public class WifiConfigManagerTest extends WifiBaseTest {
         when(mWifiPermissionsUtil.checkNetworkSettingsPermission(TEST_CREATOR_UID))
                 .thenReturn(true);
 
-        assertTrue(mWifiConfigManager.updateBeforeConnect(config.networkId, TEST_CREATOR_UID));
+        mWifiConfigManager.updateBeforeConnect(config.networkId, TEST_CREATOR_UID);
 
         config = mWifiConfigManager.getConfiguredNetwork(config.networkId);
         // network became enabled
@@ -5713,7 +5733,7 @@ public class WifiConfigManagerTest extends WifiBaseTest {
         when(mWifiPermissionsUtil.checkNetworkSettingsPermission(TEST_CREATOR_UID))
                 .thenReturn(false);
 
-        assertTrue(mWifiConfigManager.updateBeforeConnect(config.networkId, TEST_CREATOR_UID));
+        mWifiConfigManager.updateBeforeConnect(config.networkId, TEST_CREATOR_UID);
 
         config = mWifiConfigManager.getConfiguredNetwork(config.networkId);
         // network became enabled
@@ -5747,7 +5767,7 @@ public class WifiConfigManagerTest extends WifiBaseTest {
                 .thenReturn(false);
         when(mUserManager.isSameProfileGroup(any(), any())).thenReturn(false);
 
-        assertFalse(mWifiConfigManager.updateBeforeConnect(config.networkId, TEST_OTHER_USER_UID));
+        mWifiConfigManager.updateBeforeConnect(config.networkId, TEST_OTHER_USER_UID);
 
         // network still disabled
         assertFalse(config.getNetworkSelectionStatus().isNetworkEnabled());

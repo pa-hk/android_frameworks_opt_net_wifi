@@ -314,7 +314,7 @@ public class InformationElementUtilTest extends WifiBaseTest {
 
         InformationElementUtil.Capabilities capabilities =
                 new InformationElementUtil.Capabilities();
-        capabilities.from(ies, beaconCap, false);
+        capabilities.from(ies, beaconCap, false, 2400);
         String result = capabilities.generateCapabilitiesString();
 
         assertEquals("[WPA2-PSK-CCMP+TKIP][RSN-PSK-CCMP+TKIP]", result);
@@ -338,7 +338,7 @@ public class InformationElementUtilTest extends WifiBaseTest {
 
         InformationElementUtil.Capabilities capabilities =
                 new InformationElementUtil.Capabilities();
-        capabilities.from(ies, beaconCap, false);
+        capabilities.from(ies, beaconCap, false, 2400);
         String result = capabilities.generateCapabilitiesString();
 
         assertEquals("[RSN]", result);
@@ -365,7 +365,7 @@ public class InformationElementUtilTest extends WifiBaseTest {
 
         InformationElementUtil.Capabilities capabilities =
                 new InformationElementUtil.Capabilities();
-        capabilities.from(ies, beaconCap, false);
+        capabilities.from(ies, beaconCap, false, 2400);
         String result = capabilities.generateCapabilitiesString();
 
         assertEquals("[WPA-PSK-CCMP+TKIP]", result);
@@ -388,7 +388,7 @@ public class InformationElementUtilTest extends WifiBaseTest {
 
         InformationElementUtil.Capabilities capabilities =
                 new InformationElementUtil.Capabilities();
-        capabilities.from(ies, beaconCap, false);
+        capabilities.from(ies, beaconCap, false, 2400);
         String result = capabilities.generateCapabilitiesString();
 
         assertEquals("[WPA]", result);
@@ -424,7 +424,7 @@ public class InformationElementUtilTest extends WifiBaseTest {
 
         InformationElementUtil.Capabilities capabilities =
                 new InformationElementUtil.Capabilities();
-        capabilities.from(ies, beaconCap, false);
+        capabilities.from(ies, beaconCap, false, 2400);
         String result = capabilities.generateCapabilitiesString();
 
         assertEquals("[WPA-PSK-CCMP+TKIP][WPA2-PSK-CCMP+TKIP][RSN-PSK-CCMP+TKIP]", result);
@@ -461,7 +461,7 @@ public class InformationElementUtilTest extends WifiBaseTest {
 
         InformationElementUtil.Capabilities capabilities =
                 new InformationElementUtil.Capabilities();
-        capabilities.from(ies, beaconCap, true);
+        capabilities.from(ies, beaconCap, true, 2400);
         String result = capabilities.generateCapabilitiesString();
 
         assertEquals("[WPA2-PSK-CCMP][RSN-PSK+SAE-CCMP]", result);
@@ -498,7 +498,7 @@ public class InformationElementUtilTest extends WifiBaseTest {
 
         InformationElementUtil.Capabilities capabilities =
                 new InformationElementUtil.Capabilities();
-        capabilities.from(ies, beaconCap, true);
+        capabilities.from(ies, beaconCap, true, 2400);
         String result = capabilities.generateCapabilitiesString();
 
         assertEquals("[RSN-SAE+FT/SAE-CCMP]", result);
@@ -533,7 +533,7 @@ public class InformationElementUtilTest extends WifiBaseTest {
 
         InformationElementUtil.Capabilities capabilities =
                 new InformationElementUtil.Capabilities();
-        capabilities.from(ies, beaconCap, true);
+        capabilities.from(ies, beaconCap, true, 2400);
         String result = capabilities.generateCapabilitiesString();
 
         assertEquals("[RSN-OWE-CCMP]", result);
@@ -559,7 +559,7 @@ public class InformationElementUtilTest extends WifiBaseTest {
 
         InformationElementUtil.Capabilities capabilities =
                 new InformationElementUtil.Capabilities();
-        capabilities.from(ies, beaconCap, true);
+        capabilities.from(ies, beaconCap, true, 2400);
         String result = capabilities.generateCapabilitiesString();
 
         assertEquals("[RSN-OWE_TRANSITION-CCMP][ESS]", result);
@@ -585,7 +585,7 @@ public class InformationElementUtilTest extends WifiBaseTest {
 
         InformationElementUtil.Capabilities capabilities =
                 new InformationElementUtil.Capabilities();
-        capabilities.from(ies, beaconCap, false);
+        capabilities.from(ies, beaconCap, false, 2400);
         String result = capabilities.generateCapabilitiesString();
 
         assertEquals("[ESS]", result);
@@ -620,7 +620,7 @@ public class InformationElementUtilTest extends WifiBaseTest {
 
         InformationElementUtil.Capabilities capabilities =
                 new InformationElementUtil.Capabilities();
-        capabilities.from(ies, beaconCap, false);
+        capabilities.from(ies, beaconCap, false, 2400);
         String result = capabilities.generateCapabilitiesString();
 
         assertEquals("[RSN-EAP_SUITE_B_192-GCMP-256]", result);
@@ -660,11 +660,11 @@ public class InformationElementUtilTest extends WifiBaseTest {
 
         InformationElementUtil.Capabilities capabilities =
                 new InformationElementUtil.Capabilities();
-        capabilities.from(ies, beaconCap, true);
+        capabilities.from(ies, beaconCap, true, 2400);
         String result = capabilities.generateCapabilitiesString();
 
-        assertEquals("[WPA2-EAP+EAP-SHA256+FILS-SHA256-CCMP][RSN-EAP+EAP-SHA256+FILS-SHA256-CCMP]",
-                result);
+        assertEquals("[WPA2-EAP+EAP-SHA256+EAP-FILS-SHA256-CCMP]"
+                + "[RSN-EAP+EAP-SHA256+EAP-FILS-SHA256-CCMP]", result);
     }
 
     /**
@@ -701,11 +701,11 @@ public class InformationElementUtilTest extends WifiBaseTest {
 
         InformationElementUtil.Capabilities capabilities =
                 new InformationElementUtil.Capabilities();
-        capabilities.from(ies, beaconCap, true);
+        capabilities.from(ies, beaconCap, true, 2400);
         String result = capabilities.generateCapabilitiesString();
 
-        assertEquals("[WPA2-EAP+EAP-SHA256+FILS-SHA384-CCMP][RSN-EAP+EAP-SHA256+FILS-SHA384-CCMP]",
-                result);
+        assertEquals("[WPA2-EAP+EAP-SHA256+EAP-FILS-SHA384-CCMP]"
+                + "[RSN-EAP+EAP-SHA256+EAP-FILS-SHA384-CCMP]", result);
     }
 
     /**
@@ -732,7 +732,7 @@ public class InformationElementUtilTest extends WifiBaseTest {
 
         InformationElementUtil.Capabilities capabilities =
                 new InformationElementUtil.Capabilities();
-        capabilities.from(ies, beaconCap, false);
+        capabilities.from(ies, beaconCap, false, 2400);
         String result = capabilities.generateCapabilitiesString();
 
         assertEquals("[WPA][RSN]", result);
@@ -764,7 +764,7 @@ public class InformationElementUtilTest extends WifiBaseTest {
 
         InformationElementUtil.Capabilities capabilities =
                  new InformationElementUtil.Capabilities();
-        capabilities.from(ies, beaconCap, false);
+        capabilities.from(ies, beaconCap, false, 2400);
         String result = capabilities.generateCapabilitiesString();
 
         assertEquals("[WPA-PSK-CCMP+TKIP][WPS]", result);
@@ -790,7 +790,7 @@ public class InformationElementUtilTest extends WifiBaseTest {
 
         InformationElementUtil.Capabilities capabilities =
                 new InformationElementUtil.Capabilities();
-        capabilities.from(ies, beaconCap, false);
+        capabilities.from(ies, beaconCap, false, 2400);
         String result = capabilities.generateCapabilitiesString();
 
 
@@ -817,7 +817,7 @@ public class InformationElementUtilTest extends WifiBaseTest {
 
         InformationElementUtil.Capabilities capabilities =
                 new InformationElementUtil.Capabilities();
-        capabilities.from(ies, beaconCap, false);
+        capabilities.from(ies, beaconCap, false, 2400);
         String result = capabilities.generateCapabilitiesString();
 
 
@@ -843,7 +843,7 @@ public class InformationElementUtilTest extends WifiBaseTest {
 
         InformationElementUtil.Capabilities capabilities =
                 new InformationElementUtil.Capabilities();
-        capabilities.from(ies, beaconCap, false);
+        capabilities.from(ies, beaconCap, false, 2400);
         String result = capabilities.generateCapabilitiesString();
 
 
@@ -870,7 +870,7 @@ public class InformationElementUtilTest extends WifiBaseTest {
 
         InformationElementUtil.Capabilities capabilities =
                 new InformationElementUtil.Capabilities();
-        capabilities.from(ies, beaconCap, false);
+        capabilities.from(ies, beaconCap, false, 2400);
         String result = capabilities.generateCapabilitiesString();
 
         assertEquals("", result);
@@ -887,10 +887,44 @@ public class InformationElementUtilTest extends WifiBaseTest {
 
         InformationElementUtil.Capabilities capabilities =
                 new InformationElementUtil.Capabilities();
-        capabilities.from(new InformationElement[0], beaconCap, false);
+        capabilities.from(new InformationElement[0], beaconCap, false, 2400);
         String result = capabilities.generateCapabilitiesString();
 
         assertEquals("[IBSS]", result);
+    }
+
+    /**
+     * Test Capabilities.generateCapabilitiesString() with the IBSS capability bit set for DMG.
+     *
+     * Expect the function to return a string with [IBSS] there.
+     */
+    @Test
+    public void buildCapabilities_DmgIbssCapabilitySet() {
+        int beaconCap = 0x1;
+
+        InformationElementUtil.Capabilities capabilities =
+                new InformationElementUtil.Capabilities();
+        capabilities.from(new InformationElement[0], beaconCap, false, 58320);
+        String result = capabilities.generateCapabilitiesString();
+
+        assertEquals("[IBSS]", result);
+    }
+
+    /**
+     * Test Capabilities.generateCapabilitiesString() with the ESS capability bit set for DMG.
+     *
+     * Expect the function to return a string with [IBSS] there.
+     */
+    @Test
+    public void buildCapabilities_DmgEssCapabilitySet() {
+        int beaconCap = 0x3;
+
+        InformationElementUtil.Capabilities capabilities =
+                new InformationElementUtil.Capabilities();
+        capabilities.from(new InformationElement[0], beaconCap, false, 58320);
+        String result = capabilities.generateCapabilitiesString();
+
+        assertEquals("[ESS]", result);
     }
 
     /**
@@ -1367,7 +1401,7 @@ public class InformationElementUtilTest extends WifiBaseTest {
         assertTrue(heOperation.is6GhzInfoPresent());
         assertFalse(heOperation.isVhtInfoPresent());
         assertEquals(ScanResult.CHANNEL_WIDTH_80MHZ, heOperation.getChannelWidth());
-        assertEquals(6040, heOperation.getCenterFreq0());
+        assertEquals(6050, heOperation.getCenterFreq0());
         assertEquals(0, heOperation.getCenterFreq1());
     }
 
@@ -1412,8 +1446,8 @@ public class InformationElementUtilTest extends WifiBaseTest {
         assertTrue(heOperation.is6GhzInfoPresent());
         assertFalse(heOperation.isVhtInfoPresent());
         assertEquals(ScanResult.CHANNEL_WIDTH_160MHZ, heOperation.getChannelWidth());
-        assertEquals(6040, heOperation.getCenterFreq0());
-        assertEquals(6080, heOperation.getCenterFreq1());
+        assertEquals(6050, heOperation.getCenterFreq0());
+        assertEquals(6090, heOperation.getCenterFreq1());
     }
 
     /**

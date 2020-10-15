@@ -30,6 +30,9 @@
     <!-- boolean indicating whether the WiFi chipset has 6GHz band support -->
     <bool translatable="false" name ="config_wifi6ghzSupport">false</bool>
 
+    <!-- boolean indicating whether the WiFi chipset has 60GHz band support -->
+    <bool translatable="false" name ="config_wifi60ghzSupport">false</bool>
+
       <!-- Indicates that 11ax mode is supported on this device
            Note that if this flag is set to true, then 11ax is assumed to be supported.
            However, if it is left to the default value of false, the 11ax support will
@@ -325,6 +328,14 @@
         <item>160</item>
     </integer-array>
 
+    <!-- Integer specifying minimum wait time in seconds for next PNO scan when a network is found
+    by PNO scan but gets rejected by Wifi Network Selector due to its low RSSI value-->
+    <integer translatable="false" name="config_wifiPnoScanLowRssiNetworkRetryStartDelaySec"> 20 </integer>
+
+    <!-- Integer specifying maximum wait time in seconds for next PNO scan when a network is found
+    by PNO scan but gets rejected by Wifi Network Selector due to its low RSSI value-->
+    <integer translatable="false" name="config_wifiPnoScanLowRssiNetworkRetryMaxDelaySec"> 80 </integer>
+
     <!-- Integer for minimum time between the last network selection and next high RSSI scan
          in seconds when device is connected and screen is on -->
     <integer translatable="false" name="config_wifiConnectedHighRssiScanMinimumWindowSizeSec"> 600 </integer>
@@ -353,6 +364,13 @@
     ie. 5/10/20/40/80/160/320/640 minutes - capped at 640 minutes because the default for
     config_wifiBssidBlocklistMonitorFailureStreakCap is set to 7-->
     <integer translatable="false" name="config_wifiBssidBlocklistMonitorBaseBlockDurationMs"> 300000 </integer>
+
+    <!-- Base duration to block a BSSID after the external connected scorer sets wifi as unusable.
+    The block duration is increased exponentially if the same BSSID is repeated marked as unusable.
+    ie. 0.5/1/2/4/8/16/32/64 minutes - capped at 64 minutes because the default for
+    config_wifiBssidBlocklistMonitorFailureStreakCap is set to 7. The block duration is reset to
+    the base value 3 hours after the latest connection to this BSSID. -->
+    <integer translatable="false" name="config_wifiBssidBlocklistMonitorConnectedScoreBaseBlockDurationMs"> 30000 </integer>
 
     <!-- The failure streak is the number of times a BSSID consecutively gets blocked without ever
     successfully connecting in between, and is used to calculate the exponentially growing blocklist time.
@@ -459,4 +477,7 @@
 
     <!-- Boolean to provide support to keep wifi5 symbol for 8SS supported device and 11ax AP -->
     <bool translatable="false" name="config_vendorWifi11axReadySupport">true</bool>
+
+    <!-- Enable adding minimum confirmation duration when sending network score to connectivity service. -->
+    <bool translatable="false" name="config_wifiMinConfirmationDurationSendNetworkScoreEnabled">false</bool>
 </resources>

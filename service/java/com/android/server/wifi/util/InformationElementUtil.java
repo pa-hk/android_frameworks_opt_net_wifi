@@ -919,8 +919,8 @@ public class InformationElementUtil {
         private static final int RSN_AKM_OWE = 0x12ac0f00;
         private static final int RSN_AKM_EAP_SUITE_B_192 = 0x0cac0f00;
         private static final int RSN_OSEN = 0x019a6f50;
-        private static final int RSN_AKM_FILS_SHA256 = 0x0eac0f00;
-        private static final int RSN_AKM_FILS_SHA384 = 0x0fac0f00;
+        private static final int RSN_AKM_EAP_FILS_SHA256 = 0x0eac0f00;
+        private static final int RSN_AKM_EAP_FILS_SHA384 = 0x0fac0f00;
         private static final int WPA2_AKM_DPP = 0x029a6f50;
 
         private static final int WPA_CIPHER_NONE = 0x00f25000;
@@ -1030,10 +1030,10 @@ public class InformationElementUtil {
                         case RSN_OSEN:
                             rsnKeyManagement.add(ScanResult.KEY_MGMT_OSEN);
                             break;
-                        case RSN_AKM_FILS_SHA256:
+                        case RSN_AKM_EAP_FILS_SHA256:
                             rsnKeyManagement.add(ScanResult.KEY_MGMT_FILS_SHA256);
                             break;
-                        case RSN_AKM_FILS_SHA384:
+                        case RSN_AKM_EAP_FILS_SHA384:
                             rsnKeyManagement.add(ScanResult.KEY_MGMT_FILS_SHA384);
                             break;
                         default:
@@ -1188,9 +1188,13 @@ public class InformationElementUtil {
          * @param ies            -- Information Element array
          * @param beaconCap      -- 16-bit Beacon Capability Information field
          * @param isOweSupported -- Boolean flag to indicate if OWE is supported by the device
+         * @param freq           -- Frequency on which frame/beacon was transmitted.
+         *                          Some parsing may be affected such as DMG parameters in
+         *                          DMG (60GHz) beacon.
          */
 
-        public void from(InformationElement[] ies, int beaconCap, boolean isOweSupported) {
+        public void from(InformationElement[] ies, int beaconCap, boolean isOweSupported,
+                int freq) {
             protocol = new ArrayList<>();
             keyManagement = new ArrayList<>();
             groupCipher = new ArrayList<>();
@@ -1199,9 +1203,19 @@ public class InformationElementUtil {
             if (ies == null) {
                 return;
             }
-            isESS = (beaconCap & NativeScanResult.BSS_CAPABILITY_ESS) != 0;
-            isIBSS = (beaconCap & NativeScanResult.BSS_CAPABILITY_IBSS) != 0;
             isPrivacy = (beaconCap & NativeScanResult.BSS_CAPABILITY_PRIVACY) != 0;
+            if (ScanResult.is60GHz(freq)) {
+                /* In DMG, bits 0 and 1 are parsed together, where ESS=0x3 and IBSS=0x1 */
+                if ((beaconCap & NativeScanResult.BSS_CAPABILITY_DMG_ESS)
+                        == NativeScanResult.BSS_CAPABILITY_DMG_ESS) {
+                    isESS = true;
+                } else if ((beaconCap & NativeScanResult.BSS_CAPABILITY_DMG_IBSS) != 0) {
+                    isIBSS = true;
+                }
+            } else {
+                isESS = (beaconCap & NativeScanResult.BSS_CAPABILITY_ESS) != 0;
+                isIBSS = (beaconCap & NativeScanResult.BSS_CAPABILITY_IBSS) != 0;
+            }
             for (InformationElement ie : ies) {
                 WifiNl80211Manager.OemSecurityType oemSecurityType =
                         WifiNl80211Manager.parseOemSecurityTypeElement(
@@ -1324,9 +1338,9 @@ public class InformationElementUtil {
                 case ScanResult.KEY_MGMT_DPP:
                     return "DPP";
                 case ScanResult.KEY_MGMT_FILS_SHA256:
-                    return "FILS-SHA256";
+                    return "EAP-FILS-SHA256";
                 case ScanResult.KEY_MGMT_FILS_SHA384:
-                    return "FILS-SHA384";
+                    return "EAP-FILS-SHA384";
                 default:
                     return "?";
             }

@@ -37,6 +37,7 @@
     <string name="wifitrackerlib_wifi_limited_connection" msgid="4234326409980991740">"ସୀମିତ ସଂଯୋଗ"</string>
     <string name="wifitrackerlib_private_dns_broken" msgid="6049401148262718707">"ବ୍ୟକ୍ତିଗତ DNS ସର୍ଭରକୁ ଆକ୍ସେସ୍ କରାଯାଇପାରିବ ନାହିଁ"</string>
     <string name="wifitrackerlib_wifi_connected_no_internet" msgid="2329345148045635995">"ଇଣ୍ଟର୍ନେଟ୍ ସଂଯୋଗ ନାହିଁ"</string>
+    <string name="wifi_connected_low_quality" msgid="4478331645458058445">"ନିମ୍ନ ଗୁଣବତ୍ତା"</string>
     <string name="wifitrackerlib_wifi_security_none" msgid="2686062484642847280">"କିଛି ନାହିଁ"</string>
     <string name="wifitrackerlib_wifi_passpoint_expired" msgid="7974960573887452566">"ମିଆଦ ଶେଷ ହୋଇଯାଇଛି"</string>
     <string name="wifitrackerlib_tap_to_sign_up" msgid="3897017015910817402">"ସାଇନ୍ ଅପ୍ କରିବାକୁ ଟାପ୍ କରନ୍ତୁ"</string>
@@ -46,7 +47,7 @@
     <string name="wifitrackerlib_osu_completing_sign_up" msgid="4359503050543182480">"ସାଇନ୍-ଅପ୍ ସମ୍ପୂର୍ଣ୍ଣ କରାଯାଉଛି…"</string>
     <string name="wifitrackerlib_osu_sign_up_failed" msgid="3964140125523395898">"ସାଇନ୍ ଅପ୍ ସମ୍ପୂର୍ଣ୍ଣ ହୋଇପାରିଲା ନାହିଁ। ପୁଣି ଚେଷ୍ଟା କରିବାକୁ ଟାପ୍ କରନ୍ତୁ।"</string>
     <string name="wifitrackerlib_osu_sign_up_complete" msgid="3279606633343124580">"ସାଇନ୍ ଅପ୍ ସମ୍ପୂର୍ଣ୍ଣ ହୋଇଛି। ସଂଯୋଗ କରୁଛି…"</string>
-    <string name="wifitrackerlib_imsi_protection_warning" msgid="5177588159471032092">"ଏହି ନେଟୱାର୍କ ଏକ ସ୍ୱତନ୍ତ୍ର ID ପ୍ରାପ୍ତ କରେ ଯାହାକୁ ଡିଭାଇସର ଲୋକେସନ୍ ଟ୍ରାକ୍ କରିବାକୁ ବ୍ୟବହାର କରାଯାଇପାରିବ। "<annotation id="url">"ଅଧିକ ଜାଣନ୍ତୁ"</annotation></string>
+    <string name="wifitrackerlib_imsi_protection_warning" msgid="7202210931586169466">"ଏହି ନେଟୱାର୍କ ଏକ SIM ID ପ୍ରାପ୍ତ କରେ ଯାହା ଡିଭାଇସର ଲୋକେସନ୍ ଟ୍ରାକ୍ କରିବାରେ ବ୍ୟବହାର କରାଯାଇପାରିବ। "<annotation id="url">"ଅଧିକ ଜାଣନ୍ତୁ"</annotation></string>
     <string name="wifitrackerlib_speed_label_very_slow" msgid="6606409259798814244">"ଅତି ଧୀର"</string>
     <string name="wifitrackerlib_speed_label_slow" msgid="7327906382011957760">"ଧୀର"</string>
     <string name="wifitrackerlib_speed_label_okay" msgid="6656684124654881956">"ଠିକ୍ ଅଛି"</string>

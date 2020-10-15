@@ -52,6 +52,7 @@ import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -63,8 +64,10 @@ import android.net.wifi.IOnWifiUsabilityStatsListener;
 import android.net.wifi.ScanResult;
 import android.net.wifi.SoftApCapability;
 import android.net.wifi.SoftApConfiguration;
+import android.net.wifi.SoftApInfo;
 import android.net.wifi.SupplicantState;
 import android.net.wifi.WifiConfiguration;
+import android.net.wifi.WifiConfiguration.NetworkSelectionStatus;
 import android.net.wifi.WifiEnterpriseConfig;
 import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
@@ -104,6 +107,7 @@ import com.android.server.wifi.proto.nano.WifiMetricsProto.Int32Count;
 import com.android.server.wifi.proto.nano.WifiMetricsProto.LinkProbeStats;
 import com.android.server.wifi.proto.nano.WifiMetricsProto.LinkProbeStats.ExperimentProbeCounts;
 import com.android.server.wifi.proto.nano.WifiMetricsProto.LinkProbeStats.LinkProbeFailureReasonCount;
+import com.android.server.wifi.proto.nano.WifiMetricsProto.NetworkDisableReason;
 import com.android.server.wifi.proto.nano.WifiMetricsProto.NetworkSelectionExperimentDecisions;
 import com.android.server.wifi.proto.nano.WifiMetricsProto.PasspointProfileTypeCount;
 import com.android.server.wifi.proto.nano.WifiMetricsProto.PasspointProvisionStats;
@@ -136,9 +140,11 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.BitSet;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -175,9 +181,11 @@ public class WifiMetricsTest extends WifiBaseTest {
     @Mock WifiScoreCard mWifiScoreCard;
     @Mock WifiScoreCard.PerNetwork mPerNetwork;
     @Mock WifiScoreCard.NetworkConnectionStats mNetworkConnectionStats;
-    @Mock WifiConfiguration mWifiConfig;
     @Mock PowerManager mPowerManager;
+    @Mock WifiMonitor mWifiMonitor;
+
     @Captor ArgumentCaptor<BroadcastReceiver> mBroadcastReceiverCaptor;
+    @Captor ArgumentCaptor<Handler> mHandlerCaptor;
 
     @Before
     public void setUp() throws Exception {
@@ -191,7 +199,7 @@ public class WifiMetricsTest extends WifiBaseTest {
         when(mPowerManager.isInteractive()).thenReturn(true);
         mWifiMetrics = new WifiMetrics(mContext, mFacade, mClock, mTestLooper.getLooper(),
                 new WifiAwareMetrics(mClock), new RttMetrics(mClock), mWifiPowerMetrics,
-                mWifiP2pMetrics, mDppMetrics);
+                mWifiP2pMetrics, mDppMetrics, mWifiMonitor);
         mWifiMetrics.setWifiConfigManager(mWcm);
         mWifiMetrics.setBssidBlocklistMonitor(mBssidBlocklistMonitor);
         mWifiMetrics.setPasspointManager(mPpm);
@@ -204,6 +212,10 @@ public class WifiMetricsTest extends WifiBaseTest {
         when(mPerNetwork.getRecentStats()).thenReturn(mNetworkConnectionStats);
         verify(mContext, atLeastOnce()).registerReceiver(
                 mBroadcastReceiverCaptor.capture(), any(), any(), any());
+
+        mWifiMetrics.registerForWifiMonitorEvents("wlan0");
+        verify(mWifiMonitor, atLeastOnce())
+                .registerHandler(eq("wlan0"), anyInt(), mHandlerCaptor.capture());
     }
 
     /**
@@ -218,12 +230,14 @@ public class WifiMetricsTest extends WifiBaseTest {
         mWifiMetrics.endConnectionEvent(
                 WifiMetrics.ConnectionEvent.FAILURE_AUTHENTICATION_FAILURE,
                 WifiMetricsProto.ConnectionEvent.HLF_DHCP,
-                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN);
+                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN,
+                0);
         //end Connection event without starting one
         mWifiMetrics.endConnectionEvent(
                 WifiMetrics.ConnectionEvent.FAILURE_AUTHENTICATION_FAILURE,
                 WifiMetricsProto.ConnectionEvent.HLF_DHCP,
-                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN);
+                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN,
+                0);
         //start two ConnectionEvents in a row
         mWifiMetrics.startConnectionEvent(null, "BLUE",
                 WifiMetricsProto.ConnectionEvent.ROAM_ENTERPRISE);
@@ -465,7 +479,7 @@ public class WifiMetricsTest extends WifiBaseTest {
             {20, 21, 22, 23, 24},
             {30, 31, 32, 33, 34},
             {40, 41, 42, 43, 44}};
-    private static final int SIZE_OPEN_NETWORK_RECOMMENDER_BLACKLIST = 10;
+    private static final int SIZE_OPEN_NETWORK_RECOMMENDER_BLOCKLIST = 10;
     private static final boolean IS_WIFI_NETWORKS_AVAILABLE_NOTIFICATION_ON = true;
     private static final int NUM_OPEN_NETWORK_CONNECT_MESSAGE_FAILED_TO_SEND = 5;
     private static final int NUM_OPEN_NETWORK_RECOMMENDATION_UPDATES = 8;
@@ -475,6 +489,7 @@ public class WifiMetricsTest extends WifiBaseTest {
     private static final int NUM_SOFT_AP_ASSOCIATED_STATIONS = 3;
     private static final int SOFT_AP_CHANNEL_FREQUENCY = 2437;
     private static final int SOFT_AP_CHANNEL_BANDWIDTH = SoftApConnectedClientsEvent.BANDWIDTH_20;
+    private static final int SOFT_AP_GENERATION = ScanResult.WIFI_STANDARD_11N;
     private static final int SOFT_AP_MAX_CLIENT_SETTING = 10;
     private static final int SOFT_AP_MAX_CLIENT_CAPABILITY = 16;
     private static final long SOFT_AP_SHUTDOWN_TIMEOUT_SETTING = 10_000;
@@ -599,9 +614,9 @@ public class WifiMetricsTest extends WifiBaseTest {
         mockScanDetails.add(buildMockScanDetail(false, null, "[WAPI-WAPI-CERT-SMS4-SMS4]", 0));
         // Number of scans of R2 networks must be equal to NUM_HOTSPOT2_R2_NETWORK_SCAN_RESULTS
         mockScanDetails.add(buildMockScanDetail(false, NetworkDetail.HSRelease.R2,
-                "[WPA-EAP-CCMP+FILS-SHA256-CCMP]", FEATURE_MBO | FEATURE_OCE));
+                "[WPA-EAP-CCMP+EAP-FILS-SHA256-CCMP]", FEATURE_MBO | FEATURE_OCE));
         mockScanDetails.add(buildMockScanDetail(false, NetworkDetail.HSRelease.R2,
-                "[WPA2-EAP+FT/EAP-CCMP+FILS-SHA256-CCMP]", 0));
+                "[WPA2-EAP+FT/EAP-CCMP+EAP-FILS-SHA256-CCMP]", 0));
         // Number of scans of R1 networks must be equal to NUM_HOTSPOT2_R1_NETWORK_SCAN_RESULTS
         mockScanDetails.add(buildMockScanDetail(false, NetworkDetail.HSRelease.R1,
                 "[WPA-EAP-CCMP]", 0));
@@ -945,8 +960,8 @@ public class WifiMetricsTest extends WifiBaseTest {
                 }
             }
         }
-        mWifiMetrics.setNetworkRecommenderBlacklistSize(OPEN_NET_NOTIFIER_TAG,
-                SIZE_OPEN_NETWORK_RECOMMENDER_BLACKLIST);
+        mWifiMetrics.setNetworkRecommenderBlocklistSize(OPEN_NET_NOTIFIER_TAG,
+                SIZE_OPEN_NETWORK_RECOMMENDER_BLOCKLIST);
         mWifiMetrics.setIsWifiNetworksAvailableNotificationEnabled(OPEN_NET_NOTIFIER_TAG,
                 IS_WIFI_NETWORKS_AVAILABLE_NOTIFICATION_ON);
         for (int i = 0; i < NUM_OPEN_NETWORK_RECOMMENDATION_UPDATES; i++) {
@@ -1039,8 +1054,12 @@ public class WifiMetricsTest extends WifiBaseTest {
         mWifiMetrics.addSoftApUpChangedEvent(false, WifiManager.IFACE_IP_MODE_TETHERED,
                 SOFT_AP_SHUTDOWN_TIMEOUT_DEFAULT_SETTING);
         // Channel switch info should be added to the last Soft AP UP event in the list
-        mWifiMetrics.addSoftApChannelSwitchedEvent(SOFT_AP_CHANNEL_FREQUENCY,
-                SOFT_AP_CHANNEL_BANDWIDTH, WifiManager.IFACE_IP_MODE_TETHERED);
+        SoftApInfo testSoftApInfo = new SoftApInfo();
+        testSoftApInfo.setFrequency(SOFT_AP_CHANNEL_FREQUENCY);
+        testSoftApInfo.setBandwidth(SOFT_AP_CHANNEL_BANDWIDTH);
+        testSoftApInfo.setWifiStandard(SOFT_AP_GENERATION);
+        mWifiMetrics.addSoftApChannelSwitchedEvent(testSoftApInfo,
+                WifiManager.IFACE_IP_MODE_TETHERED);
         SoftApConfiguration testSoftApConfig = new SoftApConfiguration.Builder()
                 .setSsid("Test_Metric_SSID")
                 .setMaxNumberOfClients(SOFT_AP_MAX_CLIENT_SETTING)
@@ -1376,8 +1395,8 @@ public class WifiMetricsTest extends WifiBaseTest {
                     notificationActionCount.recommender);
         }
 
-        assertEquals(SIZE_OPEN_NETWORK_RECOMMENDER_BLACKLIST,
-                mDecodedProto.openNetworkRecommenderBlacklistSize);
+        assertEquals(SIZE_OPEN_NETWORK_RECOMMENDER_BLOCKLIST,
+                mDecodedProto.openNetworkRecommenderBlocklistSize);
         assertEquals(IS_WIFI_NETWORKS_AVAILABLE_NOTIFICATION_ON,
                 mDecodedProto.isWifiNetworksAvailableNotificationOn);
         assertEquals(NUM_OPEN_NETWORK_RECOMMENDATION_UPDATES,
@@ -1583,7 +1602,7 @@ public class WifiMetricsTest extends WifiBaseTest {
         WifiConfiguration config = mock(WifiConfiguration.class);
         config.SSID = "\"" + SSID + "\"";
         config.dtimInterval = CONFIG_DTIM;
-        config.macRandomizationSetting = WifiConfiguration.RANDOMIZATION_PERSISTENT;
+        config.macRandomizationSetting = WifiConfiguration.RANDOMIZATION_AUTO;
         config.allowedKeyManagement = new BitSet();
         config.allowedKeyManagement.set(WifiConfiguration.KeyMgmt.WPA_EAP);
         config.allowedKeyManagement.set(WifiConfiguration.KeyMgmt.IEEE8021X);
@@ -1611,7 +1630,8 @@ public class WifiMetricsTest extends WifiBaseTest {
         mWifiMetrics.endConnectionEvent(
                 WifiMetrics.ConnectionEvent.FAILURE_NONE,
                 WifiMetricsProto.ConnectionEvent.HLF_NONE,
-                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN);
+                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN,
+                0);
 
         //Change configuration to open without randomization
         config.macRandomizationSetting = WifiConfiguration.RANDOMIZATION_NONE;
@@ -1623,7 +1643,8 @@ public class WifiMetricsTest extends WifiBaseTest {
         mWifiMetrics.endConnectionEvent(
                 WifiMetrics.ConnectionEvent.FAILURE_NONE,
                 WifiMetricsProto.ConnectionEvent.HLF_NONE,
-                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN);
+                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN,
+                0);
 
         //Dump proto from mWifiMetrics and deserialize it to mDecodedProto
         dumpProtoAndDeserialize();
@@ -1675,7 +1696,7 @@ public class WifiMetricsTest extends WifiBaseTest {
         WifiConfiguration config = mock(WifiConfiguration.class);
         config.SSID = "\"" + SSID + "\"";
         config.dtimInterval = CONFIG_DTIM;
-        config.macRandomizationSetting = WifiConfiguration.RANDOMIZATION_PERSISTENT;
+        config.macRandomizationSetting = WifiConfiguration.RANDOMIZATION_AUTO;
         config.allowedKeyManagement = new BitSet();
         WifiConfiguration.NetworkSelectionStatus networkSelectionStat =
                 mock(WifiConfiguration.NetworkSelectionStatus.class);
@@ -1699,7 +1720,8 @@ public class WifiMetricsTest extends WifiBaseTest {
         mWifiMetrics.endConnectionEvent(
                 WifiMetrics.ConnectionEvent.FAILURE_NONE,
                 WifiMetricsProto.ConnectionEvent.HLF_NONE,
-                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN);
+                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN,
+                0);
 
         dumpProtoAndDeserialize();
 
@@ -1717,7 +1739,8 @@ public class WifiMetricsTest extends WifiBaseTest {
         mWifiMetrics.endConnectionEvent(
                 WifiMetrics.ConnectionEvent.FAILURE_ASSOCIATION_TIMED_OUT,
                 WifiMetricsProto.ConnectionEvent.HLF_NONE,
-                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN);
+                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN,
+                0);
 
         //Dump proto and deserialize
         //This should clear all the metrics in mWifiMetrics,
@@ -1740,13 +1763,15 @@ public class WifiMetricsTest extends WifiBaseTest {
         config.allowedKeyManagement = new BitSet();
         when(config.getNetworkSelectionStatus()).thenReturn(
                 mock(WifiConfiguration.NetworkSelectionStatus.class));
-        when(mBssidBlocklistMonitor.getNumBlockedBssidsForSsid(eq(config.SSID))).thenReturn(3);
+        when(mBssidBlocklistMonitor.updateAndGetNumBlockedBssidsForSsid(eq(config.SSID)))
+                .thenReturn(3);
         mWifiMetrics.startConnectionEvent(config, "RED",
                 WifiMetricsProto.ConnectionEvent.ROAM_NONE);
         mWifiMetrics.endConnectionEvent(
                 WifiMetrics.ConnectionEvent.FAILURE_ASSOCIATION_TIMED_OUT,
                 WifiMetricsProto.ConnectionEvent.HLF_NONE,
-                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN);
+                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN,
+                0);
         dumpProtoAndDeserialize();
 
         assertEquals(1, mDecodedProto.connectionEvent.length);
@@ -1769,7 +1794,8 @@ public class WifiMetricsTest extends WifiBaseTest {
         mWifiMetrics.endConnectionEvent(
                 WifiMetrics.ConnectionEvent.FAILURE_ASSOCIATION_TIMED_OUT,
                 WifiMetricsProto.ConnectionEvent.HLF_NONE,
-                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN);
+                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN,
+                0);
         dumpProtoAndDeserialize();
 
         assertEquals(1, mDecodedProto.connectionEvent.length);
@@ -1789,7 +1815,8 @@ public class WifiMetricsTest extends WifiBaseTest {
         mWifiMetrics.endConnectionEvent(
                 WifiMetrics.ConnectionEvent.FAILURE_ASSOCIATION_TIMED_OUT,
                 WifiMetricsProto.ConnectionEvent.HLF_NONE,
-                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN);
+                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN,
+                0);
         dumpProtoAndDeserialize();
 
         assertEquals(1, mDecodedProto.connectionEvent.length);
@@ -1816,7 +1843,8 @@ public class WifiMetricsTest extends WifiBaseTest {
         mWifiMetrics.endConnectionEvent(
                 WifiMetrics.ConnectionEvent.FAILURE_ASSOCIATION_TIMED_OUT,
                 WifiMetricsProto.ConnectionEvent.HLF_NONE,
-                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN);
+                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN,
+                0);
 
         // Second network is created by a carrier app
         config.fromWifiNetworkSuggestion = true;
@@ -1826,7 +1854,8 @@ public class WifiMetricsTest extends WifiBaseTest {
         mWifiMetrics.endConnectionEvent(
                 WifiMetrics.ConnectionEvent.FAILURE_ASSOCIATION_TIMED_OUT,
                 WifiMetricsProto.ConnectionEvent.HLF_NONE,
-                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN);
+                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN,
+                0);
 
         // Third network is created by an unknown app
         config.fromWifiNetworkSuggestion = true;
@@ -1836,7 +1865,8 @@ public class WifiMetricsTest extends WifiBaseTest {
         mWifiMetrics.endConnectionEvent(
                 WifiMetrics.ConnectionEvent.FAILURE_ASSOCIATION_TIMED_OUT,
                 WifiMetricsProto.ConnectionEvent.HLF_NONE,
-                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN);
+                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN,
+                0);
 
         dumpProtoAndDeserialize();
 
@@ -1859,7 +1889,8 @@ public class WifiMetricsTest extends WifiBaseTest {
         mWifiMetrics.endConnectionEvent(
                 WifiMetrics.ConnectionEvent.FAILURE_AUTHENTICATION_FAILURE,
                 WifiMetricsProto.ConnectionEvent.HLF_NONE,
-                WifiMetricsProto.ConnectionEvent.AUTH_FAILURE_WRONG_PSWD);
+                WifiMetricsProto.ConnectionEvent.AUTH_FAILURE_WRONG_PSWD,
+                0);
 
         //Dump proto and deserialize
         //This should clear all the metrics in mWifiMetrics,
@@ -1913,25 +1944,29 @@ public class WifiMetricsTest extends WifiBaseTest {
         mWifiMetrics.endConnectionEvent(
                 WifiMetrics.ConnectionEvent.FAILURE_NONE,
                 WifiMetricsProto.ConnectionEvent.HLF_NONE,
-                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN);
+                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN,
+                0);
         mWifiMetrics.startConnectionEvent(null, "YELLOW",
                 WifiMetricsProto.ConnectionEvent.ROAM_ENTERPRISE);
         mWifiMetrics.endConnectionEvent(
                 WifiMetrics.ConnectionEvent.FAILURE_NONE,
                 WifiMetricsProto.ConnectionEvent.HLF_NONE,
-                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN);
+                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN,
+                0);
         mWifiMetrics.startConnectionEvent(null, "GREEN",
                 WifiMetricsProto.ConnectionEvent.ROAM_ENTERPRISE);
         mWifiMetrics.endConnectionEvent(
                 WifiMetrics.ConnectionEvent.FAILURE_NONE,
                 WifiMetricsProto.ConnectionEvent.HLF_NONE,
-                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN);
+                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN,
+                0);
         mWifiMetrics.startConnectionEvent(null, "ORANGE",
                 WifiMetricsProto.ConnectionEvent.ROAM_ENTERPRISE);
         mWifiMetrics.endConnectionEvent(
                 WifiMetrics.ConnectionEvent.FAILURE_NONE,
                 WifiMetricsProto.ConnectionEvent.HLF_NONE,
-                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN);
+                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN,
+                0);
 
         //Dump proto and deserialize
         //This should clear all the metrics in mWifiMetrics,
@@ -1947,13 +1982,15 @@ public class WifiMetricsTest extends WifiBaseTest {
         mWifiMetrics.endConnectionEvent(
                 WifiMetrics.ConnectionEvent.FAILURE_NONE,
                 WifiMetricsProto.ConnectionEvent.HLF_NONE,
-                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN);
+                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN,
+                0);
         mWifiMetrics.startConnectionEvent(null, "RED",
                 WifiMetricsProto.ConnectionEvent.ROAM_ENTERPRISE);
         mWifiMetrics.endConnectionEvent(
                 WifiMetrics.ConnectionEvent.FAILURE_NONE,
                 WifiMetricsProto.ConnectionEvent.HLF_NONE,
-                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN);
+                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN,
+                0);
 
         //Dump proto and deserialize
         dumpProtoAndDeserialize();
@@ -1972,26 +2009,25 @@ public class WifiMetricsTest extends WifiBaseTest {
                 .mockStatic(WifiStatsLog.class)
                 .startMocking();
 
-        WifiConfiguration network = WifiConfigurationTestUtil.createOpenNetwork();
-        WifiConfiguration.NetworkSelectionStatus networkSelectionStatus =
-                mock(WifiConfiguration.NetworkSelectionStatus.class);
-        ScanResult scanResult = mock(ScanResult.class);
-        scanResult.level = -55;
-        when(networkSelectionStatus.getCandidate()).thenReturn(scanResult);
-        network.setNetworkSelectionStatus(networkSelectionStatus);
-
         // Start and end Connection event
-        mWifiMetrics.startConnectionEvent(network, "RED",
+        mWifiMetrics.startConnectionEvent(createComplexWifiConfig(), "RED",
                 WifiMetricsProto.ConnectionEvent.ROAM_ENTERPRISE);
         mWifiMetrics.endConnectionEvent(
                 WifiMetrics.ConnectionEvent.FAILURE_AUTHENTICATION_FAILURE,
                 WifiMetricsProto.ConnectionEvent.HLF_DHCP,
-                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN);
+                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN,
+                TEST_CANDIDATE_FREQ);
 
         ExtendedMockito.verify(() -> WifiStatsLog.write(
                 WifiStatsLog.WIFI_CONNECTION_RESULT_REPORTED, false,
                 WifiStatsLog.WIFI_CONNECTION_RESULT_REPORTED__FAILURE_CODE__FAILURE_AUTHENTICATION_GENERAL,
-                -55));
+                -80, 0,
+                WifiStatsLog.WIFI_CONNECTION_RESULT_REPORTED__BAND__BAND_2G,
+                WifiStatsLog.WIFI_CONNECTION_RESULT_REPORTED__AUTH_TYPE__AUTH_TYPE_WPA2_PSK,
+                WifiStatsLog.WIFI_CONNECTION_RESULT_REPORTED__TRIGGER__AUTOCONNECT_BOOT,
+                true,
+                0));
+
         mSession.finishMocking();
     }
 
@@ -2007,13 +2043,15 @@ public class WifiMetricsTest extends WifiBaseTest {
         mWifiMetrics.endConnectionEvent(
                 WifiMetrics.ConnectionEvent.FAILURE_NONE,
                 WifiMetricsProto.ConnectionEvent.HLF_NONE,
-                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN);
+                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN,
+                0);
         mWifiMetrics.startConnectionEvent(null, "YELLOW",
                 WifiMetricsProto.ConnectionEvent.ROAM_ENTERPRISE);
         mWifiMetrics.endConnectionEvent(
                 WifiMetrics.ConnectionEvent.FAILURE_NONE,
                 WifiMetricsProto.ConnectionEvent.HLF_NONE,
-                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN);
+                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN,
+                0);
         mWifiMetrics.startConnectionEvent(null, "GREEN",
                 WifiMetricsProto.ConnectionEvent.ROAM_ENTERPRISE);
 
@@ -2026,7 +2064,8 @@ public class WifiMetricsTest extends WifiBaseTest {
         mWifiMetrics.endConnectionEvent(
                 WifiMetrics.ConnectionEvent.FAILURE_NONE,
                 WifiMetricsProto.ConnectionEvent.HLF_NONE,
-                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN);
+                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN,
+                0);
 
         dumpProtoAndDeserialize();
         assertEquals(1, mDecodedProto.connectionEvent.length);
@@ -2301,7 +2340,7 @@ public class WifiMetricsTest extends WifiBaseTest {
      * Generates events from all the rows in mTestStaMessageInts, and then mTestStaLogInts
      */
     private void generateStaEvents(WifiMetrics wifiMetrics) {
-        Handler handler = wifiMetrics.getHandler();
+        Handler handler = mHandlerCaptor.getValue();
         for (int i = 0; i < mTestStaMessageInts.length; i++) {
             int[] mia = mTestStaMessageInts[i];
             handler.sendMessage(
@@ -2411,9 +2450,8 @@ public class WifiMetricsTest extends WifiBaseTest {
         int testNetworkId = 0;
         long testStartTimeMillis = 123123L;
         when(mClock.getElapsedSinceBootMillis()).thenReturn(testStartTimeMillis);
-        WifiConfiguration config = mock(WifiConfiguration.class);
-        when(config.isEphemeral()).thenReturn(true);
-        when(config.isPasspoint()).thenReturn(true);
+        WifiConfiguration config = WifiConfigurationTestUtil.createPasspointNetwork();
+        config.ephemeral = true;
         when(mWcm.getConfiguredNetwork(testNetworkId)).thenReturn(config);
 
         mWifiMetrics.logUserActionEvent(testEventType, testNetworkId);
@@ -2426,6 +2464,118 @@ public class WifiMetricsTest extends WifiBaseTest {
         assertEquals(testStartTimeMillis, userActionEvents[0].startTimeMillis);
         assertEquals(true, userActionEvents[0].targetNetworkInfo.isEphemeral);
         assertEquals(true, userActionEvents[0].targetNetworkInfo.isPasspoint);
+
+        // Verify that there are no disabled WifiConfiguration and BSSIDs
+        NetworkDisableReason networkDisableReason = userActionEvents[0].networkDisableReason;
+        assertEquals(NetworkDisableReason.REASON_UNKNOWN, networkDisableReason.disableReason);
+        assertEquals(false, networkDisableReason.configTemporarilyDisabled);
+        assertEquals(false, networkDisableReason.configPermanentlyDisabled);
+        assertEquals(0, networkDisableReason.bssidDisableReasons.length);
+    }
+
+    /**
+     * Verify the WifiStatus field in a UserActionEvent is populated correctly.
+     * @throws Exception
+     */
+    @Test
+    public void testLogWifiStatusInUserActionEvent() throws Exception {
+        // setups WifiStatus for information
+        int expectedRssi = -55;
+        int testNetworkId = 1;
+        int expectedTx = 1234;
+        int expectedRx = 2345;
+
+        WifiInfo wifiInfo = mock(WifiInfo.class);
+        when(wifiInfo.getRssi()).thenReturn(expectedRssi);
+        when(wifiInfo.getNetworkId()).thenReturn(testNetworkId);
+        mWifiMetrics.handlePollResult(wifiInfo);
+        mWifiMetrics.incrementThroughputKbpsCount(expectedTx, expectedRx, RSSI_POLL_FREQUENCY);
+        mWifiMetrics.setNominatorForNetwork(testNetworkId,
+                WifiMetricsProto.ConnectionEvent.NOMINATOR_SAVED_USER_CONNECT_CHOICE);
+
+        // generate a user action event and then verify fields
+        int testEventType = WifiMetricsProto.UserActionEvent.EVENT_FORGET_WIFI;
+        mWifiMetrics.logUserActionEvent(testEventType, testNetworkId);
+        dumpProtoAndDeserialize();
+
+        WifiMetricsProto.UserActionEvent[] userActionEvents = mDecodedProto.userActionEvents;
+        assertEquals(1, userActionEvents.length);
+        assertEquals(WifiMetricsProto.UserActionEvent.EVENT_FORGET_WIFI,
+                userActionEvents[0].eventType);
+        assertEquals(expectedRssi, userActionEvents[0].wifiStatus.lastRssi);
+        assertEquals(expectedTx, userActionEvents[0].wifiStatus.estimatedTxKbps);
+        assertEquals(expectedRx, userActionEvents[0].wifiStatus.estimatedRxKbps);
+        assertTrue(userActionEvents[0].wifiStatus.isStuckDueToUserConnectChoice);
+    }
+
+    /**
+     * verify NetworkDisableReason is populated properly when there exists a disabled
+     * WifiConfiguration and BSSID.
+     */
+    @Test
+    public void testNetworkDisableReasonInUserActionEvent() throws Exception {
+        // Setup a temporarily blocked config due to DISABLED_ASSOCIATION_REJECTION
+        WifiConfiguration testConfig = WifiConfigurationTestUtil.createOpenNetwork();
+        NetworkSelectionStatus status = testConfig.getNetworkSelectionStatus();
+        status.setNetworkSelectionStatus(
+                NetworkSelectionStatus.NETWORK_SELECTION_TEMPORARY_DISABLED);
+        status.setNetworkSelectionDisableReason(
+                NetworkSelectionStatus.DISABLED_ASSOCIATION_REJECTION);
+        when(mWcm.getConfiguredNetwork(TEST_NETWORK_ID)).thenReturn(testConfig);
+
+        // Also setup the same BSSID level failure
+        Set<Integer> testBssidBlocklistReasons = new HashSet<>();
+        testBssidBlocklistReasons.add(BssidBlocklistMonitor.REASON_ASSOCIATION_REJECTION);
+        when(mBssidBlocklistMonitor.getFailureReasonsForSsid(anyString()))
+                .thenReturn(testBssidBlocklistReasons);
+
+        // Logging the user action event
+        mWifiMetrics.logUserActionEvent(WifiMetricsProto.UserActionEvent.EVENT_FORGET_WIFI,
+                TEST_NETWORK_ID);
+        dumpProtoAndDeserialize();
+
+        WifiMetricsProto.UserActionEvent[] userActionEvents = mDecodedProto.userActionEvents;
+        assertEquals(1, userActionEvents.length);
+        assertEquals(WifiMetricsProto.UserActionEvent.EVENT_FORGET_WIFI,
+                userActionEvents[0].eventType);
+        NetworkDisableReason networkDisableReason = userActionEvents[0].networkDisableReason;
+        assertEquals(NetworkDisableReason.REASON_ASSOCIATION_REJECTION,
+                networkDisableReason.disableReason);
+        assertEquals(true, networkDisableReason.configTemporarilyDisabled);
+        assertEquals(false, networkDisableReason.configPermanentlyDisabled);
+        assertEquals(1, networkDisableReason.bssidDisableReasons.length);
+        assertEquals(NetworkDisableReason.REASON_ASSOCIATION_REJECTION,
+                networkDisableReason.bssidDisableReasons[0]);
+    }
+
+    /**
+     * verify that auto-join disable overrides any other disable reasons in NetworkDisableReason.
+     */
+    @Test
+    public void testNetworkDisableReasonDisableAutojoinInUserActionEvent() throws Exception {
+        // Setup a temporarily blocked config due to DISABLED_ASSOCIATION_REJECTION
+        WifiConfiguration testConfig = WifiConfigurationTestUtil.createOpenNetwork();
+        NetworkSelectionStatus status = testConfig.getNetworkSelectionStatus();
+        status.setNetworkSelectionStatus(
+                NetworkSelectionStatus.NETWORK_SELECTION_TEMPORARY_DISABLED);
+        status.setNetworkSelectionDisableReason(
+                NetworkSelectionStatus.DISABLED_ASSOCIATION_REJECTION);
+        when(mWcm.getConfiguredNetwork(TEST_NETWORK_ID)).thenReturn(testConfig);
+
+        // Disable autojoin
+        testConfig.allowAutojoin = false;
+
+        // Logging the user action event
+        mWifiMetrics.logUserActionEvent(WifiMetricsProto.UserActionEvent.EVENT_FORGET_WIFI,
+                TEST_NETWORK_ID);
+        dumpProtoAndDeserialize();
+
+        WifiMetricsProto.UserActionEvent[] userActionEvents = mDecodedProto.userActionEvents;
+        NetworkDisableReason networkDisableReason = userActionEvents[0].networkDisableReason;
+        assertEquals(NetworkDisableReason.REASON_AUTO_JOIN_DISABLED,
+                networkDisableReason.disableReason);
+        assertEquals(false, networkDisableReason.configTemporarilyDisabled);
+        assertEquals(true, networkDisableReason.configPermanentlyDisabled);
     }
 
     /**
@@ -2687,14 +2837,14 @@ public class WifiMetricsTest extends WifiBaseTest {
     }
 
     /**
-     * Test Open Network Notification blacklist size and feature state are not cleared when proto
+     * Test Open Network Notification blocklist size and feature state are not cleared when proto
      * is dumped.
      */
     @Test
-    public void testOpenNetworkNotificationBlacklistSizeAndFeatureStateNotCleared()
+    public void testOpenNetworkNotificationBlocklistSizeAndFeatureStateNotCleared()
             throws Exception {
-        mWifiMetrics.setNetworkRecommenderBlacklistSize(OPEN_NET_NOTIFIER_TAG,
-                SIZE_OPEN_NETWORK_RECOMMENDER_BLACKLIST);
+        mWifiMetrics.setNetworkRecommenderBlocklistSize(OPEN_NET_NOTIFIER_TAG,
+                SIZE_OPEN_NETWORK_RECOMMENDER_BLOCKLIST);
         mWifiMetrics.setIsWifiNetworksAvailableNotificationEnabled(OPEN_NET_NOTIFIER_TAG,
                 IS_WIFI_NETWORKS_AVAILABLE_NOTIFICATION_ON);
         for (int i = 0; i < NUM_OPEN_NETWORK_RECOMMENDATION_UPDATES; i++) {
@@ -2703,18 +2853,18 @@ public class WifiMetricsTest extends WifiBaseTest {
 
         // This should clear most metrics in mWifiMetrics
         dumpProtoAndDeserialize();
-        assertEquals(SIZE_OPEN_NETWORK_RECOMMENDER_BLACKLIST,
-                mDecodedProto.openNetworkRecommenderBlacklistSize);
+        assertEquals(SIZE_OPEN_NETWORK_RECOMMENDER_BLOCKLIST,
+                mDecodedProto.openNetworkRecommenderBlocklistSize);
         assertEquals(IS_WIFI_NETWORKS_AVAILABLE_NOTIFICATION_ON,
                 mDecodedProto.isWifiNetworksAvailableNotificationOn);
         assertEquals(NUM_OPEN_NETWORK_RECOMMENDATION_UPDATES,
                 mDecodedProto.numOpenNetworkRecommendationUpdates);
 
-        // Check that blacklist size and feature state persist on next dump but
+        // Check that blocklist size and feature state persist on next dump but
         // others do not.
         dumpProtoAndDeserialize();
-        assertEquals(SIZE_OPEN_NETWORK_RECOMMENDER_BLACKLIST,
-                mDecodedProto.openNetworkRecommenderBlacklistSize);
+        assertEquals(SIZE_OPEN_NETWORK_RECOMMENDER_BLOCKLIST,
+                mDecodedProto.openNetworkRecommenderBlocklistSize);
         assertEquals(IS_WIFI_NETWORKS_AVAILABLE_NOTIFICATION_ON,
                 mDecodedProto.isWifiNetworksAvailableNotificationOn);
         assertEquals(0, mDecodedProto.numOpenNetworkRecommendationUpdates);
@@ -2732,7 +2882,8 @@ public class WifiMetricsTest extends WifiBaseTest {
         mWifiMetrics.endConnectionEvent(
                 WifiMetrics.ConnectionEvent.FAILURE_NONE,
                 WifiMetricsProto.ConnectionEvent.HLF_NONE,
-                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN);
+                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN,
+                0);
         dumpProtoAndDeserialize();
         assertEquals(id, mDecodedProto.connectionEvent[0].networkSelectorExperimentId);
     }
@@ -2748,7 +2899,8 @@ public class WifiMetricsTest extends WifiBaseTest {
         mWifiMetrics.endConnectionEvent(
                 WifiMetrics.ConnectionEvent.FAILURE_NONE,
                 WifiMetricsProto.ConnectionEvent.HLF_NONE,
-                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN);
+                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN,
+                0);
         dumpProtoAndDeserialize();
         assertEquals(true, mDecodedProto.connectionEvent[0].routerFingerprint.pmkCacheEnabled);
     }
@@ -2768,7 +2920,8 @@ public class WifiMetricsTest extends WifiBaseTest {
         mWifiMetrics.endConnectionEvent(
                 WifiMetrics.ConnectionEvent.FAILURE_NONE,
                 WifiMetricsProto.ConnectionEvent.HLF_NONE,
-                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN);
+                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN,
+                0);
         dumpProtoAndDeserialize();
         assertEquals(MAX_SUPPORTED_TX_LINK_SPEED_MBPS, mDecodedProto.connectionEvent[0]
                 .routerFingerprint.maxSupportedTxLinkSpeedMbps);
@@ -2847,12 +3000,14 @@ public class WifiMetricsTest extends WifiBaseTest {
                 mWifiMetrics.endConnectionEvent(
                         WifiMetrics.ConnectionEvent.FAILURE_NONE,
                         WifiMetricsProto.ConnectionEvent.HLF_NONE,
-                        WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN);
+                        WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN,
+                        0);
             } else {
                 mWifiMetrics.endConnectionEvent(
                         WifiMetrics.ConnectionEvent.FAILURE_AUTHENTICATION_FAILURE,
                         WifiMetricsProto.ConnectionEvent.HLF_NONE,
-                        WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN);
+                        WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN,
+                        0);
             }
         }
         when(mClock.getElapsedSinceBootMillis()).thenReturn(interArrivalTime);
@@ -2885,13 +3040,13 @@ public class WifiMetricsTest extends WifiBaseTest {
         return stream.toString();
     }
 
-    private static final int TEST_ALLOWED_KEY_MANAGEMENT = 83;
+    private static final int TEST_ALLOWED_KEY_MANAGEMENT = 16;
     private static final int TEST_ALLOWED_PROTOCOLS = 22;
     private static final int TEST_ALLOWED_AUTH_ALGORITHMS = 11;
     private static final int TEST_ALLOWED_PAIRWISE_CIPHERS = 67;
     private static final int TEST_ALLOWED_GROUP_CIPHERS = 231;
     private static final int TEST_CANDIDATE_LEVEL = -80;
-    private static final int TEST_CANDIDATE_FREQ = 2345;
+    private static final int TEST_CANDIDATE_FREQ = 2450;
 
     private WifiConfiguration createComplexWifiConfig() {
         WifiConfiguration config = new WifiConfiguration();
@@ -4987,7 +5142,8 @@ public class WifiMetricsTest extends WifiBaseTest {
         mWifiMetrics.endConnectionEvent(
                 WifiMetrics.ConnectionEvent.FAILURE_NONE,
                 WifiMetricsProto.ConnectionEvent.HLF_NONE,
-                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN);
+                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN,
+                0);
         when(mClock.getElapsedSinceBootMillis()).thenReturn((long) 2000);
         // Connection event 3 doesn't overlap with 2
         assertEquals(0, mWifiMetrics.startConnectionEvent(mTestWifiConfig, "TestNetwork",
@@ -5024,13 +5180,409 @@ public class WifiMetricsTest extends WifiBaseTest {
         mWifiMetrics.endConnectionEvent(
                 WifiMetrics.ConnectionEvent.FAILURE_ASSOCIATION_TIMED_OUT,
                 WifiMetricsProto.ConnectionEvent.HLF_NONE,
-                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN);
+                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN,
+                0);
         dumpProtoAndDeserialize();
 
         assertEquals(1, mDecodedProto.connectionEvent.length);
         assertEquals(WifiMetricsProto.ConnectionEvent.TYPE_PASSPOINT,
                 mDecodedProto.connectionEvent[0].networkType);
         assertTrue(mDecodedProto.connectionEvent[0].isOsuProvisioned);
+    }
+
+    @Test
+    public void testWifiConnectionResultAtomNotEmittedWithNoConnectionEndEvent() {
+        mSession = ExtendedMockito.mockitoSession()
+                .strictness(Strictness.LENIENT)
+                .mockStatic(WifiStatsLog.class)
+                .startMocking();
+
+        mWifiMetrics.startConnectionEvent(createComplexWifiConfig(), "RED",
+                WifiMetricsProto.ConnectionEvent.ROAM_ENTERPRISE);
+
+        ExtendedMockito.verify(() -> WifiStatsLog.write(
+                anyInt(), anyBoolean(), anyInt(), anyInt(), anyInt(), anyInt(), anyInt(), anyInt(),
+                anyBoolean(), anyInt()),
+                times(0));
+
+        mSession.finishMocking();
+    }
+
+    @Test
+    public void testWifiConnectionResultAtomNotEmittedWithNoConnectionStartEvent() {
+        mSession = ExtendedMockito.mockitoSession()
+                .strictness(Strictness.LENIENT)
+                .mockStatic(WifiStatsLog.class)
+                .startMocking();
+
+        mWifiMetrics.endConnectionEvent(
+                WifiMetrics.ConnectionEvent.FAILURE_AUTHENTICATION_FAILURE,
+                WifiMetricsProto.ConnectionEvent.HLF_DHCP,
+                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN,
+                TEST_CANDIDATE_FREQ);
+
+        ExtendedMockito.verify(() -> WifiStatsLog.write(
+                anyInt(), anyBoolean(), anyInt(), anyInt(), anyInt(), anyInt(), anyInt(), anyInt(),
+                anyBoolean(), anyInt()),
+                times(0));
+
+        mSession.finishMocking();
+    }
+
+    @Test
+    public void testWifiConnectionResultAtomEmittedOnlyOnceWithMultipleConnectionEndEvents() {
+        mSession = ExtendedMockito.mockitoSession()
+                .strictness(Strictness.LENIENT)
+                .mockStatic(WifiStatsLog.class)
+                .startMocking();
+
+        mWifiMetrics.startConnectionEvent(createComplexWifiConfig(), "RED",
+                WifiMetricsProto.ConnectionEvent.ROAM_ENTERPRISE);
+
+        for (int i = 0; i < 5; i++) {
+            mWifiMetrics.endConnectionEvent(
+                    WifiMetrics.ConnectionEvent.FAILURE_AUTHENTICATION_FAILURE,
+                    WifiMetricsProto.ConnectionEvent.HLF_DHCP,
+                    WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN,
+                    TEST_CANDIDATE_FREQ);
+        }
+
+        ExtendedMockito.verify(() -> WifiStatsLog.write(
+                WifiStatsLog.WIFI_CONNECTION_RESULT_REPORTED, false,
+                WifiStatsLog.WIFI_CONNECTION_RESULT_REPORTED__FAILURE_CODE__FAILURE_AUTHENTICATION_GENERAL,
+                -80, 0,
+                WifiStatsLog.WIFI_CONNECTION_RESULT_REPORTED__BAND__BAND_2G,
+                WifiStatsLog.WIFI_CONNECTION_RESULT_REPORTED__AUTH_TYPE__AUTH_TYPE_WPA2_PSK,
+                WifiStatsLog.WIFI_CONNECTION_RESULT_REPORTED__TRIGGER__AUTOCONNECT_BOOT,
+                true,
+                0),
+                times(1));
+
+        mSession.finishMocking();
+    }
+
+    @Test
+    public void testWifiConnectionResultAtomNewSessionOverwritesPreviousSession() {
+        mSession = ExtendedMockito.mockitoSession()
+                .strictness(Strictness.LENIENT)
+                .mockStatic(WifiStatsLog.class)
+                .startMocking();
+
+        WifiConfiguration config1 = createComplexWifiConfig();
+        config1.getNetworkSelectionStatus().getCandidate().level = -50;
+
+        WifiConfiguration config2 = createComplexWifiConfig();
+        config2.getNetworkSelectionStatus().getCandidate().level = -60;
+
+        mWifiMetrics.startConnectionEvent(config1, "RED",
+                WifiMetricsProto.ConnectionEvent.ROAM_ENTERPRISE);
+
+        mWifiMetrics.startConnectionEvent(config2, "RED",
+                WifiMetricsProto.ConnectionEvent.ROAM_ENTERPRISE);
+
+        mWifiMetrics.endConnectionEvent(
+                WifiMetrics.ConnectionEvent.FAILURE_AUTHENTICATION_FAILURE,
+                WifiMetricsProto.ConnectionEvent.HLF_DHCP,
+                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN,
+                TEST_CANDIDATE_FREQ);
+
+        ExtendedMockito.verify(() -> WifiStatsLog.write(
+                WifiStatsLog.WIFI_CONNECTION_RESULT_REPORTED, false,
+                WifiStatsLog.WIFI_CONNECTION_RESULT_REPORTED__FAILURE_CODE__FAILURE_AUTHENTICATION_GENERAL,
+                -60, 0,
+                WifiStatsLog.WIFI_CONNECTION_RESULT_REPORTED__BAND__BAND_2G,
+                WifiStatsLog.WIFI_CONNECTION_RESULT_REPORTED__AUTH_TYPE__AUTH_TYPE_WPA2_PSK,
+                WifiStatsLog.WIFI_CONNECTION_RESULT_REPORTED__TRIGGER__AUTOCONNECT_BOOT,
+                true,
+                0),
+                times(1));
+
+        mSession.finishMocking();
+    }
+
+    @Test
+    public void testWifiConnectionResultAtomHasCorrectTriggers() {
+        mSession = ExtendedMockito.mockitoSession()
+                .strictness(Strictness.LENIENT)
+                .mockStatic(WifiStatsLog.class)
+                .startMocking();
+
+        mWifiMetrics.startConnectionEvent(createComplexWifiConfig(), "RED",
+                WifiMetricsProto.ConnectionEvent.ROAM_ENTERPRISE);
+
+        mWifiMetrics.endConnectionEvent(
+                WifiMetrics.ConnectionEvent.FAILURE_NONE,
+                WifiMetricsProto.ConnectionEvent.HLF_NONE,
+                WifiMetricsProto.ConnectionEvent.AUTH_FAILURE_NONE,
+                TEST_CANDIDATE_FREQ);
+
+        mWifiMetrics.reportNetworkDisconnect(0, 0, 0);
+
+        ExtendedMockito.verify(() -> WifiStatsLog.write(
+                eq(WifiStatsLog.WIFI_CONNECTION_RESULT_REPORTED), anyBoolean(),
+                anyInt(), anyInt(), anyInt(), anyInt(), anyInt(),
+                eq(WifiStatsLog.WIFI_CONNECTION_RESULT_REPORTED__TRIGGER__AUTOCONNECT_BOOT),
+                anyBoolean(), anyInt()));
+
+        mWifiMetrics.startConnectionEvent(createComplexWifiConfig(), "RED",
+                WifiMetricsProto.ConnectionEvent.ROAM_ENTERPRISE);
+
+        mWifiMetrics.endConnectionEvent(
+                WifiMetrics.ConnectionEvent.FAILURE_NONE,
+                WifiMetricsProto.ConnectionEvent.HLF_NONE,
+                WifiMetricsProto.ConnectionEvent.AUTH_FAILURE_NONE,
+                TEST_CANDIDATE_FREQ);
+
+        mWifiMetrics.reportNetworkDisconnect(0, 0, 0);
+
+        ExtendedMockito.verify(() -> WifiStatsLog.write(
+                eq(WifiStatsLog.WIFI_CONNECTION_RESULT_REPORTED), anyBoolean(),
+                anyInt(), anyInt(), anyInt(), anyInt(), anyInt(),
+                eq(WifiStatsLog.WIFI_CONNECTION_RESULT_REPORTED__TRIGGER__RECONNECT_SAME_NETWORK),
+                anyBoolean(), anyInt()));
+
+        WifiConfiguration configOtherNetwork = createComplexWifiConfig();
+        configOtherNetwork.networkId = 21;
+        configOtherNetwork.SSID = "OtherNetwork";
+        mWifiMetrics.setNominatorForNetwork(configOtherNetwork.networkId,
+                WifiMetricsProto.ConnectionEvent.NOMINATOR_SAVED);
+
+        mWifiMetrics.startConnectionEvent(configOtherNetwork, "RED",
+                WifiMetricsProto.ConnectionEvent.ROAM_ENTERPRISE);
+
+        mWifiMetrics.endConnectionEvent(
+                WifiMetrics.ConnectionEvent.FAILURE_NONE,
+                WifiMetricsProto.ConnectionEvent.HLF_NONE,
+                WifiMetricsProto.ConnectionEvent.AUTH_FAILURE_NONE,
+                TEST_CANDIDATE_FREQ);
+
+        mWifiMetrics.reportNetworkDisconnect(0, 0, 0);
+
+        ExtendedMockito.verify(() -> WifiStatsLog.write(
+                eq(WifiStatsLog.WIFI_CONNECTION_RESULT_REPORTED), anyBoolean(),
+                anyInt(), anyInt(), anyInt(), anyInt(), anyInt(),
+                eq(WifiStatsLog.WIFI_CONNECTION_RESULT_REPORTED__TRIGGER__AUTOCONNECT_CONFIGURED_NETWORK),
+                anyBoolean(), anyInt()));
+
+        WifiConfiguration config = createComplexWifiConfig();
+        config.networkId = 42;
+        mWifiMetrics.setNominatorForNetwork(config.networkId,
+                WifiMetricsProto.ConnectionEvent.NOMINATOR_MANUAL);
+
+        mWifiMetrics.startConnectionEvent(config, "GREEN",
+                WifiMetricsProto.ConnectionEvent.ROAM_ENTERPRISE);
+
+        mWifiMetrics.endConnectionEvent(
+                WifiMetrics.ConnectionEvent.FAILURE_NONE,
+                WifiMetricsProto.ConnectionEvent.HLF_NONE,
+                WifiMetricsProto.ConnectionEvent.AUTH_FAILURE_NONE,
+                TEST_CANDIDATE_FREQ);
+
+        ExtendedMockito.verify(() -> WifiStatsLog.write(
+                eq(WifiStatsLog.WIFI_CONNECTION_RESULT_REPORTED), anyBoolean(),
+                anyInt(), anyInt(), anyInt(), anyInt(), anyInt(),
+                eq(WifiStatsLog.WIFI_CONNECTION_RESULT_REPORTED__TRIGGER__MANUAL),
+                anyBoolean(), anyInt()));
+
+        mSession.finishMocking();
+    }
+
+    @Test
+    public void testWifiDisconnectAtomEmittedOnDisconnectFromSuccessfulSession() {
+        mWifiMetrics.startConnectionEvent(createComplexWifiConfig(), "RED",
+                WifiMetricsProto.ConnectionEvent.ROAM_ENTERPRISE);
+
+        mWifiMetrics.endConnectionEvent(
+                WifiMetrics.ConnectionEvent.FAILURE_NONE,
+                WifiMetricsProto.ConnectionEvent.HLF_NONE,
+                WifiMetricsProto.ConnectionEvent.AUTH_FAILURE_NONE,
+                TEST_CANDIDATE_FREQ);
+
+        mSession = ExtendedMockito.mockitoSession()
+                .strictness(Strictness.LENIENT)
+                .mockStatic(WifiStatsLog.class)
+                .startMocking();
+
+        int linkSpeed = 100;
+        int reason = 42;
+        mWifiMetrics.reportNetworkDisconnect(reason, TEST_CANDIDATE_LEVEL, linkSpeed);
+
+        ExtendedMockito.verify(() -> WifiStatsLog.write(
+                WifiStatsLog.WIFI_DISCONNECT_REPORTED,
+                0,
+                reason,
+                WifiStatsLog.WIFI_CONNECTION_RESULT_REPORTED__BAND__BAND_2G,
+                WifiStatsLog.WIFI_CONNECTION_RESULT_REPORTED__AUTH_TYPE__AUTH_TYPE_WPA2_PSK,
+                TEST_CANDIDATE_LEVEL,
+                linkSpeed));
+
+        mSession.finishMocking();
+    }
+
+    @Test
+    public void testWifiDisconnectAtomNotEmittedOnDisconnectFromNotConnectedSession() {
+        mWifiMetrics.startConnectionEvent(createComplexWifiConfig(), "RED",
+                WifiMetricsProto.ConnectionEvent.ROAM_ENTERPRISE);
+
+        mWifiMetrics.endConnectionEvent(
+                WifiMetrics.ConnectionEvent.FAILURE_AUTHENTICATION_FAILURE,
+                WifiMetricsProto.ConnectionEvent.HLF_DHCP,
+                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN,
+                TEST_CANDIDATE_FREQ);
+
+        mSession = ExtendedMockito.mockitoSession()
+                .strictness(Strictness.LENIENT)
+                .mockStatic(WifiStatsLog.class)
+                .startMocking();
+
+        int linkSpeed = 100;
+        int reason = 42;
+        mWifiMetrics.reportNetworkDisconnect(reason, TEST_CANDIDATE_LEVEL, linkSpeed);
+
+        ExtendedMockito.verify(() -> WifiStatsLog.write(
+                eq(WifiStatsLog.WIFI_DISCONNECT_REPORTED),
+                anyInt(), anyInt(), anyInt(), anyInt(), anyInt(), anyInt()),
+                times(0));
+
+        mSession.finishMocking();
+    }
+
+    @Test
+    public void testWifiDisconnectAtomNotEmittedWithNoSession() {
+        mSession = ExtendedMockito.mockitoSession()
+                .strictness(Strictness.LENIENT)
+                .mockStatic(WifiStatsLog.class)
+                .startMocking();
+
+        mWifiMetrics.reportNetworkDisconnect(0, TEST_CANDIDATE_LEVEL, 0);
+
+        ExtendedMockito.verify(() -> WifiStatsLog.write(
+                eq(WifiStatsLog.WIFI_DISCONNECT_REPORTED),
+                anyInt(), anyInt(), anyInt(), anyInt(), anyInt(), anyInt()),
+                times(0));
+
+        mSession.finishMocking();
+    }
+
+    @Test
+    public void testWifiStateChangedAtomEmittedOnSuccessfulConnectAndDisconnect() {
+        mSession = ExtendedMockito.mockitoSession()
+                .strictness(Strictness.LENIENT)
+                .mockStatic(WifiStatsLog.class)
+                .startMocking();
+
+        mWifiMetrics.startConnectionEvent(createComplexWifiConfig(), "RED",
+                WifiMetricsProto.ConnectionEvent.ROAM_ENTERPRISE);
+
+        mWifiMetrics.endConnectionEvent(
+                WifiMetrics.ConnectionEvent.FAILURE_NONE,
+                WifiMetricsProto.ConnectionEvent.HLF_NONE,
+                WifiMetricsProto.ConnectionEvent.AUTH_FAILURE_NONE,
+                TEST_CANDIDATE_FREQ);
+
+        // TRUE must be emitted
+        ExtendedMockito.verify(() -> WifiStatsLog.write(
+                WifiStatsLog.WIFI_CONNECTION_STATE_CHANGED,
+                true,
+                WifiStatsLog.WIFI_CONNECTION_RESULT_REPORTED__BAND__BAND_2G,
+                WifiStatsLog.WIFI_CONNECTION_RESULT_REPORTED__AUTH_TYPE__AUTH_TYPE_WPA2_PSK));
+
+        int linkSpeed = 100;
+        int reason = 42;
+        mWifiMetrics.reportNetworkDisconnect(reason, TEST_CANDIDATE_LEVEL, linkSpeed);
+
+        // FALSE must be emitted
+        ExtendedMockito.verify(() -> WifiStatsLog.write(
+                WifiStatsLog.WIFI_CONNECTION_STATE_CHANGED,
+                false,
+                WifiStatsLog.WIFI_CONNECTION_RESULT_REPORTED__BAND__BAND_2G,
+                WifiStatsLog.WIFI_CONNECTION_RESULT_REPORTED__AUTH_TYPE__AUTH_TYPE_WPA2_PSK));
+
+        mSession.finishMocking();
+    }
+
+    @Test
+    public void testWifiStateChangedAtomNotEmittedOnNotSuccessfulConnectAndDisconnect() {
+        mSession = ExtendedMockito.mockitoSession()
+                .strictness(Strictness.LENIENT)
+                .mockStatic(WifiStatsLog.class)
+                .startMocking();
+
+        mWifiMetrics.startConnectionEvent(createComplexWifiConfig(), "RED",
+                WifiMetricsProto.ConnectionEvent.ROAM_ENTERPRISE);
+
+        mWifiMetrics.endConnectionEvent(
+                WifiMetrics.ConnectionEvent.FAILURE_AUTHENTICATION_FAILURE,
+                WifiMetricsProto.ConnectionEvent.HLF_DHCP,
+                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN,
+                TEST_CANDIDATE_FREQ);
+
+        // TRUE must not be emitted
+        ExtendedMockito.verify(() -> WifiStatsLog.write(
+                eq(WifiStatsLog.WIFI_CONNECTION_STATE_CHANGED),
+                anyBoolean(), anyInt(), anyInt()),
+                times(0));
+
+        int linkSpeed = 100;
+        int reason = 42;
+        mWifiMetrics.reportNetworkDisconnect(reason, TEST_CANDIDATE_LEVEL, linkSpeed);
+
+        // But we still expect FALSE to be emitted
+        ExtendedMockito.verify(() -> WifiStatsLog.write(
+                WifiStatsLog.WIFI_CONNECTION_STATE_CHANGED,
+                false,
+                0,
+                0));
+
+        mSession.finishMocking();
+    }
+
+    @Test
+    public void testWifiConnectionResultTimeSinceLastConnectionCorrect() {
+        mSession = ExtendedMockito.mockitoSession()
+                .strictness(Strictness.LENIENT)
+                .mockStatic(WifiStatsLog.class)
+                .startMocking();
+
+        when(mClock.getElapsedSinceBootMillis()).thenReturn((long) 10 * 1000);
+
+        mWifiMetrics.startConnectionEvent(createComplexWifiConfig(), "RED",
+                WifiMetricsProto.ConnectionEvent.ROAM_ENTERPRISE);
+
+        mWifiMetrics.endConnectionEvent(
+                WifiMetrics.ConnectionEvent.FAILURE_NONE,
+                WifiMetricsProto.ConnectionEvent.HLF_NONE,
+                WifiMetricsProto.ConnectionEvent.AUTH_FAILURE_NONE,
+                TEST_CANDIDATE_FREQ);
+
+        ExtendedMockito.verify(() -> WifiStatsLog.write(
+                eq(WifiStatsLog.WIFI_CONNECTION_RESULT_REPORTED), anyBoolean(),
+                anyInt(), anyInt(), anyInt(), anyInt(), anyInt(),
+                eq(WifiStatsLog.WIFI_CONNECTION_RESULT_REPORTED__TRIGGER__AUTOCONNECT_BOOT),
+                anyBoolean(), eq(10)));
+
+        mWifiMetrics.reportNetworkDisconnect(0, 0, 0);
+
+        when(mClock.getElapsedSinceBootMillis()).thenReturn((long) 30 * 1000);
+
+        mWifiMetrics.startConnectionEvent(createComplexWifiConfig(), "RED",
+                WifiMetricsProto.ConnectionEvent.ROAM_ENTERPRISE);
+
+        mWifiMetrics.endConnectionEvent(
+                WifiMetrics.ConnectionEvent.FAILURE_NONE,
+                WifiMetricsProto.ConnectionEvent.HLF_NONE,
+                WifiMetricsProto.ConnectionEvent.AUTH_FAILURE_NONE,
+                TEST_CANDIDATE_FREQ);
+
+        ExtendedMockito.verify(() -> WifiStatsLog.write(
+                eq(WifiStatsLog.WIFI_CONNECTION_RESULT_REPORTED), anyBoolean(),
+                anyInt(), anyInt(), anyInt(), anyInt(), anyInt(),
+                eq(WifiStatsLog.WIFI_CONNECTION_RESULT_REPORTED__TRIGGER__RECONNECT_SAME_NETWORK),
+                anyBoolean(), eq(20)));
+
+        mWifiMetrics.reportNetworkDisconnect(0, 0, 0);
+
+        mSession.finishMocking();
     }
 
     private void setScreenState(boolean screenOn) {

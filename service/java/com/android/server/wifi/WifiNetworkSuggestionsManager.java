@@ -116,6 +116,8 @@ public class WifiNetworkSuggestionsManager {
     public static final int ACTION_USER_DISALLOWED_APP = 2;
     public static final int ACTION_USER_DISMISS = 3;
 
+    public static final int DEFAULT_PRIORITY_GROUP = 0;
+
     @IntDef(prefix = { "ACTION_USER_" }, value = {
             ACTION_USER_ALLOWED_APP,
             ACTION_USER_DISALLOWED_APP,
@@ -1811,7 +1813,7 @@ public class WifiNetworkSuggestionsManager {
                 || matchingExtNetworkSuggestions.isEmpty()) return;
 
         mWifiMetrics.incrementNetworkSuggestionApiNumConnectFailure();
-        // TODO (b/115504887, b/112196799): Blacklist the corresponding network suggestion if
+        // TODO (b/115504887, b/112196799): Blocklist the corresponding network suggestion if
         // the connection failed.
 
         // Find subset of network suggestions which suggested the connection failure network.

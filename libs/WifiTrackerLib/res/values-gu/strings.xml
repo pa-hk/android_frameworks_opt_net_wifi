@@ -37,6 +37,7 @@
     <string name="wifitrackerlib_wifi_limited_connection" msgid="4234326409980991740">"મર્યાદિત કનેક્શન"</string>
     <string name="wifitrackerlib_private_dns_broken" msgid="6049401148262718707">"ખાનગી DNS સર્વર ઍક્સેસ કરી શકાતા નથી"</string>
     <string name="wifitrackerlib_wifi_connected_no_internet" msgid="2329345148045635995">"કોઈ ઇન્ટરનેટ નથી"</string>
+    <string name="wifi_connected_low_quality" msgid="4478331645458058445">"ઓછી ક્વૉલિટી"</string>
     <string name="wifitrackerlib_wifi_security_none" msgid="2686062484642847280">"કોઈ નહીં"</string>
     <string name="wifitrackerlib_wifi_passpoint_expired" msgid="7974960573887452566">"સમય સમાપ્ત થયો"</string>
     <string name="wifitrackerlib_tap_to_sign_up" msgid="3897017015910817402">"સાઇન અપ કરવા માટે ટૅપ કરો"</string>
@@ -46,7 +47,7 @@
     <string name="wifitrackerlib_osu_completing_sign_up" msgid="4359503050543182480">"સાઇન અપ પૂર્ણ કરી રહ્યા છીએ…"</string>
     <string name="wifitrackerlib_osu_sign_up_failed" msgid="3964140125523395898">"સાઇન અપ પૂર્ણ કરી શકાયું નથી. ફરી પ્રયાસ કરવા માટે ટૅપ કરો."</string>
     <string name="wifitrackerlib_osu_sign_up_complete" msgid="3279606633343124580">"સાઇન અપ પૂર્ણ. કનેક્ટ કરી રહ્યા છીએ…"</string>
-    <string name="wifitrackerlib_imsi_protection_warning" msgid="5177588159471032092">"આ નેટવર્ક એક અજોડ ID મેળવે છે જેનો ઉપયોગ ડિવાઇસનું સ્થાન ટ્રૅક કરવા માટે થઈ શકે છે. "<annotation id="url">"વધુ જાણો"</annotation></string>
+    <string name="wifitrackerlib_imsi_protection_warning" msgid="7202210931586169466">"આ નેટવર્કને સિમ ID મળે છે જેનો ઉપયોગ ડિવાઇસનું સ્થાન ટ્રૅક કરવા માટે થઈ શકે છે. "<annotation id="url">"વધુ જાણો"</annotation></string>
     <string name="wifitrackerlib_speed_label_very_slow" msgid="6606409259798814244">"ખૂબ જ ધીમી"</string>
     <string name="wifitrackerlib_speed_label_slow" msgid="7327906382011957760">"ધીમી"</string>
     <string name="wifitrackerlib_speed_label_okay" msgid="6656684124654881956">"ઓકે"</string>

@@ -568,12 +568,13 @@ public class XmlUtil {
          * @param outerTagDepth depth of the outer tag in the XML document.
          * @param shouldExpectEncryptedCredentials Whether to expect encrypted credentials or not.
          * @param encryptionUtil Instance of {@link EncryptedDataXmlUtil}.
+         * @param fromSuggestion Is this WifiConfiguration created from a WifiNetworkSuggestion.
          * @return Pair<Config key, WifiConfiguration object> if parsing is successful,
          * null otherwise.
          */
         public static Pair<String, WifiConfiguration> parseFromXml(
                 XmlPullParser in, int outerTagDepth, boolean shouldExpectEncryptedCredentials,
-                @Nullable WifiConfigStoreEncryptionUtil encryptionUtil)
+                @Nullable WifiConfigStoreEncryptionUtil encryptionUtil, boolean fromSuggestion)
                 throws XmlPullParserException, IOException {
             WifiConfiguration configuration = new WifiConfiguration();
             String configKeyInData = null;
@@ -772,6 +773,10 @@ public class XmlUtil {
             }
             if (!macRandomizationSettingExists) {
                 configuration.macRandomizationSetting = WifiConfiguration.RANDOMIZATION_NONE;
+            }
+            if (configuration.macRandomizationSetting
+                    == WifiConfiguration.RANDOMIZATION_PERSISTENT && !fromSuggestion) {
+                configuration.macRandomizationSetting = WifiConfiguration.RANDOMIZATION_AUTO;
             }
             return Pair.create(configKeyInData, configuration);
         }
@@ -1021,7 +1026,7 @@ public class XmlUtil {
     }
 
     /**
-     * Utility class to serialize and deseriaize {@link NetworkSelectionStatus} object to XML &
+     * Utility class to serialize and deserialize {@link NetworkSelectionStatus} object to XML &
      * vice versa. This is used by {@link com.android.server.wifi.WifiConfigStore} module.
      */
     public static class NetworkSelectionStatusXmlUtil {
@@ -1110,6 +1115,10 @@ public class XmlUtil {
             }
             selectionStatus.setNetworkSelectionStatus(status);
             selectionStatus.setNetworkSelectionDisableReason(disableReason);
+            if (status == NetworkSelectionStatus.NETWORK_SELECTION_PERMANENTLY_DISABLED) {
+                // Make the counter non-zero so that logging code works properly
+                selectionStatus.setDisableReasonCounter(disableReason, 1);
+            }
             return selectionStatus;
         }
     }
@@ -1256,7 +1265,7 @@ public class XmlUtil {
                                     WifiEnterpriseConfig.PASSWORD_KEY, (String) value);
                             if (shouldExpectEncryptedCredentials
                                     && !TextUtils.isEmpty(enterpriseConfig.getFieldValue(
-                                            WifiEnterpriseConfig.PASSWORD_KEY))) {
+                                    WifiEnterpriseConfig.PASSWORD_KEY))) {
                                 // Indicates that encryption of password failed when it was last
                                 // written.
                                 Log.e(TAG, "password value not expected");

@@ -36,6 +36,7 @@ import android.os.IBinder;
 import android.os.Looper;
 import android.os.Message;
 import android.os.UserHandle;
+import android.os.WorkSource;
 import android.provider.Settings;
 import android.telephony.TelephonyManager;
 import android.util.ArraySet;
@@ -82,7 +83,7 @@ public class ActiveModeWarden {
     private final Looper mLooper;
     private final Handler mHandler;
     private final Context mContext;
-    private final BaseWifiDiagnostics mWifiDiagnostics;
+    private final WifiDiagnostics mWifiDiagnostics;
     private final WifiSettingsStore mSettingsStore;
     private final FrameworkFacade mFacade;
     private final WifiPermissionsUtil mWifiPermissionsUtil;
@@ -95,12 +96,10 @@ public class ActiveModeWarden {
     private WifiManager.SoftApCallback mSoftApCallback;
     private WifiManager.SoftApCallback mLohsCallback;
 
-    private boolean mCanRequestMoreClientModeManagers = false;
-    private boolean mCanRequestMoreSoftApManagers = false;
     private boolean mIsShuttingdown = false;
     private boolean mVerboseLoggingEnabled = false;
-    /** Cache to store the external scorer for primary client mode manager. */
-    @Nullable private Pair<IBinder, IWifiConnectedNetworkScorer> mPrimaryClientModeManagerScorer;
+    /** Cache to store the external scorer for primary and secondary (MBB) client mode manager. */
+    @Nullable private Pair<IBinder, IWifiConnectedNetworkScorer> mClientModeManagerScorer;
 
     /**
      * Called from WifiServiceImpl to register a callback for notifications from SoftApManager
@@ -203,7 +202,7 @@ public class ActiveModeWarden {
                      WifiNative wifiNative,
                      DefaultClientModeManager defaultClientModeManager,
                      BatteryStatsManager batteryStatsManager,
-                     BaseWifiDiagnostics wifiDiagnostics,
+                     WifiDiagnostics wifiDiagnostics,
                      Context context,
                      WifiSettingsStore settingsStore,
                      FrameworkFacade facade,
@@ -239,15 +238,6 @@ public class ActiveModeWarden {
                 });
             }
         });
-
-        wifiNative.registerClientInterfaceAvailabilityListener(
-                (isAvailable) -> mHandler.post(() -> {
-                    mCanRequestMoreClientModeManagers = isAvailable;
-                }));
-        wifiNative.registerSoftApInterfaceAvailabilityListener(
-                (isAvailable) -> mHandler.post(() -> {
-                    mCanRequestMoreSoftApManagers = isAvailable;
-                }));
     }
 
     private void invokeOnAddedCallbacks(@NonNull ActiveModeManager activeModeManager) {
@@ -284,7 +274,7 @@ public class ActiveModeWarden {
      */
     public boolean setWifiConnectedNetworkScorer(IBinder binder,
             IWifiConnectedNetworkScorer scorer) {
-        mPrimaryClientModeManagerScorer = Pair.create(binder, scorer);
+        mClientModeManagerScorer = Pair.create(binder, scorer);
         return getPrimaryClientModeManager().setWifiConnectedNetworkScorer(binder, scorer);
     }
 
@@ -292,7 +282,7 @@ public class ActiveModeWarden {
      * See {@link WifiManager#clearWifiConnectedNetworkScorer()}
      */
     public void clearWifiConnectedNetworkScorer() {
-        mPrimaryClientModeManagerScorer = null;
+        mClientModeManagerScorer = null;
         getPrimaryClientModeManager().clearWifiConnectedNetworkScorer();
     }
 
@@ -322,15 +312,15 @@ public class ActiveModeWarden {
     /**
      * @return Returns whether we can create more client mode managers or not.
      */
-    public boolean canRequestMoreClientModeManagers() {
-        return mCanRequestMoreClientModeManagers;
+    public boolean canRequestMoreClientModeManagers(@NonNull WorkSource requestorWs) {
+        return mWifiNative.isItPossibleToCreateStaIface(requestorWs);
     }
 
     /**
      * @return Returns whether we can create more SoftAp managers or not.
      */
-    public boolean canRequestMoreSoftApManagers() {
-        return mCanRequestMoreSoftApManagers;
+    public boolean canRequestMoreSoftApManagers(@NonNull WorkSource requestorWs) {
+        return mWifiNative.isItPossibleToCreateApIface(requestorWs);
     }
 
     /**
@@ -348,7 +338,7 @@ public class ActiveModeWarden {
             public void onReceive(Context context, Intent intent) {
                 // Location mode has been toggled...  trigger with the scan change
                 // update to make sure we are in the correct mode
-                scanAlwaysModeChanged();
+                scanAlwaysModeChanged(mFacade.getSettingsWorkSource(mContext));
             }
         }, new IntentFilter(LocationManager.MODE_CHANGED_ACTION));
         mContext.registerReceiver(new BroadcastReceiver() {
@@ -397,8 +387,8 @@ public class ActiveModeWarden {
     }
 
     /** Wifi has been toggled. */
-    public void wifiToggled() {
-        mWifiController.sendMessage(WifiController.CMD_WIFI_TOGGLED);
+    public void wifiToggled(WorkSource requestorWs) {
+        mWifiController.sendMessage(WifiController.CMD_WIFI_TOGGLED, requestorWs);
     }
 
     /** Airplane Mode has been toggled. */
@@ -407,8 +397,9 @@ public class ActiveModeWarden {
     }
 
     /** Starts SoftAp. */
-    public void startSoftAp(SoftApModeConfiguration softApConfig) {
-        mWifiController.sendMessage(WifiController.CMD_SET_AP, 1, 0, softApConfig);
+    public void startSoftAp(SoftApModeConfiguration softApConfig, WorkSource requestorWs) {
+        mWifiController.sendMessage(WifiController.CMD_SET_AP, 1, 0,
+                Pair.create(softApConfig, requestorWs));
     }
 
     /** Stop SoftAp. */
@@ -439,8 +430,8 @@ public class ActiveModeWarden {
     }
 
     /** Scan always mode has changed. */
-    public void scanAlwaysModeChanged() {
-        mWifiController.sendMessage(WifiController.CMD_SCAN_ALWAYS_MODE_CHANGED);
+    public void scanAlwaysModeChanged(WorkSource requestorWs) {
+        mWifiController.sendMessage(WifiController.CMD_SCAN_ALWAYS_MODE_CHANGED, requestorWs);
     }
 
     /**
@@ -458,10 +449,11 @@ public class ActiveModeWarden {
      * Request a new local only client manager.
      */
     public void requestLocalOnlyClientModeManager(
-            @NonNull ExternalClientModeManagerRequestListener listener) {
+            @NonNull ExternalClientModeManagerRequestListener listener,
+            @NonNull WorkSource requestorWs) {
         mWifiController.sendMessage(
                 WifiController.CMD_REQUEST_LOCAL_ONLY_CLIENT_MODE_MANAGER,
-                Objects.requireNonNull(listener));
+                Pair.create(Objects.requireNonNull(listener), Objects.requireNonNull(requestorWs)));
     }
 
     /**
@@ -599,7 +591,8 @@ public class ActiveModeWarden {
      *
      * @param softApConfig SoftApModeConfiguration for the hostapd softap
      */
-    private void startSoftApModeManager(@NonNull SoftApModeConfiguration softApConfig) {
+    private void startSoftApModeManager(
+            @NonNull SoftApModeConfiguration softApConfig, @NonNull WorkSource requestorWs) {
         Log.d(TAG, "Starting SoftApModeManager config = "
                 + softApConfig.getSoftApConfiguration());
         Preconditions.checkState(softApConfig.getTargetMode() == IFACE_IP_MODE_LOCAL_ONLY
@@ -611,7 +604,7 @@ public class ActiveModeWarden {
         SoftApListener listener = new SoftApListener();
         SoftApManager manager = mWifiInjector.makeSoftApManager(listener, callback, softApConfig);
         listener.softApManager = manager;
-        manager.start();
+        manager.start(requestorWs);
         manager.setRole(getRoleForSoftApIpMode(softApConfig.getTargetMode()));
         manager.enableVerboseLogging(mVerboseLoggingEnabled);
         mSoftApManagers.add(manager);
@@ -652,22 +645,22 @@ public class ActiveModeWarden {
     /**
      * Method to enable a new primary client mode manager.
      */
-    private boolean startPrimaryOrScanOnlyClientModeManager() {
+    private boolean startPrimaryOrScanOnlyClientModeManager(WorkSource requestorWs) {
         Log.d(TAG, "Starting primary ClientModeManager");
         ClientListener listener = new ClientListener();
         ConcreteClientModeManager manager = mWifiInjector.makeClientModeManager(listener);
         listener.clientModeManager = manager;
-        manager.start();
+        manager.start(requestorWs);
         if (!switchPrimaryOrScanOnlyClientModeManagerRole(manager)) {
             return false;
         }
         manager.enableVerboseLogging(mVerboseLoggingEnabled);
-        if (mPrimaryClientModeManagerScorer != null) {
+        if (mClientModeManagerScorer != null) {
             // TODO (b/160346062): Clear the connected scorer from this mode manager when
             // we switch it out of primary role for the MBB use-case.
             // Also vice versa, we need to set the scorer on the new primary mode manager.
             manager.setWifiConnectedNetworkScorer(
-                    mPrimaryClientModeManagerScorer.first, mPrimaryClientModeManagerScorer.second);
+                    mClientModeManagerScorer.first, mClientModeManagerScorer.second);
         }
         mClientModeManagers.add(manager);
         return true;
@@ -723,12 +716,13 @@ public class ActiveModeWarden {
      * Method to enable a new local only client mode manager.
      */
     private boolean startLocalOnlyClientModeManager(
-            @NonNull ExternalClientModeManagerRequestListener externalRequestListener) {
+            @NonNull ExternalClientModeManagerRequestListener externalRequestListener,
+            @NonNull WorkSource requestorWs) {
         Log.d(TAG, "Starting local only ClientModeManager");
         ClientListener listener = new ClientListener(externalRequestListener);
         ConcreteClientModeManager manager = mWifiInjector.makeClientModeManager(listener);
         listener.clientModeManager = manager;
-        manager.start();
+        manager.start(requestorWs);
         manager.setRole(ActiveModeManager.ROLE_CLIENT_LOCAL_ONLY);
         manager.enableVerboseLogging(mVerboseLoggingEnabled);
         mClientModeManagers.add(manager);
@@ -984,6 +978,50 @@ public class ActiveModeWarden {
         }
 
         @Override
+        protected String getWhatToString(int what) {
+            switch (what) {
+                case CMD_AIRPLANE_TOGGLED:
+                    return "CMD_AIRPLANE_TOGGLED";
+                case CMD_AP_START_FAILURE:
+                    return "CMD_AP_START_FAILURE";
+                case CMD_AP_STOPPED:
+                    return "CMD_AP_STOPPED";
+                case CMD_DEFERRED_RECOVERY_RESTART_WIFI:
+                    return "CMD_DEFERRED_RECOVERY_RESTART_WIFI";
+                case CMD_EMERGENCY_CALL_STATE_CHANGED:
+                    return "CMD_EMERGENCY_CALL_STATE_CHANGED";
+                case CMD_EMERGENCY_MODE_CHANGED:
+                    return "CMD_EMERGENCY_MODE_CHANGED";
+                case CMD_RECOVERY_DISABLE_WIFI:
+                    return "CMD_RECOVERY_DISABLE_WIFI";
+                case CMD_RECOVERY_RESTART_WIFI:
+                    return "CMD_RECOVERY_RESTART_WIFI";
+                case CMD_RECOVERY_RESTART_WIFI_CONTINUE:
+                    return "CMD_RECOVERY_RESTART_WIFI_CONTINUE";
+                case CMD_REMOVE_LOCAL_ONLY_CLIENT_MODE_MANAGER:
+                    return "CMD_REMOVE_LOCAL_ONLY_CLIENT_MODE_MANAGER";
+                case CMD_REQUEST_LOCAL_ONLY_CLIENT_MODE_MANAGER:
+                    return "CMD_REQUEST_LOCAL_ONLY_CLIENT_MODE_MANAGER";
+                case CMD_SCAN_ALWAYS_MODE_CHANGED:
+                    return "CMD_SCAN_ALWAYS_MODE_CHANGED";
+                case CMD_SET_AP:
+                    return "CMD_SET_AP";
+                case CMD_STA_START_FAILURE:
+                    return "CMD_STA_START_FAILURE";
+                case CMD_STA_STOPPED:
+                    return "CMD_STA_STOPPED";
+                case CMD_UPDATE_AP_CAPABILITY:
+                    return "CMD_UPDATE_AP_CAPABILITY";
+                case CMD_UPDATE_AP_CONFIG:
+                    return "CMD_UPDATE_AP_CONFIG";
+                case CMD_WIFI_TOGGLED:
+                    return "CMD_WIFI_TOGGLED";
+                default:
+                    return "what:" + what;
+            }
+        }
+
+        @Override
         public void start() {
             boolean isAirplaneModeOn = mSettingsStore.isAirplaneModeOn();
             boolean isWifiEnabled = mSettingsStore.isWifiToggleEnabled();
@@ -1000,7 +1038,8 @@ public class ActiveModeWarden {
                     + ", isLocationModeActive = " + isLocationModeActive);
 
             if (shouldEnableSta()) {
-                startPrimaryOrScanOnlyClientModeManager();
+                // Assumes user toggled it on from settings before.
+                startPrimaryOrScanOnlyClientModeManager(mFacade.getSettingsWorkSource(mContext));
                 setInitialState(mEnabledState);
             } else {
                 setInitialState(mDisabledState);
@@ -1046,7 +1085,9 @@ public class ActiveModeWarden {
 
             private void exitEmergencyMode() {
                 if (shouldEnableSta()) {
-                    startPrimaryOrScanOnlyClientModeManager();
+                    startPrimaryOrScanOnlyClientModeManager(
+                            // Assumes user toggled it on from settings before.
+                            mFacade.getSettingsWorkSource(mContext));
                     transitionTo(mEnabledState);
                 } else {
                     transitionTo(mDisabledState);
@@ -1105,8 +1146,10 @@ public class ActiveModeWarden {
                     case CMD_REMOVE_LOCAL_ONLY_CLIENT_MODE_MANAGER:
                         break;
                     case CMD_REQUEST_LOCAL_ONLY_CLIENT_MODE_MANAGER:
+                        Pair<ExternalClientModeManagerRequestListener, WorkSource>
+                                externalListenerAndWs = (Pair) msg.obj;
                         ExternalClientModeManagerRequestListener externalRequestListener =
-                                (ExternalClientModeManagerRequestListener) msg.obj;
+                                externalListenerAndWs.first;
                         externalRequestListener.onAnswer(null);
                         break;
                     case CMD_RECOVERY_DISABLE_WIFI:
@@ -1122,7 +1165,9 @@ public class ActiveModeWarden {
                         } else {
                             log("Airplane mode disabled, determine next state");
                             if (shouldEnableSta()) {
-                                startPrimaryOrScanOnlyClientModeManager();
+                                startPrimaryOrScanOnlyClientModeManager(
+                                        // Assumes user toggled it on from settings before.
+                                        mFacade.getSettingsWorkSource(mContext));
                                 transitionTo(mEnabledState);
                             }
                             // wifi should remain disabled, do not need to transition
@@ -1139,7 +1184,9 @@ public class ActiveModeWarden {
                         // Softap Start Failure (for Dual SAP) arrives in Disabled State.
                         log("Softap mode disabled, determine next state");
                         if (shouldEnableSta()) {
-                            startPrimaryOrScanOnlyClientModeManager();
+                            startPrimaryOrScanOnlyClientModeManager(
+                                    // Assumes user toggled it on from settings before.
+                                    mFacade.getSettingsWorkSource(mContext));
                             transitionTo(mEnabledState);
                         }
                         break;
@@ -1177,14 +1224,17 @@ public class ActiveModeWarden {
                     case CMD_WIFI_TOGGLED:
                     case CMD_SCAN_ALWAYS_MODE_CHANGED:
                         if (shouldEnableSta()) {
-                            startPrimaryOrScanOnlyClientModeManager();
+                            startPrimaryOrScanOnlyClientModeManager((WorkSource) msg.obj);
                             transitionTo(mEnabledState);
                         }
                         break;
                     case CMD_SET_AP:
                         // note: CMD_SET_AP is handled/dropped in ECM mode - will not start here
                         if (msg.arg1 == 1) {
-                            startSoftApModeManager((SoftApModeConfiguration) msg.obj);
+                            Pair<SoftApModeConfiguration, WorkSource> softApConfigAndWs =
+                                    (Pair) msg.obj;
+                            startSoftApModeManager(
+                                    softApConfigAndWs.first, softApConfigAndWs.second);
                             transitionTo(mEnabledState);
                         }
                         break;
@@ -1198,7 +1248,9 @@ public class ActiveModeWarden {
                         break;
                     case CMD_RECOVERY_RESTART_WIFI_CONTINUE:
                         if (shouldEnableSta()) {
-                            startPrimaryOrScanOnlyClientModeManager();
+                            startPrimaryOrScanOnlyClientModeManager(
+                                    // Assumes user toggled it on from settings before.
+                                    mFacade.getSettingsWorkSource(mContext));
                             transitionTo(mEnabledState);
                         }
                         break;
@@ -1241,18 +1293,21 @@ public class ActiveModeWarden {
                             if (hasAnyClientModeManager()) {
                                 switchAllPrimaryOrScanOnlyClientModeManagers();
                             } else {
-                                startPrimaryOrScanOnlyClientModeManager();
+                                startPrimaryOrScanOnlyClientModeManager((WorkSource) msg.obj);
                             }
                         } else {
                             stopAllClientModeManagers();
                         }
                         break;
                     case CMD_REQUEST_LOCAL_ONLY_CLIENT_MODE_MANAGER:
+                        Pair<ExternalClientModeManagerRequestListener, WorkSource>
+                                externalListenerAndWs = (Pair) msg.obj;
                         ExternalClientModeManagerRequestListener externalRequestListener =
-                                (ExternalClientModeManagerRequestListener) msg.obj;
-                        if (mCanRequestMoreClientModeManagers) {
+                                externalListenerAndWs.first;
+                        WorkSource requestorWs = externalListenerAndWs.second;
+                        if (canRequestMoreClientModeManagers(requestorWs)) {
                             // Can create a concurrent local only client mode manager.
-                            startLocalOnlyClientModeManager(externalRequestListener);
+                            startLocalOnlyClientModeManager(externalRequestListener, requestorWs);
                         } else {
                             // Can't create a concurrent client mode manager, use the primary one
                             // instead.
@@ -1269,7 +1324,10 @@ public class ActiveModeWarden {
                             stopAllClientModeManagers();
                         }
                         if (msg.arg1 == 1) {
-                            startSoftApModeManager((SoftApModeConfiguration) msg.obj);
+                            Pair<SoftApModeConfiguration, WorkSource> softApConfigAndWs =
+                                    (Pair) msg.obj;
+                            startSoftApModeManager(
+                                    softApConfigAndWs.first, softApConfigAndWs.second);
                         } else {
                             stopSoftApModeManagers(msg.arg2);
                         }
@@ -1300,7 +1358,9 @@ public class ActiveModeWarden {
                         if (!hasAnyModeManager()) {
                             if (shouldEnableSta()) {
                                 log("SoftAp disabled, start client mode");
-                                startPrimaryOrScanOnlyClientModeManager();
+                                startPrimaryOrScanOnlyClientModeManager(
+                                        // Assumes user toggled it on from settings before.
+                                        mFacade.getSettingsWorkSource(mContext));
                             } else {
                                 log("SoftAp mode disabled, return to DisabledState");
                                 transitionTo(mDisabledState);

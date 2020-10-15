@@ -37,6 +37,7 @@
     <string name="wifitrackerlib_wifi_limited_connection" msgid="4234326409980991740">"Conexión limitada"</string>
     <string name="wifitrackerlib_private_dns_broken" msgid="6049401148262718707">"No se puede acceder al servidor DNS privado"</string>
     <string name="wifitrackerlib_wifi_connected_no_internet" msgid="2329345148045635995">"Sin Internet"</string>
+    <string name="wifi_connected_low_quality" msgid="4478331645458058445">"Baja calidad"</string>
     <string name="wifitrackerlib_wifi_security_none" msgid="2686062484642847280">"Ninguna"</string>
     <string name="wifitrackerlib_wifi_passpoint_expired" msgid="7974960573887452566">"Venció"</string>
     <string name="wifitrackerlib_tap_to_sign_up" msgid="3897017015910817402">"Presiona para registrarte"</string>
@@ -46,7 +47,7 @@
     <string name="wifitrackerlib_osu_completing_sign_up" msgid="4359503050543182480">"Completando registro…"</string>
     <string name="wifitrackerlib_osu_sign_up_failed" msgid="3964140125523395898">"No se pudo completar el registro. Presiona para volver a intentarlo."</string>
     <string name="wifitrackerlib_osu_sign_up_complete" msgid="3279606633343124580">"Se completó el registro. Conectando…"</string>
-    <string name="wifitrackerlib_imsi_protection_warning" msgid="5177588159471032092">"Esta red recibe un ID único que se puede usar para realizar el seguimiento de la ubicación del dispositivo. "<annotation id="url">"Más información"</annotation></string>
+    <string name="wifitrackerlib_imsi_protection_warning" msgid="7202210931586169466">"Esta red recibe un ID de SIM que puede usarse para realizar el seguimiento de la ubicación del dispositivo. "<annotation id="url">"Más información"</annotation></string>
     <string name="wifitrackerlib_speed_label_very_slow" msgid="6606409259798814244">"Muy lenta"</string>
     <string name="wifitrackerlib_speed_label_slow" msgid="7327906382011957760">"Lenta"</string>
     <string name="wifitrackerlib_speed_label_okay" msgid="6656684124654881956">"Aceptable"</string>

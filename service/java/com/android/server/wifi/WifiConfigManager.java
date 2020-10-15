@@ -279,7 +279,7 @@ public class WifiConfigManager {
     /**
      * Store the network update listeners.
      */
-    private final List<OnNetworkUpdateListener> mListeners;
+    private final Set<OnNetworkUpdateListener> mListeners;
 
     private final FrameworkFacade mFrameworkFacade;
     private final DeviceConfigFacade mDeviceConfigFacade;
@@ -369,7 +369,7 @@ public class WifiConfigManager {
         mUserTemporarilyDisabledList =
                 new MissingCounterTimerLockList<>(SCAN_RESULT_MISSING_COUNT_THRESHOLD, mClock);
         mRandomizedMacAddressMapping = new HashMap<>();
-        mListeners = new ArrayList<>();
+        mListeners = new ArraySet<>();
 
         // Register store data for network list and deleted ephemeral SSIDs.
         mNetworkListSharedStoreData = networkListSharedStoreData;
@@ -429,26 +429,38 @@ public class WifiConfigManager {
      * @param config
      * @return
      */
-    public boolean shouldUseAggressiveRandomization(WifiConfiguration config) {
+    public boolean shouldUseEnhancedRandomization(WifiConfiguration config) {
         if (!isMacRandomizationSupported()
-                || config.macRandomizationSetting != WifiConfiguration.RANDOMIZATION_PERSISTENT) {
+                || config.macRandomizationSetting == WifiConfiguration.RANDOMIZATION_NONE) {
             return false;
         }
+
+        // Use enhanced randomization if it's forced on by dev option
         if (mFrameworkFacade.getIntegerSetting(mContext,
                 ENHANCED_MAC_RANDOMIZATION_FEATURE_FORCE_ENABLE_FLAG, 0) == 1) {
             return true;
         }
+
+        // use enhanced or persistent randomization if configured to do so.
+        if (config.macRandomizationSetting == WifiConfiguration.RANDOMIZATION_ENHANCED) {
+            return true;
+        }
+        if (config.macRandomizationSetting == WifiConfiguration.RANDOMIZATION_PERSISTENT) {
+            return false;
+        }
+
+        // otherwise the wifi frameworks should decide automatically
         if (config.getIpConfiguration().getIpAssignment() == IpConfiguration.IpAssignment.STATIC) {
             return false;
         }
         if (config.isPasspoint()) {
-            return isNetworkOptInForAggressiveRandomization(config.FQDN);
+            return isNetworkOptInForEnhancedRandomization(config.FQDN);
         } else {
-            return isNetworkOptInForAggressiveRandomization(config.SSID);
+            return isNetworkOptInForEnhancedRandomization(config.SSID);
         }
     }
 
-    private boolean isNetworkOptInForAggressiveRandomization(String ssidOrFqdn) {
+    private boolean isNetworkOptInForEnhancedRandomization(String ssidOrFqdn) {
         Set<String> perDeviceSsidBlocklist = new ArraySet<>(mContext.getResources().getStringArray(
                 R.array.config_wifi_aggressive_randomization_ssid_blocklist));
         if (mDeviceConfigFacade.getAggressiveMacRandomizationSsidBlocklist().contains(ssidOrFqdn)
@@ -569,7 +581,7 @@ public class WifiConfigManager {
      * @return MacAddress
      */
     public MacAddress getRandomizedMacAndUpdateIfNeeded(WifiConfiguration config) {
-        MacAddress mac = shouldUseAggressiveRandomization(config)
+        MacAddress mac = shouldUseEnhancedRandomization(config)
                 ? updateRandomizedMacIfNeeded(config)
                 : setRandomizedMacToPersistentMac(config);
         return mac;
@@ -1155,7 +1167,6 @@ public class WifiConfigManager {
         newInternalConfig.noInternetAccessExpected = externalConfig.noInternetAccessExpected;
         newInternalConfig.ephemeral = externalConfig.ephemeral;
         newInternalConfig.osu = externalConfig.osu;
-        newInternalConfig.trusted = externalConfig.trusted;
         newInternalConfig.fromWifiNetworkSuggestion = externalConfig.fromWifiNetworkSuggestion;
         newInternalConfig.fromWifiNetworkSpecifier = externalConfig.fromWifiNetworkSpecifier;
         newInternalConfig.useExternalScores = externalConfig.useExternalScores;
@@ -1332,10 +1343,12 @@ public class WifiConfigManager {
         // Stage the backup of the SettingsProvider package which backs this up.
         mBackupManagerProxy.notifyDataChanged();
 
-        NetworkUpdateResult result =
-                new NetworkUpdateResult(hasIpChanged, hasProxyChanged, hasCredentialChanged);
-        result.setIsNewNetwork(newNetwork);
-        result.setNetworkId(newInternalConfig.networkId);
+        NetworkUpdateResult result = new NetworkUpdateResult(
+                newInternalConfig.networkId,
+                hasIpChanged,
+                hasProxyChanged,
+                hasCredentialChanged,
+                newNetwork);
 
         localLog("addOrUpdateNetworkInternal: added/updated config."
                 + " netId=" + newInternalConfig.networkId
@@ -1629,7 +1642,7 @@ public class WifiConfigManager {
     public boolean isInFlakyRandomizationSsidHotlist(int networkId) {
         WifiConfiguration config = getConfiguredNetwork(networkId);
         return config != null
-                && config.macRandomizationSetting == WifiConfiguration.RANDOMIZATION_PERSISTENT
+                && config.macRandomizationSetting != WifiConfiguration.RANDOMIZATION_NONE
                 && mDeviceConfigFacade.getRandomizationFlakySsidHotlist().contains(config.SSID);
     }
 
@@ -1748,7 +1761,7 @@ public class WifiConfigManager {
         NetworkSelectionStatus networkStatus = config.getNetworkSelectionStatus();
         if (reason != NetworkSelectionStatus.DISABLED_NONE) {
 
-            // Do not update SSID blacklist with information if this is the only
+            // Do not update SSID blocklist with information if this is the only
             // SSID be observed. By ignoring it we will cause additional failures
             // which will trigger Watchdog.
             if (reason == NetworkSelectionStatus.DISABLED_ASSOCIATION_REJECTION
@@ -1823,7 +1836,7 @@ public class WifiConfigManager {
                     mClock.getElapsedSinceBootMillis() - networkStatus.getDisableTime();
             int disableReason = networkStatus.getNetworkSelectionDisableReason();
             int blockedBssids = Math.min(MAX_BLOCKED_BSSID_PER_NETWORK,
-                    mBssidBlocklistMonitor.getNumBlockedBssidsForSsid(config.SSID));
+                    mBssidBlocklistMonitor.updateAndGetNumBlockedBssidsForSsid(config.SSID));
             // if no BSSIDs are blocked then we should keep trying to connect to something
             long disableTimeoutMs = 0;
             if (blockedBssids > 0) {
@@ -2982,7 +2995,7 @@ public class WifiConfigManager {
      * @param config
      */
     private void initRandomizedMacForInternalConfig(WifiConfiguration internalConfig) {
-        MacAddress randomizedMac = shouldUseAggressiveRandomization(internalConfig)
+        MacAddress randomizedMac = shouldUseEnhancedRandomization(internalConfig)
                 ? MacAddressUtils.createRandomUnicastAddress()
                 : getPersistentMacAddress(internalConfig);
         if (randomizedMac != null) {
@@ -3253,6 +3266,13 @@ public class WifiConfigManager {
     }
 
     /**
+     * Remove the network update event listener
+     */
+    public void removeOnNetworkUpdateListener(OnNetworkUpdateListener listener) {
+        mListeners.remove(listener);
+    }
+
+    /**
      * Set extra failure reason for given config. Used to surface extra failure details to the UI
      * @param netId The network ID of the config to set the extra failure reason for
      * @param reason the WifiConfiguration.ExtraFailureReason failure code representing the most
@@ -3373,26 +3393,17 @@ public class WifiConfigManager {
     }
 
     /** Update WifiConfigManager before connecting to a network. */
-    public boolean updateBeforeConnect(int networkId, int callingUid) {
-        if (!userEnabledNetwork(networkId)) {
-            return false;
-        }
-        if (!enableNetwork(networkId, true, callingUid, null)) {
+    public void updateBeforeConnect(int networkId, int callingUid) {
+        userEnabledNetwork(networkId);
+        if (!enableNetwork(networkId, true, callingUid, null)
+                || !updateLastConnectUid(networkId, callingUid)) {
             Log.i(TAG, "connect Allowing uid " + callingUid
                     + " with insufficient permissions to connect=" + networkId);
-            return false;
-        }
-        if (!updateLastConnectUid(networkId, callingUid)) {
-            Log.i(TAG, "connect Allowing uid " + callingUid
-                    + " with insufficient permissions to connect=" + networkId);
-            return false;
-        }
-        if (mWifiPermissionsUtil.checkNetworkSettingsPermission(callingUid)) {
+        } else if (mWifiPermissionsUtil.checkNetworkSettingsPermission(callingUid)) {
             // Note user connect choice here, so that it will be considered in the
             // next network selection.
             setUserConnectChoice(networkId);
         }
-        return true;
     }
 
     /** See {@link WifiManager#save(WifiConfiguration, WifiManager.ActionListener)} */

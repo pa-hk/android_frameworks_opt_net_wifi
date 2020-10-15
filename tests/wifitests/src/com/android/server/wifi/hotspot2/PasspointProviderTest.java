@@ -323,8 +323,13 @@ public class PasspointProviderTest extends WifiBaseTest {
         assertFalse(wifiConfig.shared);
         assertEquals(credential.getRealm(), wifiEnterpriseConfig.getRealm());
         if (passpointConfig.isMacRandomizationEnabled()) {
-            assertEquals(WifiConfiguration.RANDOMIZATION_PERSISTENT,
-                    wifiConfig.macRandomizationSetting);
+            if (passpointConfig.isEnhancedMacRandomizationEnabled()) {
+                assertEquals(WifiConfiguration.RANDOMIZATION_ENHANCED,
+                        wifiConfig.macRandomizationSetting);
+            } else {
+                assertEquals(WifiConfiguration.RANDOMIZATION_PERSISTENT,
+                        wifiConfig.macRandomizationSetting);
+            }
         } else {
             assertEquals(WifiConfiguration.RANDOMIZATION_NONE, wifiConfig.macRandomizationSetting);
         }
@@ -440,7 +445,7 @@ public class PasspointProviderTest extends WifiBaseTest {
      */
     @Test
     public void verifyModifyOriginalConfig() throws Exception {
-        // Create a dummy PasspointConfiguration.
+        // Create a placeholder PasspointConfiguration.
         PasspointConfiguration config = generateTestPasspointConfiguration(
                 CredentialType.USER, false);
         mProvider = createProvider(config);
@@ -460,7 +465,7 @@ public class PasspointProviderTest extends WifiBaseTest {
      */
     @Test
     public void verifyModifyRetrievedConfig() throws Exception {
-        // Create a dummy PasspointConfiguration.
+        // Create a placeholder PasspointConfiguration.
         PasspointConfiguration config = generateTestPasspointConfiguration(
                 CredentialType.USER, false);
         mProvider = createProvider(config);
@@ -480,7 +485,7 @@ public class PasspointProviderTest extends WifiBaseTest {
      */
     @Test
     public void installCertsAndKeysSuccess() throws Exception {
-        // Create a dummy configuration with certificate credential.
+        // Create a placeholder configuration with certificate credential.
         PasspointConfiguration config = generateTestPasspointConfiguration(
                 CredentialType.CERT, false);
         Credential credential = config.getCredential();
@@ -529,7 +534,7 @@ public class PasspointProviderTest extends WifiBaseTest {
      */
     @Test
     public void installCertsAndKeysFailure() throws Exception {
-        // Create a dummy configuration with certificate credential.
+        // Create a placeholder configuration with certificate credential.
         PasspointConfiguration config = generateTestPasspointConfiguration(
                 CredentialType.CERT, false);
         Credential credential = config.getCredential();
@@ -574,7 +579,7 @@ public class PasspointProviderTest extends WifiBaseTest {
      */
     @Test
     public void uninstallCertsAndKeys() throws Exception {
-        // Create a dummy configuration with certificate credential.
+        // Create a placeholder configuration with certificate credential.
         PasspointConfiguration config = generateTestPasspointConfiguration(
                 CredentialType.CERT, false);
         Credential credential = config.getCredential();
@@ -1273,6 +1278,35 @@ public class PasspointProviderTest extends WifiBaseTest {
         mProvider = createProvider(config);
         mProvider.setMacRandomizationEnabled(false);
         verifyWifiConfigWithTestData(mProvider.getConfig(), mProvider.getWifiConfig());
+    }
+
+    /**
+     * Verify the generated WifiConfiguration.macRandomizationSetting defaults to
+     * RANDOMIZATION_PERSISTENT.
+     */
+    @Test
+    public void testMacRandomizationSettingDefaultIsPersistent() throws Exception {
+        PasspointConfiguration config = generateTestPasspointConfiguration(
+                CredentialType.SIM, false);
+        mProvider = createProvider(config);
+
+        assertEquals(WifiConfiguration.RANDOMIZATION_PERSISTENT,
+                mProvider.getWifiConfig().macRandomizationSetting);
+    }
+
+    /**
+     * Verify the WifiConfiguration is generated properly with settings to use enhanced MAC
+     * randomization.
+     */
+    @Test
+    public void testMacRandomizationSettingEnhanced() throws Exception {
+        PasspointConfiguration config = generateTestPasspointConfiguration(
+                CredentialType.SIM, false);
+        config.setEnhancedMacRandomizationEnabled(true);
+        mProvider = createProvider(config);
+
+        assertEquals(WifiConfiguration.RANDOMIZATION_ENHANCED,
+                mProvider.getWifiConfig().macRandomizationSetting);
     }
 
     /**

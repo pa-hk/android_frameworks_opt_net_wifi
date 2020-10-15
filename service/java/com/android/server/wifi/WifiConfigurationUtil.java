@@ -204,7 +204,7 @@ public class WifiConfigurationUtil {
     public static boolean hasMacRandomizationSettingsChanged(WifiConfiguration existingConfig,
             WifiConfiguration newConfig) {
         if (existingConfig == null) {
-            return newConfig.macRandomizationSetting != WifiConfiguration.RANDOMIZATION_PERSISTENT;
+            return newConfig.macRandomizationSetting != WifiConfiguration.RANDOMIZATION_AUTO;
         }
         return newConfig.macRandomizationSetting != existingConfig.macRandomizationSetting;
     }
@@ -225,6 +225,11 @@ public class WifiConfigurationUtil {
             if (existingEnterpriseConfig.getEapMethod() != newEnterpriseConfig.getEapMethod()) {
                 return true;
             }
+            if (existingEnterpriseConfig.isAuthenticationSimBased()) {
+                // No other credential changes for SIM based methods.
+                // The SIM card is the credential.
+                return false;
+            }
             if (existingEnterpriseConfig.getPhase2Method()
                     != newEnterpriseConfig.getPhase2Method()) {
                 return true;
@@ -236,8 +241,7 @@ public class WifiConfigurationUtil {
                                   newEnterpriseConfig.getIdentity())) {
                 return true;
             }
-            if (!existingEnterpriseConfig.isAuthenticationSimBased()
-                    && !TextUtils.equals(existingEnterpriseConfig.getAnonymousIdentity(),
+            if (!TextUtils.equals(existingEnterpriseConfig.getAnonymousIdentity(),
                     newEnterpriseConfig.getAnonymousIdentity())) {
                 return true;
             }
@@ -248,6 +252,21 @@ public class WifiConfigurationUtil {
             X509Certificate[] existingCaCerts = existingEnterpriseConfig.getCaCertificates();
             X509Certificate[] newCaCerts = newEnterpriseConfig.getCaCertificates();
             if (!Arrays.equals(existingCaCerts, newCaCerts)) {
+                return true;
+            }
+            if (!Arrays.equals(newEnterpriseConfig.getCaCertificateAliases(),
+                    existingEnterpriseConfig.getCaCertificateAliases())) {
+                return true;
+            }
+            if (!TextUtils.equals(newEnterpriseConfig.getClientCertificateAlias(),
+                    existingEnterpriseConfig.getClientCertificateAlias())) {
+                return true;
+            }
+            if (!TextUtils.equals(newEnterpriseConfig.getAltSubjectMatch(),
+                    existingEnterpriseConfig.getAltSubjectMatch())) {
+                return true;
+            }
+            if (newEnterpriseConfig.getOcsp() != existingEnterpriseConfig.getOcsp()) {
                 return true;
             }
         } else {
@@ -318,6 +337,9 @@ public class WifiConfigurationUtil {
             return true;
         }
         if (existingConfig.requirePmf != newConfig.requirePmf) {
+            return true;
+        }
+        if (existingConfig.carrierId != newConfig.carrierId) {
             return true;
         }
         if (hasEnterpriseConfigChanged(existingConfig.enterpriseConfig,
@@ -648,7 +670,6 @@ public class WifiConfigurationUtil {
                     + baseAddress);
             return false;
         }
-        // TBD: Can we do any more sanity checks?
         return true;
     }
 

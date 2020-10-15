@@ -37,6 +37,7 @@
     <string name="wifitrackerlib_wifi_limited_connection" msgid="4234326409980991740">"Begränsad anslutning"</string>
     <string name="wifitrackerlib_private_dns_broken" msgid="6049401148262718707">"Det går inte att komma åt den privata DNS-servern."</string>
     <string name="wifitrackerlib_wifi_connected_no_internet" msgid="2329345148045635995">"Inget internet"</string>
+    <string name="wifi_connected_low_quality" msgid="4478331645458058445">"Låg kvalitet"</string>
     <string name="wifitrackerlib_wifi_security_none" msgid="2686062484642847280">"Ingen"</string>
     <string name="wifitrackerlib_wifi_passpoint_expired" msgid="7974960573887452566">"Utgått"</string>
     <string name="wifitrackerlib_tap_to_sign_up" msgid="3897017015910817402">"Tryck för att logga in"</string>
@@ -46,7 +47,7 @@
     <string name="wifitrackerlib_osu_completing_sign_up" msgid="4359503050543182480">"Registreringen slutförs …"</string>
     <string name="wifitrackerlib_osu_sign_up_failed" msgid="3964140125523395898">"Det gick inte att slutföra registreringen. Tryck för att försöka igen."</string>
     <string name="wifitrackerlib_osu_sign_up_complete" msgid="3279606633343124580">"Registrering har slutförts. Ansluter …"</string>
-    <string name="wifitrackerlib_imsi_protection_warning" msgid="5177588159471032092">"Det här nätverket får ett unikt id som kan användas till att spåra enhetens plats. "<annotation id="url">"Läs mer"</annotation></string>
+    <string name="wifitrackerlib_imsi_protection_warning" msgid="7202210931586169466">"Det här nätverket får ett SIM-id som kan användas till att spåra enhetens plats. "<annotation id="url">"Läs mer"</annotation></string>
     <string name="wifitrackerlib_speed_label_very_slow" msgid="6606409259798814244">"Mycket långsam"</string>
     <string name="wifitrackerlib_speed_label_slow" msgid="7327906382011957760">"Långsam"</string>
     <string name="wifitrackerlib_speed_label_okay" msgid="6656684124654881956">"OK"</string>

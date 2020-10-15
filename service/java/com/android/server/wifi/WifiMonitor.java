@@ -107,6 +107,18 @@ public class WifiMonitor {
     private static final int REASON_TKIP_ONLY_PROHIBITED = 1;
     private static final int REASON_WEP_PROHIBITED = 2;
 
+    /**
+     * Use this key to get the interface name of the message sent by WifiMonitor,
+     * or null if not available.
+     *
+     * <br />
+     * Sample code:
+     * <code>
+     * message.getData().getString(KEY_IFACE)
+     * </code>
+     */
+    public static final String KEY_IFACE = "com.android.server.wifi.WifiMonitor.KEY_IFACE";
+
     private boolean mVerboseLoggingEnabled = false;
 
     void enableVerboseLogging(boolean verbose) {
@@ -222,7 +234,7 @@ public class WifiMonitor {
                 if (ifaceWhatHandlers != null) {
                     for (Handler handler : ifaceWhatHandlers) {
                         if (handler != null) {
-                            sendMessage(handler, Message.obtain(message));
+                            sendMessage(iface, handler, Message.obtain(message));
                         }
                     }
                 }
@@ -236,12 +248,13 @@ public class WifiMonitor {
                 Log.d(TAG, "Sending to all monitors because there's no matching iface");
             }
             for (Map.Entry<String, SparseArray<Set<Handler>>> entry : mHandlerMap.entrySet()) {
-                if (isMonitoring(entry.getKey())) {
+                iface = entry.getKey();
+                if (isMonitoring(iface)) {
                     Set<Handler> ifaceWhatHandlers = entry.getValue().get(message.what);
                     if (ifaceWhatHandlers == null) continue;
                     for (Handler handler : ifaceWhatHandlers) {
                         if (handler != null) {
-                            sendMessage(handler, Message.obtain(message));
+                            sendMessage(iface, handler, Message.obtain(message));
                         }
                     }
                 }
@@ -251,8 +264,11 @@ public class WifiMonitor {
         message.recycle();
     }
 
-    private void sendMessage(Handler handler, Message message) {
+    private void sendMessage(String iface, Handler handler, Message message) {
         message.setTarget(handler);
+        // getData() will return the existing Bundle if it exists, or create a new one
+        // This prevents clearing the existing data.
+        message.getData().putString(KEY_IFACE, iface);
         message.sendToTarget();
     }
 
@@ -521,6 +537,8 @@ public class WifiMonitor {
 
     /**
      * Broadcast the DPP events to all the handlers registered for this event.
+     * Broadcast the bss transition management frame handling event
+     * to all the handlers registered for this event.
      *
      * @param iface Name of iface on which this occurred.
      * @param dppEventType Name of DPP event as defined in DppResults.

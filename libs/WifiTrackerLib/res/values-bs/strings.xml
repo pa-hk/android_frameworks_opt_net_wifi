@@ -37,6 +37,7 @@
     <string name="wifitrackerlib_wifi_limited_connection" msgid="4234326409980991740">"Ograničena veza"</string>
     <string name="wifitrackerlib_private_dns_broken" msgid="6049401148262718707">"Nije moguće pristupiti privatnom DNS serveru"</string>
     <string name="wifitrackerlib_wifi_connected_no_internet" msgid="2329345148045635995">"Nema internetske veze"</string>
+    <string name="wifi_connected_low_quality" msgid="4478331645458058445">"Nizak kvalitet"</string>
     <string name="wifitrackerlib_wifi_security_none" msgid="2686062484642847280">"Nema"</string>
     <string name="wifitrackerlib_wifi_passpoint_expired" msgid="7974960573887452566">"Isteklo"</string>
     <string name="wifitrackerlib_tap_to_sign_up" msgid="3897017015910817402">"Dodirnite za registraciju"</string>
@@ -46,7 +47,7 @@
     <string name="wifitrackerlib_osu_completing_sign_up" msgid="4359503050543182480">"Završavanje registracije…"</string>
     <string name="wifitrackerlib_osu_sign_up_failed" msgid="3964140125523395898">"Dovršavanje registracije nije uspjelo. Dodirnite da pokušate ponovo."</string>
     <string name="wifitrackerlib_osu_sign_up_complete" msgid="3279606633343124580">"Registracija je završena. Povezivanje…"</string>
-    <string name="wifitrackerlib_imsi_protection_warning" msgid="5177588159471032092">"Ova mreža prima jedinstveni ID koji se može koristiti za praćenje lokacije uređaja. "<annotation id="url">"Saznajte više"</annotation></string>
+    <string name="wifitrackerlib_imsi_protection_warning" msgid="7202210931586169466">"Ova mreža prima ID SIM-a koji se može koristiti za praćenje lokacije uređaja. "<annotation id="url">"Saznajte više"</annotation></string>
     <string name="wifitrackerlib_speed_label_very_slow" msgid="6606409259798814244">"Veoma sporo"</string>
     <string name="wifitrackerlib_speed_label_slow" msgid="7327906382011957760">"Sporo"</string>
     <string name="wifitrackerlib_speed_label_okay" msgid="6656684124654881956">"UREDU"</string>

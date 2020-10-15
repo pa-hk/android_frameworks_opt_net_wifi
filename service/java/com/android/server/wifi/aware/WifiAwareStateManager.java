@@ -16,6 +16,7 @@
 
 package com.android.server.wifi.aware;
 
+import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.content.BroadcastReceiver;
 import android.content.Context;
@@ -40,9 +41,11 @@ import android.os.Bundle;
 import android.os.Looper;
 import android.os.Message;
 import android.os.PowerManager;
+import android.os.Process;
 import android.os.RemoteException;
 import android.os.SystemClock;
 import android.os.UserHandle;
+import android.os.WorkSource;
 import android.text.TextUtils;
 import android.util.ArrayMap;
 import android.util.Log;
@@ -157,6 +160,7 @@ public class WifiAwareStateManager implements WifiAwareShellCommand.DelegatedShe
     private static final int NOTIFICATION_TYPE_ON_DATA_PATH_CONFIRM = 310;
     private static final int NOTIFICATION_TYPE_ON_DATA_PATH_END = 311;
     private static final int NOTIFICATION_TYPE_ON_DATA_PATH_SCHED_UPDATE = 312;
+    private static final int NOTIFICATION_TYPE_MATCH_EXPIRED = 313;
 
     private static final SparseArray<String> sSmToString = MessageUtils.findMessageNames(
             new Class[]{WifiAwareStateManager.class},
@@ -469,6 +473,17 @@ public class WifiAwareStateManager implements WifiAwareShellCommand.DelegatedShe
     }
 
     /**
+     * Try to get capability if it is null.
+     */
+    public void tryToGetAwareCapability() {
+        if (mCapabilities != null) return;
+        // Internal request for fetching capabilities.
+        getAwareInterface(new WorkSource(Process.WIFI_UID));
+        queryCapabilities();
+        releaseAwareInterface();
+    }
+
+    /**
      * Get the client state for the specified ID (or null if none exists).
      */
     /* package */ WifiAwareClientState getClient(int clientId) {
@@ -552,9 +567,10 @@ public class WifiAwareStateManager implements WifiAwareShellCommand.DelegatedShe
      * Place a request to get the Wi-Fi Aware interface (before which no HAL command can be
      * executed).
      */
-    public void getAwareInterface() {
+    public void getAwareInterface(@NonNull WorkSource requestorWs) {
         Message msg = mSm.obtainMessage(MESSAGE_TYPE_COMMAND);
         msg.arg1 = COMMAND_TYPE_GET_AWARE;
+        msg.obj = requestorWs;
         mSm.sendMessage(msg);
     }
 
@@ -709,10 +725,6 @@ public class WifiAwareStateManager implements WifiAwareShellCommand.DelegatedShe
         }
         if (mWifiManager.getWifiState() != WifiManager.WIFI_STATE_ENABLED) {
             if (mDbg) Log.d(TAG, "enableUsage(): while Wi-Fi is disabled - ignoring");
-            return;
-        }
-        if (!mWifiAwareNativeManager.isAwareNativeAvailable()) {
-            if (mDbg) Log.d(TAG, "enableUsage(): while Aware Native isn't Available - ignoring");
             return;
         }
         Message msg = mSm.obtainMessage(MESSAGE_TYPE_COMMAND);
@@ -1075,6 +1087,18 @@ public class WifiAwareStateManager implements WifiAwareShellCommand.DelegatedShe
     }
 
     /**
+     * Place a callback request on the state machine queue: a discovered session
+     * has expired - e.g. some discovered peer is no longer visible.
+     */
+    public void onMatchExpiredNotification(int pubSubId, int requestorInstanceId) {
+        Message msg = mSm.obtainMessage(MESSAGE_TYPE_NOTIFICATION);
+        msg.arg1 = NOTIFICATION_TYPE_MATCH_EXPIRED;
+        msg.arg2 = pubSubId;
+        msg.getData().putInt(MESSAGE_BUNDLE_KEY_REQ_INSTANCE_ID, requestorInstanceId);
+        mSm.sendMessage(msg);
+    }
+
+    /**
      * Place a callback request on the state machine queue: a session (publish
      * or subscribe) has terminated (per plan or due to an error).
      */
@@ -1396,6 +1420,13 @@ public class WifiAwareStateManager implements WifiAwareShellCommand.DelegatedShe
 
                     onMatchLocal(pubSubId, requestorInstanceId, peerMac, serviceSpecificInfo,
                             matchFilter, rangingIndication, rangeMm);
+                    break;
+                }
+                case NOTIFICATION_TYPE_MATCH_EXPIRED: {
+                    int pubSubId = msg.arg2;
+                    int requestorInstanceId = msg.getData()
+                            .getInt(MESSAGE_BUNDLE_KEY_REQ_INSTANCE_ID);
+                    onMatchExpiredLocal(pubSubId, requestorInstanceId);
                     break;
                 }
                 case NOTIFICATION_TYPE_SESSION_TERMINATED: {
@@ -1793,7 +1824,8 @@ public class WifiAwareStateManager implements WifiAwareShellCommand.DelegatedShe
                     waitForResponse = false;
                     break;
                 case COMMAND_TYPE_GET_AWARE:
-                    mWifiAwareNativeManager.tryToGetAware();
+                    WorkSource requestorWs = (WorkSource) msg.obj;
+                    mWifiAwareNativeManager.tryToGetAware(requestorWs);
                     waitForResponse = false;
                     break;
                 case COMMAND_TYPE_RELEASE_AWARE:
@@ -2244,7 +2276,9 @@ public class WifiAwareStateManager implements WifiAwareShellCommand.DelegatedShe
                 doesAnyClientNeedIdentityChangeNotifications() || notifyIdentityChange;
 
         if (mCurrentAwareConfiguration == null) {
-            mWifiAwareNativeManager.tryToGetAware();
+            // TODO(b/162344695): If there are more than 1 concurrent aware clients, then we
+            // attribute the iface to one of the apps (first one is picked).
+            mWifiAwareNativeManager.tryToGetAware(new WorkSource(uid, callingPackage));
         }
 
         boolean success = mWifiAwareNativeApi.enableAndConfigure(transactionId, merged,
@@ -2485,12 +2519,6 @@ public class WifiAwareStateManager implements WifiAwareShellCommand.DelegatedShe
 
     private void enableUsageLocal() {
         if (mDbg) Log.v(TAG, "enableUsageLocal: mUsageEnabled=" + mUsageEnabled);
-
-        if (mCapabilities == null) {
-            getAwareInterface();
-            queryCapabilities();
-            releaseAwareInterface();
-        }
 
         if (mUsageEnabled) {
             return;
@@ -3058,6 +3086,22 @@ public class WifiAwareStateManager implements WifiAwareShellCommand.DelegatedShe
         }
         data.second.onMatch(requestorInstanceId, peerMac, serviceSpecificInfo, matchFilter,
                 rangingIndication, rangeMm);
+    }
+
+    private void onMatchExpiredLocal(int pubSubId, int requestorInstanceId) {
+        if (VDBG) {
+            Log.v(TAG,
+                    "onMatchExpiredNotification: pubSubId=" + pubSubId
+                            + ", requestorInstanceId=" + requestorInstanceId);
+        }
+
+        Pair<WifiAwareClientState, WifiAwareDiscoverySessionState> data =
+                getClientSessionForPubSubId(pubSubId);
+        if (data == null) {
+            Log.e(TAG, "onMatch: no session found for pubSubId=" + pubSubId);
+            return;
+        }
+        data.second.onMatchExpired(requestorInstanceId);
     }
 
     private void onSessionTerminatedLocal(int pubSubId, boolean isPublish, int reason) {

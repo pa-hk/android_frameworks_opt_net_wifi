@@ -182,7 +182,7 @@ public class WificondScannerImpl extends WifiScannerImpl implements Handler.Call
                         reportFullResults, allFreqs, eventHandler);
 
             boolean success = false;
-            Set<Integer> freqs;
+            Set<Integer> freqs = Collections.emptySet();
             if (!allFreqs.isEmpty()) {
                 freqs = allFreqs.getScanFreqs();
                 success = mWifiNative.scan(
@@ -197,7 +197,8 @@ public class WificondScannerImpl extends WifiScannerImpl implements Handler.Call
             }
             if (success) {
                 if (DBG) {
-                    Log.d(TAG, "Starting wifi scan for freqs=" + freqs);
+                    Log.d(TAG, "Starting wifi scan for freqs=" + freqs
+                            + " on iface " + getIfaceName());
                 }
 
                 mScanTimeoutListener = new AlarmManager.OnAlarmListener() {
@@ -477,6 +478,7 @@ public class WificondScannerImpl extends WifiScannerImpl implements Handler.Call
     protected void dump(FileDescriptor fd, PrintWriter pw, String[] args) {
         synchronized (mSettingsLock) {
             long nowMs = mClock.getElapsedSinceBootMillis();
+            Log.d(TAG, "Latest native scan results nowMs = " + nowMs);
             pw.println("Latest native scan results:");
             if (mNativeScanResults != null) {
                 List<ScanResult> scanResults = mNativeScanResults.stream().map(r -> {

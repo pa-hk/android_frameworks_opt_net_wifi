@@ -61,6 +61,7 @@ import android.net.shared.ProvisioningConfiguration;
 import android.net.shared.ProvisioningConfiguration.ScanResultInfo;
 import android.net.util.MacAddressUtils;
 import android.net.util.NetUtils;
+import android.net.wifi.IWifiConnectedNetworkScorer;
 import android.net.wifi.ScanResult;
 import android.net.wifi.SupplicantState;
 import android.net.wifi.WifiAnnotations.WifiStandard;
@@ -78,6 +79,7 @@ import android.net.wifi.WifiDppConfig.DppResult;
 import android.os.BatteryStatsManager;
 import android.os.Bundle;
 import android.os.ConditionVariable;
+import android.os.IBinder;
 import android.os.Looper;
 import android.os.Message;
 import android.os.Messenger;
@@ -98,6 +100,7 @@ import android.util.SparseArray;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.MessageUtils;
+import com.android.internal.util.IState;
 import com.android.internal.util.Protocol;
 import com.android.internal.util.State;
 import com.android.internal.util.StateMachine;
@@ -120,6 +123,7 @@ import com.android.server.wifi.util.ActionListenerWrapper;
 import com.android.server.wifi.util.NativeUtil;
 import com.android.server.wifi.util.RssiUtil;
 import com.android.server.wifi.util.ScanResultUtil;
+import com.android.server.wifi.util.StateMachineObituary;
 import com.android.server.wifi.util.WifiPermissionsUtil;
 import com.android.server.wifi.util.WifiPermissionsWrapper;
 import com.android.server.wifi.WifiNative.WifiGenerationStatus;
@@ -140,7 +144,6 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.nio.ByteBuffer;
 
 /**
@@ -149,11 +152,8 @@ import java.nio.ByteBuffer;
  *
  * Note: No external modules should be calling into {@link ClientModeImpl}. Please plumb it via
  * {@link ClientModeManager} until b/160014176 is fixed.
- *
- * TODO(b/117601161): Remove the {@link DefaultState} and make {@link ConnectableState} the parent
- * state once ClientModeImpl is fully disposable.
  */
-public class ClientModeImpl extends StateMachine {
+public class ClientModeImpl extends StateMachine implements ClientMode {
     private static final String NETWORKTYPE = "WIFI";
     @VisibleForTesting public static final short NUM_LOG_RECS_NORMAL = 100;
     @VisibleForTesting public static final short NUM_LOG_RECS_VERBOSE_LOW_MEMORY = 200;
@@ -166,11 +166,6 @@ public class ClientModeImpl extends StateMachine {
     @VisibleForTesting public static final long CONNECTING_WATCHDOG_TIMEOUT_MS = 30_000; // 30 secs.
 
     private boolean mVerboseLoggingEnabled = false;
-
-    /* debug flag, indicating if handling of ASSOCIATION_REJECT ended up blacklisting
-     * the corresponding BSSID.
-     */
-    private boolean mDidBlackListBSSID = false;
 
     /**
      * Log with error attribute
@@ -198,16 +193,13 @@ public class ClientModeImpl extends StateMachine {
     private final WifiConnectivityManager mWifiConnectivityManager;
     private final BssidBlocklistMonitor mBssidBlocklistMonitor;
     private WifiTrafficPoller mTrafficPoller;
-    private final BaseWifiDiagnostics mWifiDiagnostics;
+    private final WifiDiagnostics mWifiDiagnostics;
     private final Clock mClock;
     private final WifiCountryCode mCountryCode;
     private final WifiScoreCard mWifiScoreCard;
     private final WifiHealthMonitor mWifiHealthMonitor;
     private final WifiScoreReport mWifiScoreReport;
     private final WifiTrafficPoller mWifiTrafficPoller;
-    public WifiScoreReport getWifiScoreReport() {
-        return mWifiScoreReport;
-    }
     private final PasspointManager mPasspointManager;
     private final WifiDataStall mWifiDataStall;
     private final LinkProbeManager mLinkProbeManager;
@@ -235,27 +227,29 @@ public class ClientModeImpl extends StateMachine {
 
     private boolean mScreenOn = false;
 
-    // TODO (b/116233964): This should be sent in via constructor when ClientModeImpl is dynamically
-    // created by ClientModeManager.
+    // TODO(b/160335531): These should be final. Right now they are set to null when exiting
+    //  ConnectableState (i.e. when stop() is called), which ensures that any processing will be
+    //  a no-op if we get a late-coming callback.
     private String mInterfaceName;
-    private ActiveModeManager mActiveModeManager;
+    private ConcreteClientModeManager mClientModeManager;
     /* The interface for ipClient */
     private String mDataInterfaceName;
 
     private int mLastSignalLevel = -1;
     private String mLastBssid;
+    // TODO (b/162942761): Ensure this is reset when mTargetNetworkId is set.
     private int mLastNetworkId; // The network Id we successfully joined
     // The subId used by WifiConfiguration with SIM credential which was connected successfully
     private int mLastSubId;
     private String mLastSimBasedConnectionCarrierName;
 
-    private String getTag() {
-        return TAG + "[" + (mInterfaceName == null ? "unknown" : mInterfaceName) + "]";
-    }
-
     /* if set to true then disconnect due to IP Reachability lost only when obtained for the first 10 seconds of L2 connection */
     private boolean mDisconnectOnlyOnInitialIpReachability = true;
     private boolean mIpReachabilityMonitorActive = true;
+
+    private String getTag() {
+        return TAG + "[" + (mInterfaceName == null ? "unknown" : mInterfaceName) + "]";
+    }
 
     private void processRssiThreshold(byte curRssi, int reason,
             WifiNative.WifiRssiEventHandler rssiHandler) {
@@ -285,13 +279,6 @@ public class ClientModeImpl extends StateMachine {
 
     private boolean mEnableRssiPolling = false;
     private int mRssiPollToken = 0;
-    /* 3 operational states for STA operation: CONNECT_MODE, SCAN_ONLY_MODE, SCAN_ONLY_WIFI_OFF_MODE
-    * In CONNECT_MODE, the STA can scan and connect to an access point
-    * In SCAN_ONLY_MODE, the STA can only scan for access points
-    * In SCAN_ONLY_WIFI_OFF_MODE, the STA can only scan for access points with wifi toggle being off
-    */
-    private int mOperationalMode = DISABLED_MODE;
-
     private PowerManager.WakeLock mSuspendWakeLock;
 
     /**
@@ -331,6 +318,7 @@ public class ClientModeImpl extends StateMachine {
     // This one is used to track the current target network ID. This is used for error
     // handling during connection setup since many error message from supplicant does not report
     // SSID. Once connected, it will be set to invalid
+    // TODO (b/162942761): Ensure this is reset when mLastNetworkId is set.
     private int mTargetNetworkId = WifiConfiguration.INVALID_NETWORK_ID;
     private WifiConfiguration mTargetWifiConfiguration = null;
 
@@ -401,8 +389,6 @@ public class ClientModeImpl extends StateMachine {
     static final int CMD_BLUETOOTH_CONNECTION_STATE_CHANGE              = BASE + 31;
 
     /* Supplicant commands after driver start*/
-    /* Set operational mode. CONNECT, SCAN ONLY, SCAN_ONLY with Wi-Fi off mode */
-    static final int CMD_SET_OPERATIONAL_MODE                           = BASE + 72;
     /* Disconnect from a network */
     static final int CMD_DISCONNECT                                     = BASE + 73;
     /* Reconnect to a network */
@@ -567,18 +553,6 @@ public class ClientModeImpl extends StateMachine {
             MessageUtils.findMessageNames(new Class[] {ClientModeImpl.class});
 
     /* Wifi state machine modes of operation */
-    /* CONNECT_MODE - connect to any 'known' AP when it becomes available */
-    public static final int CONNECT_MODE = 1;
-    /* SCAN_ONLY_MODE - don't connect to any APs; scan, but only while apps hold lock */
-    public static final int SCAN_ONLY_MODE = 2;
-    /* SCAN_ONLY_WITH_WIFI_OFF - scan, but don't connect to any APs */
-    public static final int SCAN_ONLY_WITH_WIFI_OFF_MODE = 3;
-    /* DISABLED_MODE - Don't connect, don't scan, don't be an AP */
-    public static final int DISABLED_MODE = 4;
-
-    private static final int SUCCESS = 1;
-    private static final int FAILURE = -1;
-
     /* Tracks if suspend optimizations need to be disabled by DHCP,
      * screen or due to high perf mode.
      * When any of them needs to disable it, we keep the suspend optimizations
@@ -600,17 +574,8 @@ public class ClientModeImpl extends StateMachine {
 
     /* Tracks if user has enabled Connected Mac Randomization through settings */
 
-    /**
-     * Supplicant scan interval in milliseconds.
-     * Comes from {@link Settings.Global#WIFI_SUPPLICANT_SCAN_INTERVAL_MS} or
-     * from the default config if the setting is not set
-     */
-    private long mSupplicantScanIntervalMs;
-
     int mRunningBeaconCount = 0;
 
-    /* Default parent state where connections are disallowed */
-    private State mDefaultState = new DefaultState();
     /* Parent state where connections are allowed */
     private State mConnectableState = new ConnectableState();
     /* Connecting/Connected to an access point */
@@ -645,9 +610,7 @@ public class ClientModeImpl extends StateMachine {
 
     private final WifiCarrierInfoManager mWifiCarrierInfoManager;
 
-
-    // Used for debug and stats gathering
-    private static int sScanAlarmIntentCount = 0;
+    private final OnNetworkUpdateListener mOnNetworkUpdateListener;
 
     // Maximum duration to continue to log Wifi usability stats after a data stall is triggered.
     @VisibleForTesting
@@ -655,6 +618,10 @@ public class ClientModeImpl extends StateMachine {
     private long mDataStallTriggerTimeMs = -1;
     private int mLastStatusDataStall = WifiIsUnusableEvent.TYPE_UNKNOWN;
 
+    @Nullable
+    private StateMachineObituary mObituary = null;
+
+    /** Note that this constructor will also start() the StateMachine. */
     public ClientModeImpl(
             Context context,
             WifiMetrics wifiMetrics,
@@ -665,7 +632,7 @@ public class ClientModeImpl extends StateMachine {
             WifiConfigManager wifiConfigManager,
             PasspointManager passpointManager,
             WifiMonitor wifiMonitor,
-            BaseWifiDiagnostics wifiDiagnostics,
+            WifiDiagnostics wifiDiagnostics,
             WifiPermissionsWrapper wifiPermissionsWrapper,
             WifiDataStall wifiDataStall,
             ScoringParams scoringParams,
@@ -701,7 +668,9 @@ public class ClientModeImpl extends StateMachine {
             SimRequiredNotifier simRequiredNotifier,
             WifiScoreReport wifiScoreReport,
             WifiP2pConnection wifiP2pConnection,
-            WifiGlobals wifiGlobals) {
+            WifiGlobals wifiGlobals,
+            String ifaceName,
+            ConcreteClientModeManager clientModeManager) {
         super(TAG, looper);
         mWifiMetrics = wifiMetrics;
         mClock = clock;
@@ -773,92 +742,82 @@ public class ClientModeImpl extends StateMachine {
         mWifiP2pConnection = wifiP2pConnection;
         mWifiGlobals = wifiGlobals;
 
+        mInterfaceName = ifaceName;
+        mClientModeManager = clientModeManager;
+        updateInterfaceCapabilities(ifaceName);
+        // TODO(b/160335531): ifaceName should be a constructor arg in WifiScoreReport
+        mWifiScoreReport.setInterfaceName(ifaceName);
+
         PowerManager powerManager = (PowerManager) mContext.getSystemService(Context.POWER_SERVICE);
 
         mSuspendWakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "WifiSuspend");
         mSuspendWakeLock.setReferenceCounted(false);
 
-        mWifiConfigManager.addOnNetworkUpdateListener(new OnNetworkUpdateListener());
+        mOnNetworkUpdateListener = new OnNetworkUpdateListener();
+        mWifiConfigManager.addOnNetworkUpdateListener(mOnNetworkUpdateListener);
 
         mDisconnectOnlyOnInitialIpReachability = SystemProperties
                 .get("persist.vendor.wifi.enableIpReachabilityMonitorPeriod", "1")
                 .equals("1");
 
-        // CHECKSTYLE:OFF IndentationCheck
-        addState(mDefaultState);
-            addState(mConnectableState, mDefaultState);
-                addState(mConnectingOrConnectedState, mConnectableState);
-                    addState(mL2ConnectingState, mConnectingOrConnectedState);
-                    addState(mL2ConnectedState, mConnectingOrConnectedState);
-                        addState(mL3ProvisioningState, mL2ConnectedState);
-                        addState(mL3ConnectedState, mL2ConnectedState);
-                        addState(mRoamingState, mL2ConnectedState);
-                addState(mDisconnectedState, mConnectableState);
-        // CHECKSTYLE:ON IndentationCheck
+        addState(mConnectableState); {
+            addState(mConnectingOrConnectedState, mConnectableState); {
+                addState(mL2ConnectingState, mConnectingOrConnectedState);
+                addState(mL2ConnectedState, mConnectingOrConnectedState); {
+                    addState(mL3ProvisioningState, mL2ConnectedState);
+                    addState(mL3ConnectedState, mL2ConnectedState);
+                    addState(mRoamingState, mL2ConnectedState);
+                }
+            }
+            addState(mDisconnectedState, mConnectableState);
+        }
 
-        setInitialState(mDefaultState);
+        setInitialState(mDisconnectedState);
 
         setLogRecSize(NUM_LOG_RECS_NORMAL);
         setLogOnlyTransitions(false);
+
+        // Start the StateMachine
+        start();
     }
 
-    @Override
-    public void start() {
-        super.start();
-    }
+    private static final int[] WIFI_MONITOR_EVENTS = {
+            WifiMonitor.TARGET_BSSID_EVENT,
+            WifiMonitor.ASSOCIATED_BSSID_EVENT,
+            WifiMonitor.ANQP_DONE_EVENT,
+            WifiMonitor.ASSOCIATION_REJECTION_EVENT,
+            WifiMonitor.AUTHENTICATION_FAILURE_EVENT,
+            WifiMonitor.GAS_QUERY_DONE_EVENT,
+            WifiMonitor.GAS_QUERY_START_EVENT,
+            WifiMonitor.HS20_REMEDIATION_EVENT,
+            WifiMonitor.NETWORK_CONNECTION_EVENT,
+            WifiMonitor.NETWORK_DISCONNECTION_EVENT,
+            WifiMonitor.RX_HS20_ANQP_ICON_EVENT,
+            WifiMonitor.SUPPLICANT_STATE_CHANGE_EVENT,
+            WifiMonitor.SUP_REQUEST_IDENTITY,
+            WifiMonitor.SUP_REQUEST_SIM_AUTH,
+            WifiMonitor.MBO_OCE_BSS_TM_HANDLING_DONE,
+            WifiMonitor.DPP_EVENT,
+    };
 
     private void registerForWifiMonitorEvents()  {
-        mWifiMonitor.registerHandler(mInterfaceName, WifiMonitor.TARGET_BSSID_EVENT, getHandler());
-        mWifiMonitor.registerHandler(mInterfaceName, WifiMonitor.ASSOCIATED_BSSID_EVENT,
-                getHandler());
-        mWifiMonitor.registerHandler(mInterfaceName, WifiMonitor.ANQP_DONE_EVENT, getHandler());
-        mWifiMonitor.registerHandler(mInterfaceName, WifiMonitor.ASSOCIATION_REJECTION_EVENT,
-                getHandler());
-        mWifiMonitor.registerHandler(mInterfaceName, WifiMonitor.AUTHENTICATION_FAILURE_EVENT,
-                getHandler());
-        mWifiMonitor.registerHandler(mInterfaceName, WifiMonitor.GAS_QUERY_DONE_EVENT,
-                getHandler());
-        mWifiMonitor.registerHandler(mInterfaceName, WifiMonitor.GAS_QUERY_START_EVENT,
-                getHandler());
-        mWifiMonitor.registerHandler(mInterfaceName, WifiMonitor.HS20_REMEDIATION_EVENT,
-                getHandler());
-        mWifiMonitor.registerHandler(mInterfaceName, WifiMonitor.NETWORK_CONNECTION_EVENT,
-                getHandler());
-        mWifiMonitor.registerHandler(mInterfaceName, WifiMonitor.NETWORK_DISCONNECTION_EVENT,
-                getHandler());
-        mWifiMonitor.registerHandler(mInterfaceName, WifiMonitor.RX_HS20_ANQP_ICON_EVENT,
-                getHandler());
-        mWifiMonitor.registerHandler(mInterfaceName, WifiMonitor.SUPPLICANT_STATE_CHANGE_EVENT,
-                getHandler());
-        mWifiMonitor.registerHandler(mInterfaceName, WifiMonitor.SUP_REQUEST_IDENTITY,
-                getHandler());
-        mWifiMonitor.registerHandler(mInterfaceName, WifiMonitor.SUP_REQUEST_SIM_AUTH,
-                getHandler());
-        mWifiMonitor.registerHandler(mInterfaceName, WifiMonitor.ASSOCIATION_REJECTION_EVENT,
-                mWifiMetrics.getHandler());
-        mWifiMonitor.registerHandler(mInterfaceName, WifiMonitor.AUTHENTICATION_FAILURE_EVENT,
-                mWifiMetrics.getHandler());
-        mWifiMonitor.registerHandler(mInterfaceName, WifiMonitor.NETWORK_CONNECTION_EVENT,
-                mWifiMetrics.getHandler());
-        mWifiMonitor.registerHandler(mInterfaceName, WifiMonitor.NETWORK_DISCONNECTION_EVENT,
-                mWifiMetrics.getHandler());
-        mWifiMonitor.registerHandler(mInterfaceName, WifiMonitor.SUPPLICANT_STATE_CHANGE_EVENT,
-                mWifiMetrics.getHandler());
-        mWifiMonitor.registerHandler(mInterfaceName, WifiMonitor.ASSOCIATED_BSSID_EVENT,
-                mWifiMetrics.getHandler());
-        mWifiMonitor.registerHandler(mInterfaceName, WifiMonitor.TARGET_BSSID_EVENT,
-                mWifiMetrics.getHandler());
-        mWifiMonitor.registerHandler(mInterfaceName, WifiMonitor.DPP_EVENT, getHandler());
-        mWifiMonitor.registerHandler(mInterfaceName, WifiMonitor.NETWORK_CONNECTION_EVENT,
-                mWifiLastResortWatchdog.getHandler());
-        mWifiMonitor.registerHandler(mInterfaceName, WifiMonitor.ASSOCIATION_REJECTION_EVENT,
-                mSupplicantStateTracker.getHandler());
-        mWifiMonitor.registerHandler(mInterfaceName, WifiMonitor.AUTHENTICATION_FAILURE_EVENT,
-                mSupplicantStateTracker.getHandler());
-        mWifiMonitor.registerHandler(mInterfaceName, WifiMonitor.SUPPLICANT_STATE_CHANGE_EVENT,
-                mSupplicantStateTracker.getHandler());
-        mWifiMonitor.registerHandler(mInterfaceName, WifiMonitor.MBO_OCE_BSS_TM_HANDLING_DONE,
-                getHandler());
+        for (int event : WIFI_MONITOR_EVENTS) {
+            mWifiMonitor.registerHandler(mInterfaceName, event, getHandler());
+        }
+
+        mWifiMetrics.registerForWifiMonitorEvents(mInterfaceName);
+        mWifiLastResortWatchdog.registerForWifiMonitorEvents(mInterfaceName);
+        mSupplicantStateTracker.registerForWifiMonitorEvents(mInterfaceName);
+    }
+
+    private void deregisterForWifiMonitorEvents()  {
+        for (int event : WIFI_MONITOR_EVENTS) {
+            mWifiMonitor.deregisterHandler(mInterfaceName, event, getHandler());
+        }
+
+        mWifiMetrics.deregisterForWifiMonitorEvents(mInterfaceName);
+        mWifiLastResortWatchdog.deregisterForWifiMonitorEvents(mInterfaceName);
+        mSupplicantStateTracker.deregisterForWifiMonitorEvents(mInterfaceName);
     }
 
     private static boolean isValidBssid(String bssidStr) {
@@ -1042,6 +1001,10 @@ public class ClientModeImpl extends StateMachine {
             // Clear invalid cached data.
             mWifiNative.removeNetworkCachedData(oldConfig.networkId);
 
+            if (WifiConfigurationUtil.hasCredentialChanged(oldConfig, newConfig)) {
+                mBssidBlocklistMonitor.handleNetworkRemoved(newConfig.SSID);
+            }
+
             // Check if user/app change meteredOverride for connected network.
             if (newConfig.networkId != mLastNetworkId
                     || newConfig.meteredOverride == oldConfig.meteredOverride) {
@@ -1179,10 +1142,6 @@ public class ClientModeImpl extends StateMachine {
         return new Messenger(getHandler());
     }
 
-    // Last connect attempt is used to prevent scan requests:
-    //  - for a period of 10 seconds after attempting to connect
-    private long mLastConnectAttemptTimestamp = 0;
-
     // For debugging, keep track of last message status handling
     // TODO, find an equivalent mechanism as part of parent class
     private static final int MESSAGE_HANDLING_STATUS_PROCESSED = 2;
@@ -1232,7 +1191,7 @@ public class ClientModeImpl extends StateMachine {
         return sb.toString();
     }
 
-    WifiLinkLayerStats getWifiLinkLayerStats() {
+    public WifiLinkLayerStats getWifiLinkLayerStats() {
         if (mInterfaceName == null) {
             loge("getWifiLinkLayerStats called without an interface");
             return null;
@@ -1349,10 +1308,24 @@ public class ClientModeImpl extends StateMachine {
         return mWifiNative.stopRssiMonitoring(mInterfaceName);
     }
 
+    @Override
     public boolean isConnected() {
         return getCurrentState() == mL3ConnectedState;
     }
 
+    @Override
+    public boolean isConnecting() {
+        IState state = getCurrentState();
+        return state == mL2ConnectingState || state == mL2ConnectedState
+                || state == mL3ProvisioningState;
+    }
+
+    @Override
+    public boolean isRoaming() {
+        return getCurrentState() == mRoamingState;
+    }
+
+    @Override
     public boolean isDisconnected() {
         return getCurrentState() == mDisconnectedState;
     }
@@ -1408,37 +1381,23 @@ public class ClientModeImpl extends StateMachine {
      * mark network agent as disconnected and stop the ip client.
      */
     public void handleIfaceDestroyed() {
-        handleNetworkDisconnect(false);
+        handleNetworkDisconnect(false,
+                WifiStatsLog.WIFI_DISCONNECT_REPORTED__FAILURE_CODE__IFACE_DESTROYED);
     }
 
-    /**
-     * TODO: doc
+    /** Stop this ClientModeImpl. Do not interact with ClientModeImpl after it has been stopped.
      */
-    public void setOperationalMode(int mode, @Nullable String ifaceName,
-                @Nullable ActiveModeManager activeModeManager) {
-        if (mVerboseLoggingEnabled) {
-            log("setting operational mode to " + mode + " for iface: " + ifaceName);
-        }
-        if (mode != CONNECT_MODE) {
-            // we are disabling client mode...   need to exit connect mode now
-            transitionTo(mDefaultState);
-        } else {
-            // do a quick sanity check on the iface name, make sure it isn't null
-            if (ifaceName != null) {
-                mInterfaceName = ifaceName;
-                mActiveModeManager = activeModeManager;
-                updateInterfaceCapabilities(ifaceName);
-                transitionTo(mDisconnectedState);
-                mWifiScoreReport.setInterfaceName(ifaceName);
-            } else {
-                Log.e(getTag(), "supposed to enter connect mode, "
-                        + "but iface is null -> DefaultState");
-                transitionTo(mDefaultState);
-            }
-        }
-        // use the CMD_SET_OPERATIONAL_MODE to force the transitions before other messages are
-        // handled.
-        sendMessageAtFrontOfQueue(CMD_SET_OPERATIONAL_MODE);
+    public void stop() {
+        // capture StateMachine LogRecs since we will lose them after we call quitNow()
+        // This is used for debugging.
+        mObituary = new StateMachineObituary(this);
+
+        // quit discarding all unprocessed messages - this is to preserve the legacy behavior of
+        // using sendMessageAtFrontOfQueue(CMD_SET_OPERATIONAL_MODE) which would force a state
+        // transition immediately
+        quitNow();
+
+        mWifiConfigManager.removeOnNetworkUpdateListener(mOnNetworkUpdateListener);
     }
 
     private void checkAbnormalConnectionFailureAndTakeBugReport(String ssid) {
@@ -1466,17 +1425,9 @@ public class ClientModeImpl extends StateMachine {
     }
 
     /**
-     * Allow tests to confirm the operational mode for ClientModeImpl for testing.
-     */
-    @VisibleForTesting
-    protected int getOperationalModeForTest() {
-        return mOperationalMode;
-    }
-
-    /**
      * Retrieve the WifiMulticastLockManager.FilterController callback for registration.
      */
-    protected WifiMulticastLockManager.FilterController getMcastLockManagerFilterController() {
+    public WifiMulticastLockManager.FilterController getMcastLockManagerFilterController() {
         return mMcastLockManagerFilterController;
     }
 
@@ -1496,40 +1447,23 @@ public class ClientModeImpl extends StateMachine {
     /**
      * Disconnect from Access Point
      */
-    public void disconnectCommand() {
+    public void disconnect() {
         sendMessage(CMD_DISCONNECT);
     }
 
     /**
      * Initiate a reconnection to AP
      */
-    public void reconnectCommand(WorkSource workSource) {
+    public void reconnect(WorkSource workSource) {
         sendMessage(CMD_RECONNECT, workSource);
     }
 
     /**
      * Initiate a re-association to AP
      */
-    public void reassociateCommand() {
+    public void reassociate() {
         sendMessage(CMD_REASSOCIATE);
     }
-
-    /**
-     * Checks for a null Message.
-     *
-     * This can happen with sendMessageSynchronously, for example if an
-     * InterruptedException occurs. If this just happens once, silently
-     * ignore it, because it is probably a side effect of shutting down.
-     * If it happens a second time, generate a WTF.
-     */
-    private boolean messageIsNull(Message resultMsg) {
-        if (resultMsg != null) return false;
-        if (mNullMessageCounter.getAndIncrement() > 0) {
-            Log.wtf(getTag(), "Persistent null Message", new RuntimeException());
-        }
-        return true;
-    }
-    private AtomicInteger mNullMessageCounter = new AtomicInteger(0);
 
     /**
      * Start subscription provisioning synchronously
@@ -1633,7 +1567,15 @@ public class ClientModeImpl extends StateMachine {
 
     @Override
     public void dump(FileDescriptor fd, PrintWriter pw, String[] args) {
-        super.dump(fd, pw, args);
+        if (mObituary == null) {
+            // StateMachine hasn't quit yet, dump `this` via StateMachineObituary's dump()
+            // method for consistency with `else` branch.
+            new StateMachineObituary(this).dump(fd, pw, args);
+        } else {
+            // StateMachine has quit and cleared all LogRecs.
+            // Get them from the obituary instead.
+            mObituary.dump(fd, pw, args);
+        }
         mSupplicantStateTracker.dump(fd, pw, args);
         // Polls link layer stats and RSSI. This allows the stats to show up in
         // WifiScoreReport's dump() output when taking a bug report even if the screen is off.
@@ -1647,7 +1589,6 @@ public class ClientModeImpl extends StateMachine {
         pw.println("mLastNetworkId " + mLastNetworkId);
         pw.println("mLastSubId " + mLastSubId);
         pw.println("mLastSimBasedConnectionCarrierName " + mLastSimBasedConnectionCarrierName);
-        pw.println("mOperationalMode " + mOperationalMode);
         pw.println("mSuspendOptimizationsEnabled " + mContext.getResources().getBoolean(
                 R.bool.config_wifiSuspendOptimizationsEnabled));
         pw.println("mSuspendOptNeedsDisabled " + mSuspendOptNeedsDisabled);
@@ -1716,8 +1657,8 @@ public class ClientModeImpl extends StateMachine {
             case CMD_SAVE_NETWORK: {
                 ConnectNetworkMessage cnm = (ConnectNetworkMessage) msg.obj;
                 sb.append(" ");
-                sb.append(cnm.result.netId);
-                config = mWifiConfigManager.getConfiguredNetwork(cnm.result.netId);
+                sb.append(cnm.result.getNetworkId());
+                config = mWifiConfigManager.getConfiguredNetwork(cnm.result.getNetworkId());
                 if (config != null) {
                     sb.append(" ").append(config.getKey());
                     sb.append(" nid=").append(config.networkId);
@@ -1740,7 +1681,6 @@ public class ClientModeImpl extends StateMachine {
                 if (msg.obj != null) {
                     sb.append(" ").append((AssocRejectEventInfo) msg.obj);
                 }
-                sb.append(" blacklist=" + Boolean.toString(mDidBlackListBSSID));
                 break;
             case WifiMonitor.NETWORK_CONNECTION_EVENT:
                 sb.append(" ");
@@ -1749,7 +1689,7 @@ public class ClientModeImpl extends StateMachine {
                 sb.append(Integer.toString(msg.arg2));
                 sb.append(" ").append(mLastBssid);
                 sb.append(" nid=").append(mLastNetworkId);
-                config = getCurrentWifiConfiguration();
+                config = getConnectedWifiConfigurationInternal();
                 if (config != null) {
                     sb.append(" ").append(config.getKey());
                 }
@@ -1828,7 +1768,7 @@ public class ClientModeImpl extends StateMachine {
                     sb.append(" targetBssid=").append(mTargetBssid);
                 }
                 sb.append(" roam=").append(Boolean.toString(mIsAutoRoaming));
-                config = getCurrentWifiConfiguration();
+                config = getConnectedWifiConfigurationInternal();
                 if (config != null) {
                     sb.append(" currentConfigKey=").append(config.getKey());
                 }
@@ -1891,7 +1831,7 @@ public class ClientModeImpl extends StateMachine {
                 break;
             case CMD_IP_CONFIGURATION_LOST:
                 int count = -1;
-                WifiConfiguration c = getCurrentWifiConfiguration();
+                WifiConfiguration c = getConnectedWifiConfigurationInternal();
                 if (c != null) {
                     count = c.getNetworkSelectionStatus().getDisableReasonCounter(
                             WifiConfiguration.NetworkSelectionStatus.DISABLED_DHCP_FAILURE);
@@ -1985,76 +1925,132 @@ public class ClientModeImpl extends StateMachine {
 
     @Override
     protected String getWhatToString(int what) {
-        String s = sGetWhatToString.get(what);
-        if (s != null) {
-            return s;
-        }
         switch (what) {
+            case CMD_ACCEPT_UNVALIDATED:
+                return "CMD_ACCEPT_UNVALIDATED";
+            case CMD_ADD_KEEPALIVE_PACKET_FILTER_TO_APF:
+                return "CMD_ADD_KEEPALIVE_PACKET_FILTER_TO_APF";
+            case CMD_BLUETOOTH_CONNECTION_STATE_CHANGE:
+                return "CMD_BLUETOOTH_CONNECTION_STATE_CHANGE";
+            case CMD_CONFIG_ND_OFFLOAD:
+                return "CMD_CONFIG_ND_OFFLOAD";
+            case CMD_CONNECTING_WATCHDOG_TIMER:
+                return "CMD_CONNECTING_WATCHDOG_TIMER";
             case CMD_CONNECT_NETWORK:
-                s = "CMD_CONNECT_NETWORK";
-                break;
+                return "CMD_CONNECT_NETWORK";
+            case CMD_DIAGS_CONNECT_TIMEOUT:
+                return "CMD_DIAGS_CONNECT_TIMEOUT";
+            case CMD_DISCONNECT:
+                return "CMD_DISCONNECT";
+            case CMD_ENABLE_RSSI_POLL:
+                return "CMD_ENABLE_RSSI_POLL";
+            case CMD_ENABLE_TDLS:
+                return "CMD_ENABLE_TDLS";
+            case CMD_INSTALL_PACKET_FILTER:
+                return "CMD_INSTALL_PACKET_FILTER";
+            case CMD_IP_CONFIGURATION_LOST:
+                return "CMD_IP_CONFIGURATION_LOST";
+            case CMD_IP_CONFIGURATION_SUCCESSFUL:
+                return "CMD_IP_CONFIGURATION_SUCCESSFUL";
+            case CMD_IP_REACHABILITY_LOST:
+                return "CMD_IP_REACHABILITY_LOST";
+            case CMD_IPV4_PROVISIONING_FAILURE:
+                return "CMD_IPV4_PROVISIONING_FAILURE";
+            case CMD_IPV4_PROVISIONING_SUCCESS:
+                return "CMD_IPV4_PROVISIONING_SUCCESS";
+            case CMD_NETWORK_STATUS:
+                return "CMD_NETWORK_STATUS";
+            case CMD_ONESHOT_RSSI_POLL:
+                return "CMD_ONESHOT_RSSI_POLL";
+            case CMD_POST_DHCP_ACTION:
+                return "CMD_POST_DHCP_ACTION";
+            case CMD_PRE_DHCP_ACTION:
+                return "CMD_PRE_DHCP_ACTION";
+            case CMD_PRE_DHCP_ACTION_COMPLETE:
+                return "CMD_PRE_DHCP_ACTION_COMPLETE";
+            case CMD_READ_PACKET_FILTER:
+                return "CMD_READ_PACKET_FILTER";
+            case CMD_REASSOCIATE:
+                return "CMD_REASSOCIATE";
+            case CMD_RECONNECT:
+                return "CMD_RECONNECT";
+            case CMD_REMOVE_KEEPALIVE_PACKET_FILTER_FROM_APF:
+                return "CMD_REMOVE_KEEPALIVE_PACKET_FILTER_FROM_APF";
+            case CMD_RESET_SIM_NETWORKS:
+                return "CMD_RESET_SIM_NETWORKS";
+            case CMD_RESET_SUPPLICANT_STATE:
+                return "CMD_RESET_SUPPLICANT_STATE";
+            case CMD_ROAM_WATCHDOG_TIMER:
+                return "CMD_ROAM_WATCHDOG_TIMER";
+            case CMD_RSSI_POLL:
+                return "CMD_RSSI_POLL";
+            case CMD_RSSI_THRESHOLD_BREACHED:
+                return "CMD_RSSI_THRESHOLD_BREACHED";
             case CMD_SAVE_NETWORK:
-                s = "CMD_SAVE_NETWORK";
-                break;
+                return "CMD_SAVE_NETWORK";
+            case CMD_SCREEN_STATE_CHANGED:
+                return "CMD_SCREEN_STATE_CHANGED";
+            case CMD_SET_FALLBACK_PACKET_FILTERING:
+                return "CMD_SET_FALLBACK_PACKET_FILTERING";
+            case CMD_SET_SUSPEND_OPT_ENABLED:
+                return "CMD_SET_SUSPEND_OPT_ENABLED";
+            case CMD_START_CONNECT:
+                return "CMD_START_CONNECT";
+            case CMD_START_FILS_CONNECTION:
+                return "CMD_START_FILS_CONNECTION";
+            case CMD_START_IP_PACKET_OFFLOAD:
+                return "CMD_START_IP_PACKET_OFFLOAD";
+            case CMD_START_ROAM:
+                return "CMD_START_ROAM";
+            case CMD_START_RSSI_MONITORING_OFFLOAD:
+                return "CMD_START_RSSI_MONITORING_OFFLOAD";
+            case CMD_STOP_IP_PACKET_OFFLOAD:
+                return "CMD_STOP_IP_PACKET_OFFLOAD";
+            case CMD_STOP_RSSI_MONITORING_OFFLOAD:
+                return "CMD_STOP_RSSI_MONITORING_OFFLOAD";
+            case CMD_UNWANTED_NETWORK:
+                return "CMD_UNWANTED_NETWORK";
+            case CMD_UPDATE_LINKPROPERTIES:
+                return "CMD_UPDATE_LINKPROPERTIES";
             case WifiMonitor.SUPPLICANT_STATE_CHANGE_EVENT:
-                s = "SUPPLICANT_STATE_CHANGE_EVENT";
-                break;
+                return "SUPPLICANT_STATE_CHANGE_EVENT";
             case WifiMonitor.AUTHENTICATION_FAILURE_EVENT:
-                s = "AUTHENTICATION_FAILURE_EVENT";
-                break;
+                return "AUTHENTICATION_FAILURE_EVENT";
             case WifiMonitor.SUP_REQUEST_IDENTITY:
-                s = "SUP_REQUEST_IDENTITY";
-                break;
+                return "SUP_REQUEST_IDENTITY";
             case WifiMonitor.NETWORK_CONNECTION_EVENT:
-                s = "NETWORK_CONNECTION_EVENT";
-                break;
+                return "NETWORK_CONNECTION_EVENT";
             case WifiMonitor.NETWORK_DISCONNECTION_EVENT:
-                s = "NETWORK_DISCONNECTION_EVENT";
-                break;
+                return "NETWORK_DISCONNECTION_EVENT";
             case WifiMonitor.ASSOCIATION_REJECTION_EVENT:
-                s = "ASSOCIATION_REJECTION_EVENT";
-                break;
+                return "ASSOCIATION_REJECTION_EVENT";
             case WifiMonitor.ANQP_DONE_EVENT:
-                s = "ANQP_DONE_EVENT";
-                break;
+                return "ANQP_DONE_EVENT";
             case WifiMonitor.RX_HS20_ANQP_ICON_EVENT:
-                s = "RX_HS20_ANQP_ICON_EVENT";
-                break;
+                return "RX_HS20_ANQP_ICON_EVENT";
             case WifiMonitor.GAS_QUERY_DONE_EVENT:
-                s = "GAS_QUERY_DONE_EVENT";
-                break;
+                return "GAS_QUERY_DONE_EVENT";
             case WifiMonitor.HS20_REMEDIATION_EVENT:
-                s = "HS20_REMEDIATION_EVENT";
-                break;
+                return "HS20_REMEDIATION_EVENT";
             case WifiMonitor.GAS_QUERY_START_EVENT:
-                s = "GAS_QUERY_START_EVENT";
-                break;
+                return "GAS_QUERY_START_EVENT";
             case WifiMonitor.MBO_OCE_BSS_TM_HANDLING_DONE:
-                s = "MBO_OCE_BSS_TM_HANDLING_DONE";
-                break;
+                return "MBO_OCE_BSS_TM_HANDLING_DONE";
             case WifiP2pServiceImpl.GROUP_CREATING_TIMED_OUT:
-                s = "GROUP_CREATING_TIMED_OUT";
-                break;
+                return "GROUP_CREATING_TIMED_OUT";
             case WifiP2pServiceImpl.P2P_CONNECTION_CHANGED:
-                s = "P2P_CONNECTION_CHANGED";
-                break;
+                return "P2P_CONNECTION_CHANGED";
             case WifiP2pServiceImpl.DISCONNECT_WIFI_REQUEST:
-                s = "DISCONNECT_WIFI_REQUEST";
-                break;
+                return "DISCONNECT_WIFI_REQUEST";
             case WifiP2pServiceImpl.DISCONNECT_WIFI_RESPONSE:
-                s = "DISCONNECT_WIFI_RESPONSE";
-                break;
+                return "DISCONNECT_WIFI_RESPONSE";
             case WifiP2pServiceImpl.SET_MIRACAST_MODE:
-                s = "SET_MIRACAST_MODE";
-                break;
+                return "SET_MIRACAST_MODE";
             case WifiP2pServiceImpl.BLOCK_DISCOVERY:
-                s = "BLOCK_DISCOVERY";
-                break;
+                return "BLOCK_DISCOVERY";
             default:
-                s = "what:" + Integer.toString(what);
-                break;
+                return "what:" + what;
         }
-        return s;
     }
 
     private void handleScreenStateChanged(boolean screenOn) {
@@ -2378,10 +2374,10 @@ public class ClientModeImpl extends StateMachine {
         // SSID might have been updated, so call updateCapabilities
         updateCapabilities();
 
-        WifiConfiguration config = getCurrentWifiConfiguration();
+        WifiConfiguration config = getConnectedWifiConfigurationInternal();
         if (config == null) {
             // If not connected, this should be non-null.
-            config = getTargetWifiConfiguration();
+            config = getConnectingWifiConfigurationInternal();
         }
         if (config != null && config.networkId == mWifiInfo.getNetworkId()) {
             mWifiInfo.setEphemeral(config.ephemeral);
@@ -2452,7 +2448,7 @@ public class ClientModeImpl extends StateMachine {
         if (mIpClient != null) {
             Pair<String, String> p = mWifiScoreCard.getL2KeyAndGroupHint(mWifiInfo);
             if (!p.equals(mLastL2KeyAndGroupHint)) {
-                final MacAddress lastBssid = getCurrentBssid();
+                final MacAddress lastBssid = getCurrentBssidInternalMacAddress();
                 final Layer2Information l2Information = new Layer2Information(
                         p.first, p.second, lastBssid);
                 // Update current BSSID on IpClient side whenever l2Key and groupHint
@@ -2473,18 +2469,26 @@ public class ClientModeImpl extends StateMachine {
     /**
      * Resets the Wi-Fi Connections by clearing any state, resetting any sockets
      * using the interface, stopping DHCP & disabling interface
+     *
+     * @param disconnectReason must be one of WifiDisconnectReported.FailureReason values
+     *                         defined in /frameworks/base/cmds/statsd/src/atoms.proto
      */
-    private void handleNetworkDisconnect(boolean newConnectionInProgress) {
+    private void handleNetworkDisconnect(boolean newConnectionInProgress, int disconnectReason) {
+        mWifiMetrics.reportNetworkDisconnect(disconnectReason,
+                mWifiInfo.getRssi(),
+                mWifiInfo.getLinkSpeed());
+
         if (mVerboseLoggingEnabled) {
             Log.v(getTag(), "handleNetworkDisconnect: newConnectionInProgress: "
                     + newConnectionInProgress, new Throwable());
         }
 
-        WifiConfiguration wifiConfig = getCurrentWifiConfiguration();
+        WifiConfiguration wifiConfig = getConnectedWifiConfigurationInternal();
         if (wifiConfig != null) {
             ScanResultMatchInfo matchInfo = ScanResultMatchInfo.fromWifiConfiguration(wifiConfig);
             mWakeupController.setLastDisconnectInfo(matchInfo);
-            mWifiNetworkSuggestionsManager.handleDisconnect(wifiConfig, getCurrentBSSID());
+            mWifiNetworkSuggestionsManager.handleDisconnect(
+                    wifiConfig, getConnectedBssidInternal());
         }
         stopRssiMonitoringOffload();
 
@@ -2684,16 +2688,16 @@ public class ClientModeImpl extends StateMachine {
     private void reportConnectionAttemptEnd(int level2FailureCode, int connectivityFailureCode,
             int level2FailureReason) {
         // if connected, this should be non-null.
-        WifiConfiguration configuration = getCurrentWifiConfiguration();
+        WifiConfiguration configuration = getConnectedWifiConfigurationInternal();
         if (configuration == null) {
             // If not connected, this should be non-null.
-            configuration = getTargetWifiConfiguration();
+            configuration = getConnectingWifiConfigurationInternal();
         }
 
         String bssid = mLastBssid == null ? mTargetBssid : mLastBssid;
         String ssid = mWifiInfo.getSSID();
         if (WifiManager.UNKNOWN_SSID.equals(ssid)) {
-            ssid = getTargetSsid();
+            ssid = getConnectingSsidInternal();
         }
         if (level2FailureCode != WifiMetrics.ConnectionEvent.FAILURE_NONE) {
             int blocklistReason = convertToBssidBlocklistMonitorFailureReason(
@@ -2736,15 +2740,16 @@ public class ClientModeImpl extends StateMachine {
         }
 
         mWifiMetrics.endConnectionEvent(level2FailureCode, connectivityFailureCode,
-                level2FailureReason);
+                level2FailureReason, mWifiInfo.getFrequency());
         mWifiConnectivityManager.handleConnectionAttemptEnded(
-                mActiveModeManager, level2FailureCode, bssid, ssid);
+                mClientModeManager, level2FailureCode, bssid, ssid);
         if (configuration != null) {
             mNetworkFactory.handleConnectionAttemptEnded(level2FailureCode, configuration);
             mWifiNetworkSuggestionsManager.handleConnectionAttemptEnded(
-                    level2FailureCode, configuration, getCurrentBSSID());
+                    level2FailureCode, configuration, getConnectedBssidInternal());
             ScanResult candidate = configuration.getNetworkSelectionStatus().getCandidate();
-            if (candidate != null && !TextUtils.equals(candidate.BSSID, getCurrentBSSID())) {
+            if (candidate != null
+                    && !TextUtils.equals(candidate.BSSID, getConnectedBssidInternal())) {
                 mWifiMetrics.incrementNumBssidDifferentSelectionBetweenFrameworkAndFirmware();
             }
         }
@@ -2841,7 +2846,7 @@ public class ClientModeImpl extends StateMachine {
 
         mWifiInfo.setInetAddress(addr);
 
-        final WifiConfiguration config = getCurrentWifiConfiguration();
+        final WifiConfiguration config = getConnectedWifiConfigurationInternal();
         if (config != null) {
             mWifiInfo.setEphemeral(config.ephemeral);
             mWifiInfo.setTrusted(config.trusted);
@@ -2862,7 +2867,7 @@ public class ClientModeImpl extends StateMachine {
 
     private void handleSuccessfulIpConfiguration() {
         mLastSignalLevel = -1; // Force update of signal strength
-        WifiConfiguration c = getCurrentWifiConfiguration();
+        WifiConfiguration c = getConnectedWifiConfigurationInternal();
         if (c != null) {
             // Reset IP failure tracking
             c.getNetworkSelectionStatus().clearDisableReasonCounter(
@@ -2889,7 +2894,7 @@ public class ClientModeImpl extends StateMachine {
         mWifiDiagnostics.triggerBugReportDataCapture(WifiDiagnostics.REPORT_REASON_DHCP_FAILURE);
         if (mVerboseLoggingEnabled) {
             int count = -1;
-            WifiConfiguration config = getCurrentWifiConfiguration();
+            WifiConfiguration config = getConnectedWifiConfigurationInternal();
             if (config != null) {
                 count = config.getNetworkSelectionStatus().getDisableReasonCounter(
                         WifiConfiguration.NetworkSelectionStatus.DISABLED_DHCP_FAILURE);
@@ -3026,12 +3031,12 @@ public class ClientModeImpl extends StateMachine {
             } else {
                 mWifiMetrics.logStaEvent(StaEvent.TYPE_MAC_CHANGE, config);
                 boolean setMacSuccess =
-                        mWifiNative.setMacAddress(mInterfaceName, newMac);
+                        mWifiNative.setStaMacAddress(mInterfaceName, newMac);
                 if (setMacSuccess) {
                     mWifiNative.removeNetworkCachedDataIfNeeded(config.networkId, newMac);
                 }
                 Log.d(getTag(), "ConnectedMacRandomization SSID(" + config.getPrintableSsid()
-                        + "). setMacAddress(" + newMac.toString() + ") from "
+                        + "). setStaMacAddress(" + newMac.toString() + ") from "
                         + currentMacString + " = " + setMacSuccess);
             }
         } catch (NullPointerException | IllegalArgumentException e) {
@@ -3043,14 +3048,14 @@ public class ClientModeImpl extends StateMachine {
      * Sets the current MAC to the factory MAC address.
      */
     private void setCurrentMacToFactoryMac(WifiConfiguration config) {
-        MacAddress factoryMac = mWifiNative.getFactoryMacAddress(mInterfaceName);
+        MacAddress factoryMac = mWifiNative.getStaFactoryMacAddress(mInterfaceName);
         if (factoryMac == null) {
             Log.e(getTag(), "Fail to set factory MAC address. Factory MAC is null.");
             return;
         }
         String currentMacStr = mWifiNative.getMacAddress(mInterfaceName);
         if (!TextUtils.equals(currentMacStr, factoryMac.toString())) {
-            if (mWifiNative.setMacAddress(mInterfaceName, factoryMac)) {
+            if (mWifiNative.setStaMacAddress(mInterfaceName, factoryMac)) {
                 mWifiNative.removeNetworkCachedDataIfNeeded(config.networkId, factoryMac);
                 mWifiMetrics.logStaEvent(StaEvent.TYPE_MAC_CHANGE, config);
             } else {
@@ -3078,107 +3083,6 @@ public class ClientModeImpl extends StateMachine {
         return mContext.getResources().getBoolean(R.bool.config_wifiSaeUpgradeOffloadEnabled);
     }
 
-    /********************************************************
-     * HSM states
-     *******************************************************/
-
-    class DefaultState extends State {
-
-        @Override
-        public boolean processMessage(Message message) {
-            boolean handleStatus = HANDLED;
-
-            switch (message.what) {
-                case CMD_DIAGS_CONNECT_TIMEOUT:
-                case CMD_SET_FALLBACK_PACKET_FILTERING:
-                case CMD_READ_PACKET_FILTER:
-                case CMD_INSTALL_PACKET_FILTER:
-                case CMD_START_IP_PACKET_OFFLOAD:
-                case CMD_STOP_IP_PACKET_OFFLOAD:
-                case CMD_ADD_KEEPALIVE_PACKET_FILTER_TO_APF:
-                case CMD_REMOVE_KEEPALIVE_PACKET_FILTER_FROM_APF:
-                case CMD_UPDATE_LINKPROPERTIES:
-                case CMD_SET_SUSPEND_OPT_ENABLED:
-                case WifiP2pServiceImpl.DISCONNECT_WIFI_REQUEST:
-                case WifiP2pServiceImpl.P2P_CONNECTION_CHANGED:
-                case CMD_ENABLE_RSSI_POLL:
-                case CMD_RESET_SIM_NETWORKS:
-                case CMD_BLUETOOTH_CONNECTION_STATE_CHANGE:
-                case WifiMonitor.NETWORK_CONNECTION_EVENT:
-                case WifiMonitor.NETWORK_DISCONNECTION_EVENT:
-                case WifiMonitor.SUPPLICANT_STATE_CHANGE_EVENT:
-                case WifiMonitor.AUTHENTICATION_FAILURE_EVENT:
-                case WifiMonitor.ASSOCIATION_REJECTION_EVENT:
-                case CMD_RSSI_POLL:
-                case CMD_ONESHOT_RSSI_POLL:
-                case CMD_PRE_DHCP_ACTION:
-                case CMD_PRE_DHCP_ACTION_COMPLETE:
-                case CMD_POST_DHCP_ACTION:
-                case WifiMonitor.SUP_REQUEST_IDENTITY:
-                case WifiMonitor.SUP_REQUEST_SIM_AUTH:
-                case WifiMonitor.TARGET_BSSID_EVENT:
-                case WifiMonitor.ASSOCIATED_BSSID_EVENT:
-                case CMD_UNWANTED_NETWORK:
-                case CMD_CONNECTING_WATCHDOG_TIMER:
-                case CMD_ROAM_WATCHDOG_TIMER:
-                case WifiMonitor.DPP_EVENT:
-                case CMD_IP_REACHABILITY_SESSION_END:
-                    mMessageHandlingStatus = MESSAGE_HANDLING_STATUS_DISCARD;
-                    break;
-                case CMD_SET_OPERATIONAL_MODE: {
-                    // using the CMD_SET_OPERATIONAL_MODE (sent at front of queue) to trigger the
-                    // state transitions performed in setOperationalMode.
-                    break;
-                }
-                case CMD_START_RSSI_MONITORING_OFFLOAD:
-                case CMD_STOP_RSSI_MONITORING_OFFLOAD:
-                case CMD_IP_CONFIGURATION_SUCCESSFUL:
-                case CMD_IP_CONFIGURATION_LOST:
-                case CMD_IP_REACHABILITY_LOST: {
-                    mMessageHandlingStatus = MESSAGE_HANDLING_STATUS_DISCARD;
-                    break;
-                }
-                case WifiP2pServiceImpl.SET_MIRACAST_MODE:
-                    if (mVerboseLoggingEnabled) logd("SET_MIRACAST_MODE: " + (int)message.arg1);
-                    mWifiConnectivityManager.saveMiracastMode((int)message.arg1);
-                    break;
-                case CMD_DPP_GENERATE_BOOTSTRAP:
-                case CMD_DPP_ADD_BOOTSTRAP_QRCODE:
-                case CMD_DPP_REMOVE_BOOTSTRAP:
-                case CMD_DPP_LISTEN_START:
-                case CMD_DPP_CONF_ADD:
-                case CMD_DPP_CONF_REMOVE:
-                case CMD_DPP_AUTH_INIT:
-                    mWifiP2pConnection.replyToMessage(message, message.what, FAILURE);
-                    break;
-                case CMD_DPP_GET_URI:
-                case CMD_DPP_CONFIGURATOR_GET_KEY:
-                case CMD_DO_DRIVER_CMD:
-                    mWifiP2pConnection.replyToMessage(message, message.what, "Supplicant Not Started!!");
-                    break;
-                case CMD_DPP_LISTEN_STOP:
-                    mMessageHandlingStatus = MESSAGE_HANDLING_STATUS_DISCARD;
-                    break;
-                case 0: {
-                    // We want to notice any empty messages (with what == 0) that might crop up.
-                    // For example, we may have recycled a message sent to multiple handlers.
-                    Log.wtf(getTag(), "Error! empty message encountered");
-                    break;
-                }
-                default: {
-                    loge("Error! unhandled message" + message);
-                    break;
-                }
-            }
-
-            if (handleStatus == HANDLED) {
-                logStateAndMessage(message, this);
-            }
-
-            return handleStatus;
-        }
-    }
-
     /**
      * Helper method to start other services and get state ready for client mode
      */
@@ -3203,7 +3107,7 @@ public class ClientModeImpl extends StateMachine {
         mLastSimBasedConnectionCarrierName = null;
         mLastSignalLevel = -1;
         if (mWifiGlobals.isConnectedMacRandomizationEnabled()) {
-            if (!mWifiNative.setMacAddress(
+            if (!mWifiNative.setStaMacAddress(
                     mInterfaceName, MacAddressUtils.createRandomUnicastAddress())) {
                 Log.e(getTag(), "Failed to set random MAC address on bootup");
             }
@@ -3253,7 +3157,8 @@ public class ClientModeImpl extends StateMachine {
      * Helper method to stop external services and clean up state from client mode.
      */
     private void stopClientMode() {
-        handleNetworkDisconnect(false);
+        handleNetworkDisconnect(false,
+                WifiStatsLog.WIFI_DISCONNECT_REPORTED__FAILURE_CODE__WIFI_DISABLED);
         // exiting supplicant started state is now only applicable to client mode
         mWifiDiagnostics.stopLogging(mInterfaceName);
 
@@ -3265,23 +3170,25 @@ public class ClientModeImpl extends StateMachine {
             mIpClientCallbacks.awaitShutdown();
         }
         mCountryCode.setReadyForChange(false);
+        deregisterForWifiMonitorEvents(); // uses mInterfaceName, must call before nulling out
         mInterfaceName = null;
-        mActiveModeManager = null;
+        mClientModeManager = null;
         mWifiScoreReport.setInterfaceName(null);
         mDataInterfaceName = null;
         // TODO: b/79504296 This broadcast has been deprecated and should be removed
         sendSupplicantConnectionChangedBroadcast(false);
 
-        // Let's remove any ephemeral or passpoint networks.
+        // Remove any ephemeral or Passpoint networks, flush ANQP cache
         mWifiConfigManager.removeAllEphemeralOrPasspointConfiguredNetworks();
         mWifiConfigManager.clearUserTemporarilyDisabledList();
+        mPasspointManager.clearAnqpRequestsAndFlushCache();
     }
 
     void registerConnected() {
         if (mLastNetworkId != WifiConfiguration.INVALID_NETWORK_ID) {
             mWifiConfigManager.updateNetworkAfterConnect(mLastNetworkId);
             // Notify PasspointManager of Passpoint network connected event.
-            WifiConfiguration currentNetwork = getCurrentWifiConfiguration();
+            WifiConfiguration currentNetwork = getConnectedWifiConfigurationInternal();
             if (currentNetwork != null && currentNetwork.isPasspoint()) {
                 mPasspointManager.onPasspointNetworkConnected(currentNetwork.getKey());
             }
@@ -3298,22 +3205,66 @@ public class ClientModeImpl extends StateMachine {
      * Returns WifiConfiguration object corresponding to the currently connected network, null if
      * not connected.
      */
-    public WifiConfiguration getCurrentWifiConfiguration() {
+    @Nullable private WifiConfiguration getConnectedWifiConfigurationInternal() {
         if (mLastNetworkId == WifiConfiguration.INVALID_NETWORK_ID) {
             return null;
         }
         return mWifiConfigManager.getConfiguredNetwork(mLastNetworkId);
     }
 
-    private WifiConfiguration getTargetWifiConfiguration() {
+    /**
+     * Returns WifiConfiguration object corresponding to the currently connecting network, null if
+     * not connecting.
+     */
+    @Nullable private WifiConfiguration getConnectingWifiConfigurationInternal() {
         if (mTargetNetworkId == WifiConfiguration.INVALID_NETWORK_ID) {
             return null;
         }
         return mWifiConfigManager.getConfiguredNetwork(mTargetNetworkId);
     }
 
+    @Nullable private String getConnectedBssidInternal() {
+        return mLastBssid;
+    }
+
+    @Nullable private String getConnectingBssidInternal() {
+        return mTargetBssid;
+    }
+
+    /**
+     * Returns WifiConfiguration object corresponding to the currently connected network, null if
+     * not connected.
+     */
+    @Override
+    @Nullable public WifiConfiguration getConnectedWifiConfiguration() {
+        if (!isConnected()) return null;
+        return getConnectedWifiConfigurationInternal();
+    }
+
+    /**
+     * Returns WifiConfiguration object corresponding to the currently connecting network, null if
+     * not connecting.
+     */
+    @Override
+    @Nullable public WifiConfiguration getConnectingWifiConfiguration() {
+        if (!isConnecting() && !isRoaming()) return null;
+        return getConnectingWifiConfigurationInternal();
+    }
+
+    @Override
+    @Nullable public String getConnectedBssid() {
+        if (!isConnected()) return null;
+        return getConnectedBssidInternal();
+    }
+
+    @Override
+    @Nullable public String getConnectingBssid() {
+        if (!isConnecting() && !isRoaming()) return null;
+        return getConnectingBssidInternal();
+    }
+
     ScanResult getCurrentScanResult() {
-        WifiConfiguration config = getCurrentWifiConfiguration();
+        WifiConfiguration config = getConnectedWifiConfigurationInternal();
         if (config == null) {
             return null;
         }
@@ -3331,11 +3282,7 @@ public class ClientModeImpl extends StateMachine {
         return scanDetailCache.getScanResult(bssid);
     }
 
-    String getCurrentBSSID() {
-        return mLastBssid;
-    }
-
-    MacAddress getCurrentBssid() {
+    private MacAddress getCurrentBssidInternalMacAddress() {
         MacAddress bssid = null;
         try {
             bssid = (mLastBssid != null) ? MacAddress.fromString(mLastBssid) : null;
@@ -3349,7 +3296,6 @@ public class ClientModeImpl extends StateMachine {
         if ((config != null) && mWifiNative.connectToNetwork(mInterfaceName, config)) {
             mWifiLastResortWatchdog.noteStartConnectTime();
             mWifiMetrics.logStaEvent(StaEvent.TYPE_CMD_START_CONNECT, config);
-            mLastConnectAttemptTimestamp = mClock.getWallClockMillis();
             mIsAutoRoaming = false;
             transitionTo(mL2ConnectingState);
         } else {
@@ -3362,6 +3308,10 @@ public class ClientModeImpl extends StateMachine {
                     WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN);
         }
     }
+
+    /********************************************************
+     * HSM states
+     *******************************************************/
 
     class ConnectableState extends State {
         BroadcastReceiver mScreenStateChangeReceiver = new BroadcastReceiver() {
@@ -3379,7 +3329,6 @@ public class ClientModeImpl extends StateMachine {
         @Override
         public void enter() {
             Log.d(getTag(), "entering ConnectableState: ifaceName = " + mInterfaceName);
-            mOperationalMode = CONNECT_MODE;
 
             setupClientMode();
 
@@ -3411,8 +3360,6 @@ public class ClientModeImpl extends StateMachine {
 
         @Override
         public void exit() {
-            mOperationalMode = DISABLED_MODE;
-
             // Inform metrics that Wifi is being disabled (Toggled, airplane enabled, etc)
             mWifiMetrics.setWifiState(WifiMetricsProto.WifiLog.WIFI_DISABLED);
             mWifiMetrics.logStaEvent(StaEvent.TYPE_WIFI_DISABLED);
@@ -3432,8 +3379,6 @@ public class ClientModeImpl extends StateMachine {
 
         @Override
         public boolean processMessage(Message message) {
-            boolean handleStatus = HANDLED;
-
             switch (message.what) {
                 case CMD_ENABLE_RSSI_POLL: {
                     mEnableRssiPolling = (message.arg1 == 1);
@@ -3459,12 +3404,7 @@ public class ClientModeImpl extends StateMachine {
                     break;
                 }
                 case CMD_REASSOCIATE: {
-                    mLastConnectAttemptTimestamp = mClock.getWallClockMillis();
                     mWifiNative.reassociate(mInterfaceName);
-                    break;
-                }
-                case CMD_START_ROAM: {
-                    mMessageHandlingStatus = MESSAGE_HANDLING_STATUS_DISCARD;
                     break;
                 }
                 case CMD_START_CONNECT: {
@@ -3564,7 +3504,8 @@ public class ClientModeImpl extends StateMachine {
                             if (result.hasProxyChanged()) {
                                 if (mIpClient != null) {
                                     log("Reconfiguring proxy on connection");
-                                    WifiConfiguration currentConfig = getCurrentWifiConfiguration();
+                                    WifiConfiguration currentConfig =
+                                            getConnectedWifiConfigurationInternal();
                                     if (currentConfig != null) {
                                         mIpClient.setHttpProxy(currentConfig.getHttpProxy());
                                     } else {
@@ -3586,6 +3527,15 @@ public class ClientModeImpl extends StateMachine {
                                 } else {
                                     loge("Failed to reconnect after IP reconfiguration");
                                     // we will transition to disconnected state by previous code
+                                }
+
+                                WifiConfiguration currentConfig =
+                                        getConnectedWifiConfigurationInternal();
+                                if (currentConfig != null) {
+                                    transitionTo(mL3ProvisioningState);
+                                } else {
+                                    Log.w(getTag(), "CMD_SAVE_NETWORK Ip change - but no current "
+                                            + "Wi-Fi config");
                                 }
                             }
                         }
@@ -3660,39 +3610,6 @@ public class ClientModeImpl extends StateMachine {
                     updateLinkProperties((LinkProperties) message.obj);
                     break;
                 }
-                case CMD_START_IP_PACKET_OFFLOAD:
-                case CMD_ADD_KEEPALIVE_PACKET_FILTER_TO_APF:
-                case CMD_REMOVE_KEEPALIVE_PACKET_FILTER_FROM_APF: {
-                    if (mNetworkAgent != null) {
-                        mNetworkAgent.sendSocketKeepaliveEvent(message.arg1,
-                                SocketKeepalive.ERROR_INVALID_NETWORK);
-                    }
-                    break;
-                }
-                case CMD_INSTALL_PACKET_FILTER: {
-                    mWifiNative.installPacketFilter(mInterfaceName, (byte[]) message.obj);
-                    break;
-                }
-                case CMD_READ_PACKET_FILTER: {
-                    byte[] data = mWifiNative.readPacketFilter(mInterfaceName);
-                    if (mIpClient != null) {
-                        mIpClient.readPacketFilterComplete(data);
-                    }
-                    break;
-                }
-                case CMD_SET_FALLBACK_PACKET_FILTERING: {
-                    if ((boolean) message.obj) {
-                        mWifiNative.startFilteringMulticastV4Packets(mInterfaceName);
-                    } else {
-                        mWifiNative.stopFilteringMulticastV4Packets(mInterfaceName);
-                    }
-                    break;
-                }
-                case CMD_DIAGS_CONNECT_TIMEOUT: {
-                    mWifiDiagnostics.reportConnectionEvent(
-                            BaseWifiDiagnostics.CONNECTION_EVENT_TIMEOUT);
-                    break;
-                }
                 case CMD_DPP_GENERATE_BOOTSTRAP:
                     int id = mWifiNative.dppBootstrapGenerate(mInterfaceName, (WifiDppConfig)message.obj);
                     mWifiP2pConnection.replyToMessage(message, message.what, id);
@@ -3743,21 +3660,90 @@ public class ClientModeImpl extends StateMachine {
                     Log.d(TAG, "DPP Event received. Type = " + message.arg1);
                     sendDppEventBroadcast(message.arg1, (DppResult) message.obj);
                     break;
-                case CMD_DO_DRIVER_CMD:
+                case CMD_DO_DRIVER_CMD: {
                     String reply = mWifiNative.doDriverCmd(mInterfaceName, (String) message.obj);
                     mWifiP2pConnection.replyToMessage(message, message.what, reply);
                     break;
+                }
+                case CMD_START_IP_PACKET_OFFLOAD:
+                case CMD_ADD_KEEPALIVE_PACKET_FILTER_TO_APF:
+                case CMD_REMOVE_KEEPALIVE_PACKET_FILTER_FROM_APF: {
+                    if (mNetworkAgent != null) {
+                        mNetworkAgent.sendSocketKeepaliveEvent(message.arg1,
+                                SocketKeepalive.ERROR_INVALID_NETWORK);
+                    }
+                    break;
+                }
+                case CMD_INSTALL_PACKET_FILTER: {
+                    mWifiNative.installPacketFilter(mInterfaceName, (byte[]) message.obj);
+                    break;
+                }
+                case CMD_READ_PACKET_FILTER: {
+                    byte[] data = mWifiNative.readPacketFilter(mInterfaceName);
+                    if (mIpClient != null) {
+                        mIpClient.readPacketFilterComplete(data);
+                    }
+                    break;
+                }
+                case CMD_SET_FALLBACK_PACKET_FILTERING: {
+                    if ((boolean) message.obj) {
+                        mWifiNative.startFilteringMulticastV4Packets(mInterfaceName);
+                    } else {
+                        mWifiNative.stopFilteringMulticastV4Packets(mInterfaceName);
+                    }
+                    break;
+                }
+                case CMD_DIAGS_CONNECT_TIMEOUT: {
+                    mWifiDiagnostics.reportConnectionEvent(
+                            WifiDiagnostics.CONNECTION_EVENT_TIMEOUT);
+                    break;
+                }
+                case WifiP2pServiceImpl.P2P_CONNECTION_CHANGED:
+                case CMD_RESET_SIM_NETWORKS:
+                case WifiMonitor.NETWORK_CONNECTION_EVENT:
+                case WifiMonitor.NETWORK_DISCONNECTION_EVENT:
+                case WifiMonitor.SUPPLICANT_STATE_CHANGE_EVENT:
+                case WifiMonitor.AUTHENTICATION_FAILURE_EVENT:
+                case WifiMonitor.ASSOCIATION_REJECTION_EVENT:
+                case CMD_RSSI_POLL:
+                case CMD_ONESHOT_RSSI_POLL:
+                case CMD_PRE_DHCP_ACTION:
+                case CMD_PRE_DHCP_ACTION_COMPLETE:
+                case CMD_POST_DHCP_ACTION:
+                case WifiMonitor.SUP_REQUEST_IDENTITY:
+                case WifiMonitor.SUP_REQUEST_SIM_AUTH:
+                case WifiMonitor.TARGET_BSSID_EVENT:
+                case WifiMonitor.ASSOCIATED_BSSID_EVENT:
+                case CMD_UNWANTED_NETWORK:
+                case CMD_CONNECTING_WATCHDOG_TIMER:
+                case CMD_ROAM_WATCHDOG_TIMER: {
+                    // no-op: all messages must be handled in the base state in case it was missed
+                    // in one of the child states.
+                    break;
+                }
+                case CMD_START_ROAM:
+                case CMD_START_RSSI_MONITORING_OFFLOAD:
+                case CMD_STOP_RSSI_MONITORING_OFFLOAD:
+                case CMD_IP_CONFIGURATION_SUCCESSFUL:
+                case CMD_IP_CONFIGURATION_LOST:
+                case CMD_IP_REACHABILITY_LOST: {
+                    mMessageHandlingStatus = MESSAGE_HANDLING_STATUS_DISCARD;
+                    break;
+                }
+                case 0: {
+                    // We want to notice any empty messages (with what == 0) that might crop up.
+                    // For example, we may have recycled a message sent to multiple handlers.
+                    Log.wtf(getTag(), "Error! empty message encountered");
+                    break;
+                }
                 default: {
-                    handleStatus = NOT_HANDLED;
+                    loge("Error! unhandled message" + message);
                     break;
                 }
             }
 
-            if (handleStatus == HANDLED) {
-                logStateAndMessage(message, this);
-            }
-
-            return handleStatus;
+            logStateAndMessage(message, this);
+            return HANDLED;
         }
     }
 
@@ -3851,7 +3837,7 @@ public class ClientModeImpl extends StateMachine {
             builder.setRequestorPackageName(specificRequestUidAndPackageName.second);
             // Fill up the network agent specifier for this connection.
             builder.setNetworkSpecifier(createNetworkAgentSpecifier(
-                    currentWifiConfiguration, getCurrentBSSID()));
+                    currentWifiConfiguration, getConnectedBssidInternal()));
         }
         updateLinkBandwidth(builder);
         return builder.build();
@@ -3896,7 +3882,7 @@ public class ClientModeImpl extends StateMachine {
      * Method to update network capabilities from the current WifiConfiguration.
      */
     public void updateCapabilities() {
-        updateCapabilities(getCurrentWifiConfiguration());
+        updateCapabilities(getConnectedWifiConfigurationInternal());
     }
 
     private void updateCapabilities(WifiConfiguration currentWifiConfiguration) {
@@ -4075,7 +4061,7 @@ public class ClientModeImpl extends StateMachine {
             // 2. Set a random MAC address to ensure that we're not leaking the MAC address.
             mWifiNative.disableNetwork(mInterfaceName);
             if (mWifiGlobals.isConnectedMacRandomizationEnabled()) {
-                if (!mWifiNative.setMacAddress(
+                if (!mWifiNative.setStaMacAddress(
                         mInterfaceName, MacAddressUtils.createRandomUnicastAddress())) {
                     Log.e(getTag(), "Failed to set random MAC address on disconnect");
                 }
@@ -4105,9 +4091,10 @@ public class ClientModeImpl extends StateMachine {
                         if (mVerboseLoggingEnabled) {
                             log("Missed CTRL-EVENT-DISCONNECTED, disconnect");
                         }
-                        handleNetworkDisconnect(false);
+                        handleNetworkDisconnect(false,
+                                WifiStatsLog.WIFI_DISCONNECT_REPORTED__FAILURE_CODE__SUPPLICANT_DISCONNECTED);
                         if (stateChangeResult.wifiSsid.toString().equals(
-                                WifiInfo.sanitizeSsid(getTargetSsid()))) {
+                                WifiInfo.sanitizeSsid(getConnectingSsidInternal()))) {
                             transitionTo(mDisconnectedState);
                         }
                     }
@@ -4148,7 +4135,7 @@ public class ClientModeImpl extends StateMachine {
                     // to it after a config store reload. Hence the old network Id lookups may not
                     // work, so disconnect the network and let network selector reselect a new
                     // network.
-                    WifiConfiguration config = getCurrentWifiConfiguration();
+                    WifiConfiguration config = getConnectedWifiConfigurationInternal();
                     if (config != null) {
                         mWifiInfo.setBSSID(mLastBssid);
                         mWifiInfo.setNetworkId(mLastNetworkId);
@@ -4204,25 +4191,25 @@ public class ClientModeImpl extends StateMachine {
                     if (mVerboseLoggingEnabled) {
                         log("ConnectingOrConnectedState: Network disconnection " + eventInfo);
                     }
-                    reportConnectionAttemptEnd(
-                            WifiMetrics.ConnectionEvent.FAILURE_NETWORK_DISCONNECTION,
-                            WifiMetricsProto.ConnectionEvent.HLF_NONE,
-                            WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN);
                     if (eventInfo.reasonCode == ReasonCode.FOURWAY_HANDSHAKE_TIMEOUT) {
                         String bssid = !isValidBssid(eventInfo.bssid)
                                 ? mTargetBssid : eventInfo.bssid;
                         mWifiLastResortWatchdog.noteConnectionFailureAndTriggerIfNeeded(
-                                getTargetSsid(), bssid,
+                                getConnectingSsidInternal(), bssid,
                                 WifiLastResortWatchdog.FAILURE_CODE_AUTHENTICATION);
                     }
                     clearNetworkCachedDataIfNeeded(
-                            getTargetWifiConfiguration(), eventInfo.reasonCode);
-                    String targetSsid = getTargetSsid();
+                            getConnectingWifiConfigurationInternal(), eventInfo.reasonCode);
+                    String targetSsid = getConnectingSsidInternal();
                     // If network is removed while connecting, targetSsid can be null.
                     boolean newConnectionInProgress =
                             targetSsid != null && !eventInfo.ssid.equals(targetSsid);
-                    handleNetworkDisconnect(newConnectionInProgress);
+                    handleNetworkDisconnect(newConnectionInProgress, eventInfo.reasonCode);
                     if (!newConnectionInProgress) {
+                        reportConnectionAttemptEnd(
+                                WifiMetrics.ConnectionEvent.FAILURE_NETWORK_DISCONNECTION,
+                                WifiMetricsProto.ConnectionEvent.HLF_NONE,
+                                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN);
                         transitionTo(mDisconnectedState);
                     }
                     break;
@@ -4289,14 +4276,13 @@ public class ClientModeImpl extends StateMachine {
                     if (mVerboseLoggingEnabled) {
                         log("L2ConnectingState: Association rejection " + assocRejectEventInfo);
                     }
-                    if (!assocRejectEventInfo.ssid.equals(getTargetSsid())) {
+                    if (!assocRejectEventInfo.ssid.equals(getConnectingSsidInternal())) {
                         loge("Association rejection event received on not target network");
                         break;
                     }
                     stopIpClient();
                     mWifiDiagnostics.triggerBugReportDataCapture(
                             WifiDiagnostics.REPORT_REASON_ASSOC_FAILURE);
-                    mDidBlackListBSSID = false;
                     String bssid = assocRejectEventInfo.bssid;
                     boolean timedOut = assocRejectEventInfo.timedOut;
                     int statusCode = assocRejectEventInfo.statusCode;
@@ -4332,7 +4318,7 @@ public class ClientModeImpl extends StateMachine {
                             level2FailureReason);
                     if (statusCode != StatusCode.AP_UNABLE_TO_HANDLE_NEW_STA) {
                         mWifiLastResortWatchdog.noteConnectionFailureAndTriggerIfNeeded(
-                                getTargetSsid(), bssid,
+                                getConnectingSsidInternal(), bssid,
                                 WifiLastResortWatchdog.FAILURE_CODE_ASSOCIATION);
                     }
                     transitionTo(mDisconnectedState);
@@ -4402,7 +4388,7 @@ public class ClientModeImpl extends StateMachine {
                     if (reasonCode != WifiManager.ERROR_AUTH_FAILURE_WRONG_PSWD && reasonCode
                             != WifiManager.ERROR_AUTH_FAILURE_EAP_FAILURE) {
                         mWifiLastResortWatchdog.noteConnectionFailureAndTriggerIfNeeded(
-                                getTargetSsid(),
+                                getConnectingSsidInternal(),
                                 (mLastBssid == null) ? mTargetBssid : mLastBssid,
                                 WifiLastResortWatchdog.FAILURE_CODE_AUTHENTICATION);
                     }
@@ -4498,7 +4484,8 @@ public class ClientModeImpl extends StateMachine {
                 case CMD_CONNECTING_WATCHDOG_TIMER: {
                     if (mConnectingWatchdogCount == message.arg1) {
                         if (mVerboseLoggingEnabled) log("Connecting watchdog! -> disconnect");
-                        handleNetworkDisconnect(false);
+                        handleNetworkDisconnect(false,
+                                WifiStatsLog.WIFI_DISCONNECT_REPORTED__FAILURE_CODE__CONNECTING_WATCHDOG_TIMER);
                         transitionTo(mDisconnectedState);
                     }
                     break;
@@ -4539,7 +4526,7 @@ public class ClientModeImpl extends StateMachine {
 
             // If this network was explicitly selected by the user, evaluate whether to inform
             // ConnectivityService of that fact so the system can treat it appropriately.
-            final WifiConfiguration config = getCurrentWifiConfiguration();
+            final WifiConfiguration config = getConnectedWifiConfigurationInternal();
 
             boolean explicitlySelected = false;
             if (shouldEvaluateWhetherToSendExplicitlySelected(config)) {
@@ -4568,7 +4555,7 @@ public class ClientModeImpl extends StateMachine {
                             explicitlySelected && config.noInternetAccessExpected)
                     .setPartialConnectivityAcceptable(config.noInternetAccessExpected)
                     .build();
-            final NetworkCapabilities nc = getCapabilities(getCurrentWifiConfiguration());
+            final NetworkCapabilities nc = getCapabilities(getConnectedWifiConfigurationInternal());
             // This should never happen.
             if (mNetworkAgent != null) {
                 Log.wtf(getTag(), "mNetworkAgent is not null: " + mNetworkAgent);
@@ -4641,13 +4628,13 @@ public class ClientModeImpl extends StateMachine {
                 case CMD_IPV4_PROVISIONING_FAILURE: {
                     handleIPv4Failure();
                     mWifiLastResortWatchdog.noteConnectionFailureAndTriggerIfNeeded(
-                            getTargetSsid(),
+                            getConnectingSsidInternal(),
                             (mLastBssid == null) ? mTargetBssid : mLastBssid,
                             WifiLastResortWatchdog.FAILURE_CODE_DHCP);
                     break;
                 }
                 case CMD_IP_CONFIGURATION_SUCCESSFUL: {
-                    if (getCurrentWifiConfiguration() == null) {
+                    if (getConnectedWifiConfigurationInternal() == null || mNetworkAgent == null) {
                         // The current config may have been removed while we were connecting,
                         // trigger a disconnect to clear up state.
                         reportConnectionAttemptEnd(
@@ -4671,7 +4658,7 @@ public class ClientModeImpl extends StateMachine {
                             WifiMetricsProto.ConnectionEvent.HLF_NONE,
                             WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN);
                     mWifiLastResortWatchdog.noteConnectionFailureAndTriggerIfNeeded(
-                            getTargetSsid(),
+                            getConnectingSsidInternal(),
                             (mLastBssid == null) ? mTargetBssid : mLastBssid,
                             WifiLastResortWatchdog.FAILURE_CODE_DHCP);
                     break;
@@ -4709,9 +4696,7 @@ public class ClientModeImpl extends StateMachine {
                     mLastNetworkId = message.arg1;
                     mWifiInfo.setNetworkId(mLastNetworkId);
                     mWifiInfo.setMacAddress(mWifiNative.getMacAddress(mInterfaceName));
-                    if (!mLastBssid.equals(message.obj)) {
-                        mLastBssid = (String) message.obj;
-                    }
+                    mLastBssid = (String) message.obj;
                     mIpReachabilityMonitorActive = true;
                     sendMessageDelayed(obtainMessage(CMD_IP_REACHABILITY_SESSION_END, 0, 0), 10000);
                     break;
@@ -4762,7 +4747,7 @@ public class ClientModeImpl extends StateMachine {
                     if (mLastBssid != null && (mWifiInfo.getBSSID() == null
                             || !mLastBssid.equals(mWifiInfo.getBSSID()))) {
                         mWifiInfo.setBSSID(mLastBssid);
-                        WifiConfiguration config = getCurrentWifiConfiguration();
+                        WifiConfiguration config = getConnectedWifiConfigurationInternal();
                         if (config != null) {
                             ScanDetailCache scanDetailCache = mWifiConfigManager
                                     .getScanDetailCacheForNetwork(config.networkId);
@@ -4795,11 +4780,12 @@ public class ClientModeImpl extends StateMachine {
                             && mLastNetworkId != WifiConfiguration.INVALID_NETWORK_ID) {
                         WifiConfiguration config =
                                 mWifiConfigManager.getConfiguredNetwork(mLastNetworkId);
-                        if ((message.arg1 == RESET_SIM_REASON_DEFAULT_DATA_SIM_CHANGED
+                        if (config != null
+                            && ((message.arg1 == RESET_SIM_REASON_DEFAULT_DATA_SIM_CHANGED
                                 && config.carrierId != TelephonyManager.UNKNOWN_CARRIER_ID)
                                 || (config.enterpriseConfig != null
                                 && config.enterpriseConfig.isAuthenticationSimBased()
-                                && !mWifiCarrierInfoManager.isSimPresent(mLastSubId))) {
+                                && !mWifiCarrierInfoManager.isSimPresent(mLastSubId)))) {
                             mWifiMetrics.logStaEvent(StaEvent.TYPE_FRAMEWORK_DISCONNECT,
                                     StaEvent.DISCONNECT_RESET_SIM_NETWORKS);
                             // remove local PMKSA cache in framework
@@ -4945,7 +4931,7 @@ public class ClientModeImpl extends StateMachine {
             // ignoring enable power save request sent in ObtainingIpState.
             mWifiNative.setPowerSave(mInterfaceName, false);
 
-            WifiConfiguration currentConfig = getCurrentWifiConfiguration();
+            WifiConfiguration currentConfig = getConnectedWifiConfigurationInternal();
             if (mIpClientWithPreConnection && mIpClient != null) {
                 mIpClient.notifyPreconnectionComplete(mSentHLPs);
                 mIpClientWithPreConnection = false;
@@ -4969,7 +4955,7 @@ public class ClientModeImpl extends StateMachine {
                             WifiMetricsProto.ConnectionEvent.HLF_NONE,
                             WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN);
                     mWifiLastResortWatchdog.noteConnectionFailureAndTriggerIfNeeded(
-                            getTargetSsid(),
+                            getConnectingSsidInternal(),
                             !isValidBssid(eventInfo.bssid)
                             ? mTargetBssid : eventInfo.bssid,
                             WifiLastResortWatchdog.FAILURE_CODE_DHCP);
@@ -5034,7 +5020,7 @@ public class ClientModeImpl extends StateMachine {
 
             switch (message.what) {
                 case CMD_IP_CONFIGURATION_LOST: {
-                    WifiConfiguration config = getCurrentWifiConfiguration();
+                    WifiConfiguration config = getConnectedWifiConfigurationInternal();
                     if (config != null) {
                         mWifiDiagnostics.triggerBugReportDataCapture(
                                 WifiDiagnostics.REPORT_REASON_AUTOROAM_FAILURE);
@@ -5067,7 +5053,8 @@ public class ClientModeImpl extends StateMachine {
                         }
                         if (isValidBssid(stateChangeResult.bssid)
                                 && stateChangeResult.bssid.equals(mTargetBssid)) {
-                            handleNetworkDisconnect(false);
+                            handleNetworkDisconnect(false,
+                                    WifiStatsLog.WIFI_DISCONNECT_REPORTED__FAILURE_CODE__SUPPLICANT_DISCONNECTED);
                             transitionTo(mDisconnectedState);
                         }
                     }
@@ -5084,9 +5071,11 @@ public class ClientModeImpl extends StateMachine {
                         mWifiMetrics.endConnectionEvent(
                                 WifiMetrics.ConnectionEvent.FAILURE_ROAM_TIMEOUT,
                                 WifiMetricsProto.ConnectionEvent.HLF_NONE,
-                                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN);
+                                WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN,
+                                mWifiInfo.getFrequency());
                         mRoamFailCount++;
-                        handleNetworkDisconnect(false);
+                        handleNetworkDisconnect(false,
+                                WifiStatsLog.WIFI_DISCONNECT_REPORTED__FAILURE_CODE__ROAM_WATCHDOG_TIMER);
                         mWifiMetrics.logStaEvent(StaEvent.TYPE_FRAMEWORK_DISCONNECT,
                                 StaEvent.DISCONNECT_ROAM_WATCHDOG_TIMER);
                         mWifiNative.disconnect(mInterfaceName);
@@ -5145,9 +5134,9 @@ public class ClientModeImpl extends StateMachine {
                                 + " target=" + target);
                     }
                     clearNetworkCachedDataIfNeeded(
-                            getTargetWifiConfiguration(), eventInfo.reasonCode);
+                            getConnectingWifiConfigurationInternal(), eventInfo.reasonCode);
                     if (eventInfo.bssid.equals(mTargetBssid)) {
-                        handleNetworkDisconnect(false);
+                        handleNetworkDisconnect(false, eventInfo.reasonCode);
                         transitionTo(mDisconnectedState);
                     }
                     break;
@@ -5182,14 +5171,13 @@ public class ClientModeImpl extends StateMachine {
                     WifiMetricsProto.ConnectionEvent.HLF_NONE,
                     WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN);
             mWifiConnectivityManager.handleConnectionStateChanged(
-                    mActiveModeManager,
+                    mClientModeManager,
                     WifiConnectivityManager.WIFI_STATE_CONNECTED);
 
             if (mIpReachabilityMonitorActive)
                 sendMessageDelayed(obtainMessage(CMD_IP_REACHABILITY_SESSION_END, 0, 0), 10000);
 
             registerConnected();
-            mLastConnectAttemptTimestamp = 0;
             mTargetWifiConfiguration = null;
             mWifiScoreReport.reset();
             mLastSignalLevel = -1;
@@ -5220,7 +5208,7 @@ public class ClientModeImpl extends StateMachine {
                         Log.d(getTag(), (message.arg1 == NETWORK_STATUS_UNWANTED_DISABLE_AUTOJOIN
                                 ? "NETWORK_STATUS_UNWANTED_DISABLE_AUTOJOIN"
                                 : "NETWORK_STATUS_UNWANTED_VALIDATION_FAILED"));
-                        WifiConfiguration config = getCurrentWifiConfiguration();
+                        WifiConfiguration config = getConnectedWifiConfigurationInternal();
                         if (config != null) {
                             // Disable autojoin
                             if (message.arg1 == NETWORK_STATUS_UNWANTED_DISABLE_AUTOJOIN) {
@@ -5264,7 +5252,7 @@ public class ClientModeImpl extends StateMachine {
                         mWifiScoreCard.noteValidationSuccess(mWifiInfo);
                         mBssidBlocklistMonitor.handleNetworkValidationSuccess(mLastBssid,
                                 mWifiInfo.getSSID());
-                        WifiConfiguration config = getCurrentWifiConfiguration();
+                        WifiConfiguration config = getConnectedWifiConfigurationInternal();
                         if (config != null) {
                             // re-enable autojoin
                             mWifiConfigManager.updateNetworkSelectionStatus(
@@ -5301,7 +5289,7 @@ public class ClientModeImpl extends StateMachine {
                                 mWifiInfo.getSSID(),
                                 BssidBlocklistMonitor.REASON_ABNORMAL_DISCONNECT, rssi);
                     }
-                    WifiConfiguration config = getCurrentWifiConfiguration();
+                    WifiConfiguration config = getConnectedWifiConfigurationInternal();
 
                     if (mVerboseLoggingEnabled) {
                         log("NETWORK_DISCONNECTION_EVENT in connected state"
@@ -5312,7 +5300,7 @@ public class ClientModeImpl extends StateMachine {
                                 + " Network Selection Status=" + (config == null ? "Unavailable"
                                 : config.getNetworkSelectionStatus().getNetworkStatusString()));
                     }
-                    handleNetworkDisconnect(false);
+                    handleNetworkDisconnect(false, eventInfo.reasonCode);
                     transitionTo(mDisconnectedState);
                     NotifyBroadcastNetworkDisconnection(message.arg1, message.arg2);
                     break;
@@ -5346,7 +5334,6 @@ public class ClientModeImpl extends StateMachine {
                     reportConnectionAttemptStart(config, mTargetBssid,
                             WifiMetricsProto.ConnectionEvent.ROAM_ENTERPRISE);
                     if (mWifiNative.roamToNetwork(mInterfaceName, config)) {
-                        mLastConnectAttemptTimestamp = mClock.getWallClockMillis();
                         mTargetWifiConfiguration = config;
                         mIsAutoRoaming = true;
                         mWifiMetrics.logStaEvent(StaEvent.TYPE_CMD_START_ROAM, config);
@@ -5377,9 +5364,10 @@ public class ClientModeImpl extends StateMachine {
                     }
                     break;
                 }
-                case CMD_IP_REACHABILITY_SESSION_END:
+                case CMD_IP_REACHABILITY_SESSION_END: {
                     mIpReachabilityMonitorActive = false;
                     break;
+                }
                 default: {
                     handleStatus = NOT_HANDLED;
                     break;
@@ -5397,7 +5385,7 @@ public class ClientModeImpl extends StateMachine {
         public void exit() {
             logd("ClientModeImpl: Leaving Connected state");
             mWifiConnectivityManager.handleConnectionStateChanged(
-                     mActiveModeManager,
+                    mClientModeManager,
                      WifiConnectivityManager.WIFI_STATE_TRANSITIONING);
 
             mWifiLastResortWatchdog.connectedStateTransition(false);
@@ -5429,7 +5417,7 @@ public class ClientModeImpl extends StateMachine {
             removeMessages(CMD_IP_REACHABILITY_SESSION_END);
 
             mWifiConnectivityManager.handleConnectionStateChanged(
-                    mActiveModeManager,
+                    mClientModeManager,
                     WifiConnectivityManager.WIFI_STATE_DISCONNECTED);
         }
 
@@ -5465,21 +5453,26 @@ public class ClientModeImpl extends StateMachine {
         @Override
         public void exit() {
             mWifiConnectivityManager.handleConnectionStateChanged(
-                     mActiveModeManager,
+                    mClientModeManager,
                      WifiConnectivityManager.WIFI_STATE_TRANSITIONING);
         }
     }
 
     void handleGsmAuthRequest(SimAuthRequestData requestData) {
+        WifiConfiguration requestingWifiConfiguration = null;
         if (mTargetWifiConfiguration != null
                 && mTargetWifiConfiguration.networkId
                 == requestData.networkId) {
+            requestingWifiConfiguration = mTargetWifiConfiguration;
             logd("id matches targetWifiConfiguration");
         } else if (mLastNetworkId != WifiConfiguration.INVALID_NETWORK_ID
                 && mLastNetworkId == requestData.networkId) {
+            requestingWifiConfiguration = getConnectedWifiConfigurationInternal();
             logd("id matches currentWifiConfiguration");
-        } else {
-            logd("id does not match targetWifiConfiguration");
+        }
+
+        if (requestingWifiConfiguration == null) {
+            logd("GsmAuthRequest received with null target/current WifiConfiguration.");
             return;
         }
 
@@ -5496,15 +5489,15 @@ public class ClientModeImpl extends StateMachine {
          *                            [SRES][Cipher Key Kc]
          */
         String response = mWifiCarrierInfoManager
-                .getGsmSimAuthResponse(requestData.data, mTargetWifiConfiguration);
+                .getGsmSimAuthResponse(requestData.data, requestingWifiConfiguration);
         if (response == null) {
             // In case of failure, issue may be due to sim type, retry as No.2 case
             response = mWifiCarrierInfoManager
-                    .getGsmSimpleSimAuthResponse(requestData.data, mTargetWifiConfiguration);
+                    .getGsmSimpleSimAuthResponse(requestData.data, requestingWifiConfiguration);
             if (response == null) {
                 // In case of failure, issue may be due to sim type, retry as No.3 case
                 response = mWifiCarrierInfoManager.getGsmSimpleSimNoLengthAuthResponse(
-                                requestData.data, mTargetWifiConfiguration);
+                                requestData.data, requestingWifiConfiguration);
             }
         }
         if (response == null || response.length() == 0) {
@@ -5517,20 +5510,25 @@ public class ClientModeImpl extends StateMachine {
     }
 
     void handle3GAuthRequest(SimAuthRequestData requestData) {
+        WifiConfiguration requestingWifiConfiguration = null;
         if (mTargetWifiConfiguration != null
                 && mTargetWifiConfiguration.networkId
                 == requestData.networkId) {
+            requestingWifiConfiguration = mTargetWifiConfiguration;
             logd("id matches targetWifiConfiguration");
         } else if (mLastNetworkId != WifiConfiguration.INVALID_NETWORK_ID
                 && mLastNetworkId == requestData.networkId) {
+            requestingWifiConfiguration = getConnectedWifiConfigurationInternal();
             logd("id matches currentWifiConfiguration");
-        } else {
-            logd("id does not match targetWifiConfiguration");
+        }
+
+        if (requestingWifiConfiguration == null) {
+            logd("3GAuthRequest received with null target/current WifiConfiguration.");
             return;
         }
 
         SimAuthResponseData response = mWifiCarrierInfoManager
-                .get3GAuthResponse(requestData, mTargetWifiConfiguration);
+                .get3GAuthResponse(requestData, requestingWifiConfiguration);
         if (response != null) {
             mWifiNative.simAuthResponse(
                     mInterfaceName, response.type, response.response);
@@ -5607,8 +5605,8 @@ public class ClientModeImpl extends StateMachine {
      * Gets the SSID from the WifiConfiguration pointed at by 'mTargetNetworkId'
      * This should match the network config framework is attempting to connect to.
      */
-    private String getTargetSsid() {
-        WifiConfiguration config = getTargetWifiConfiguration();
+    private String getConnectingSsidInternal() {
+        WifiConfiguration config = getConnectingWifiConfigurationInternal();
         return config != null ? config.SSID : null;
     }
 
@@ -5749,7 +5747,7 @@ public class ClientModeImpl extends StateMachine {
      * @return String representation of the factory MAC address.
      */
     public String getFactoryMacAddress() {
-        MacAddress macAddress = mWifiNative.getFactoryMacAddress(mInterfaceName);
+        MacAddress macAddress = mWifiNative.getStaFactoryMacAddress(mInterfaceName);
         if (macAddress != null) {
             return macAddress.toString();
         }
@@ -5821,18 +5819,22 @@ public class ClientModeImpl extends StateMachine {
 
 
         if ((frameData.mBssTmDataFlagsMask
-                & MboOceConstants.BTM_DATA_FLAG_MBO_ASSOC_RETRY_DELAY_INCLUDED)
-                != 0) {
-            long duration = frameData.mBlackListDurationMs;
-            mWifiMetrics.incrementSteeringRequestCountIncludingMboAssocRetryDelay();
+                & MboOceConstants.BTM_DATA_FLAG_DISASSOCIATION_IMMINENT) != 0) {
+            long duration = 0;
+            if ((frameData.mBssTmDataFlagsMask
+                    & MboOceConstants.BTM_DATA_FLAG_MBO_ASSOC_RETRY_DELAY_INCLUDED) != 0) {
+                mWifiMetrics.incrementSteeringRequestCountIncludingMboAssocRetryDelay();
+                duration = frameData.mBlockListDurationMs;
+            }
             if (duration == 0) {
                 /*
-                 * When MBO assoc retry delay is set to zero(reserved as per spec),
-                 * blacklist the BSS for sometime to avoid AP rejecting the re-connect request.
+                 * When disassoc imminent bit alone is set or MBO assoc retry delay is
+                 * set to zero(reserved as per spec), blocklist the BSS for sometime to
+                 * avoid AP rejecting the re-connect request.
                  */
-                duration = MboOceConstants.DEFAULT_BLACKLIST_DURATION_MS;
+                duration = MboOceConstants.DEFAULT_BLOCKLIST_DURATION_MS;
             }
-            // Blacklist the current BSS
+            // Blocklist the current BSS
             mBssidBlocklistMonitor.blockBssidForDurationMs(bssid, ssid, duration,
                     BssidBlocklistMonitor.REASON_FRAMEWORK_DISCONNECT_MBO_OCE, 0);
         }
@@ -5978,7 +5980,7 @@ public class ClientModeImpl extends StateMachine {
         }
 
         if (mWifiGlobals.isConnectedMacRandomizationEnabled()) {
-            if (config.macRandomizationSetting == WifiConfiguration.RANDOMIZATION_PERSISTENT) {
+            if (config.macRandomizationSetting != WifiConfiguration.RANDOMIZATION_NONE) {
                 configureRandomizedMacAddress(config);
             } else {
                 setCurrentMacToFactoryMac(config);
@@ -6015,7 +6017,7 @@ public class ClientModeImpl extends StateMachine {
                 (config.getIpAssignment() == IpConfiguration.IpAssignment.STATIC);
         final boolean isUsingMacRandomization =
                 config.macRandomizationSetting
-                        == WifiConfiguration.RANDOMIZATION_PERSISTENT
+                        != WifiConfiguration.RANDOMIZATION_NONE
                         && mWifiGlobals.isConnectedMacRandomizationEnabled();
         if (mVerboseLoggingEnabled) {
             final String key = config.getKey();
@@ -6027,7 +6029,7 @@ public class ClientModeImpl extends StateMachine {
                     + " isFilsConnection=" + isFilsConnection);
         }
 
-        final MacAddress currentBssid = getCurrentBssid();
+        final MacAddress currentBssid = getCurrentBssidInternalMacAddress();
         final String l2Key = mLastL2KeyAndGroupHint != null
                 ? mLastL2KeyAndGroupHint.first : null;
         final String groupHint = mLastL2KeyAndGroupHint != null
@@ -6135,6 +6137,26 @@ public class ClientModeImpl extends StateMachine {
         return true;
     }
 
+    @Override
+    public boolean setWifiConnectedNetworkScorer(IBinder binder,
+            IWifiConnectedNetworkScorer scorer) {
+        return mWifiScoreReport.setWifiConnectedNetworkScorer(binder, scorer);
+    }
+
+    @Override
+    public void clearWifiConnectedNetworkScorer() {
+        mWifiScoreReport.clearWifiConnectedNetworkScorer();
+    }
+
+    @Override
+    public void sendMessageToClientModeImpl(Message msg) {
+        sendMessage(msg);
+    }
+
+    @Override
+    public void dumpWifiScoreReport(FileDescriptor fd, PrintWriter pw, String[] args) {
+        mWifiScoreReport.dump(fd, pw, args);
+    }
     private void updateQcWifiGenerationInfo() {
         WifiGenerationStatus wifiGenerationStatus = getWifiGenerationStatus();
 
@@ -6142,7 +6164,7 @@ public class ClientModeImpl extends StateMachine {
             return;
 
         mWifiInfo.setVhtMax8SpatialStreamsSupport(wifiGenerationStatus.vhtMax8SpatialStreamsSupport);
-        WifiConfiguration config = getCurrentWifiConfiguration();
+        WifiConfiguration config = getConnectedWifiConfigurationInternal();
 
         if (config == null)
             return;

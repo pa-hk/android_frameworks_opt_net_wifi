@@ -21,6 +21,7 @@ import android.net.wifi.WifiConfiguration;
 import android.util.LocalLog;
 import android.util.Log;
 import android.util.Pair;
+import android.util.SparseArray;
 
 import com.android.server.wifi.WifiNetworkSuggestionsManager.ExtendedWifiNetworkSuggestion;
 import com.android.server.wifi.hotspot2.PasspointNetworkNominateHelper;
@@ -28,10 +29,10 @@ import com.android.server.wifi.hotspot2.PasspointNetworkNominateHelper;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -246,8 +247,9 @@ public class NetworkSuggestionNominator implements WifiNetworkSelector.NetworkNo
                 mLocalLog.log("Failed to add network suggestion");
                 continue;
             }
+            mWifiConfigManager.allowAutojoin(result.getNetworkId(), config.allowAutojoin);
             WifiConfiguration currentWCmConfiguredNetwork =
-                    mWifiConfigManager.getConfiguredNetwork(result.netId);
+                    mWifiConfigManager.getConfiguredNetwork(result.getNetworkId());
             // Try to enable network selection
             if (wCmConfiguredNetwork == null) {
                 if (!mWifiConfigManager.updateNetworkSelectionStatus(result.getNetworkId(),
@@ -276,6 +278,7 @@ public class NetworkSuggestionNominator implements WifiNetworkSelector.NetworkNo
             mLocalLog.log("Failed to add network suggestion");
             return null;
         }
+        mWifiConfigManager.allowAutojoin(result.getNetworkId(), wifiConfiguration.allowAutojoin);
         if (!mWifiConfigManager.updateNetworkSelectionStatus(result.getNetworkId(),
                 WifiConfiguration.NetworkSelectionStatus.DISABLED_NONE)) {
             mLocalLog.log("Failed to make network suggestion selectable");
@@ -353,7 +356,7 @@ public class NetworkSuggestionNominator implements WifiNetworkSelector.NetworkNo
     }
 
     private class MatchMetaInfo {
-        private Map<String, PerAppMatchMetaInfo> mAppInfos = new HashMap<>();
+        private SparseArray<PerAppMatchMetaInfo> mAppInfos = new SparseArray<>();
 
         /**
          * Add all the network suggestion & associated info.
@@ -364,10 +367,11 @@ public class NetworkSuggestionNominator implements WifiNetworkSelector.NetworkNo
             // Separate the suggestions into buckets for each app to allow sorting based on
             // priorities set by app.
             for (ExtendedWifiNetworkSuggestion wifiNetworkSuggestion : wifiNetworkSuggestions) {
-                PerAppMatchMetaInfo appInfo = mAppInfos.computeIfAbsent(
-                        wifiNetworkSuggestion.perAppInfo.packageName,
-                        k -> new PerAppMatchMetaInfo());
+                int key = Objects.hash(wifiNetworkSuggestion.perAppInfo.packageName,
+                        wifiNetworkSuggestion.wns.priorityGroup);
+                PerAppMatchMetaInfo appInfo = mAppInfos.get(key, new PerAppMatchMetaInfo());
                 appInfo.put(wifiNetworkSuggestion, wCmConfiguredNetwork, matchingScanDetail);
+                mAppInfos.put(key, appInfo);
             }
         }
 
@@ -375,7 +379,7 @@ public class NetworkSuggestionNominator implements WifiNetworkSelector.NetworkNo
          * Are there any matched candidates?
          */
         public boolean isEmpty() {
-            return mAppInfos.isEmpty();
+            return mAppInfos.size() == 0;
         }
 
         /**
@@ -384,9 +388,9 @@ public class NetworkSuggestionNominator implements WifiNetworkSelector.NetworkNo
          */
         public void findConnectableNetworksAndHighestPriority(
                 @NonNull OnConnectableListener onConnectableListener) {
-            for (PerAppMatchMetaInfo appInfo : mAppInfos.values()) {
+            for (int i = 0; i < mAppInfos.size(); i++) {
                 List<PerNetworkSuggestionMatchMetaInfo> matchedNetworkInfos =
-                        appInfo.getHighestPriorityNetworks();
+                        mAppInfos.valueAt(i).getHighestPriorityNetworks();
                 for (PerNetworkSuggestionMatchMetaInfo matchedNetworkInfo : matchedNetworkInfos) {
                     // if the network does not already exist in WifiConfigManager, add now.
                     if (matchedNetworkInfo.wCmConfiguredNetwork == null) {

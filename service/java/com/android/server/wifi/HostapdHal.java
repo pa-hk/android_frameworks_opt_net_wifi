@@ -15,7 +15,6 @@
  */
 package com.android.server.wifi;
 
-
 import android.annotation.NonNull;
 import android.content.Context;
 import android.hardware.wifi.hostapd.V1_0.HostapdStatus;
@@ -23,11 +22,15 @@ import android.hardware.wifi.hostapd.V1_0.HostapdStatusCode;
 import android.hardware.wifi.hostapd.V1_0.IHostapd;
 import android.hardware.wifi.hostapd.V1_2.DebugLevel;
 import android.hardware.wifi.hostapd.V1_2.Ieee80211ReasonCode;
+import android.hardware.wifi.hostapd.V1_3.Bandwidth;
+import android.hardware.wifi.hostapd.V1_3.Generation;
 import android.hidl.manager.V1_0.IServiceManager;
 import android.hidl.manager.V1_0.IServiceNotification;
 import android.net.MacAddress;
+import android.net.wifi.ScanResult;
 import android.net.wifi.SoftApConfiguration;
 import android.net.wifi.SoftApConfiguration.BandType;
+import android.net.wifi.SoftApInfo;
 import android.net.wifi.WifiManager;
 import android.net.wifi.nl80211.NativeWifiClient;
 import android.os.Handler;
@@ -38,6 +41,7 @@ import android.util.Log;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.server.wifi.WifiNative.HostapdDeathEventHandler;
+import com.android.server.wifi.WifiNative.SoftApListener;
 import com.android.server.wifi.util.ApConfigUtil;
 import com.android.server.wifi.util.NativeUtil;
 import com.android.server.wifi.WifiNative.SoftApListener;
@@ -76,15 +80,13 @@ public class HostapdHal {
     private boolean mForceApChannel = false;
     private int mForcedApBand;
     private int mForcedApChannel;
-    private String mConfig2gChannelList;
-    private String mConfig5gChannelList;
-    private String mConfig6gChannelList;
 
     // Hostapd HAL interface objects
     private IServiceManager mIServiceManager = null;
     private IHostapd mIHostapd;
     private IHostapdVendor mIHostapdVendor;
     private HashMap<String, Runnable> mSoftApFailureListeners = new HashMap<>();
+    private SoftApListener mSoftApEventListener;
     private HostapdDeathEventHandler mDeathEventHandler;
     private ServiceManagerDeathRecipient mServiceManagerDeathRecipient;
     private HostapdDeathRecipient mHostapdDeathRecipient;
@@ -184,6 +186,16 @@ public class HostapdHal {
     private boolean isV1_2() {
         return checkHalVersionByInterfaceName(
                 android.hardware.wifi.hostapd.V1_2.IHostapd.kInterfaceName);
+    }
+
+    /**
+     * Uses the IServiceManager to check if the device is running V1_3 of the HAL from the VINTF for
+     * the device.
+     * @return true if supported, false otherwise.
+     */
+    private boolean isV1_3() {
+        return checkHalVersionByInterfaceName(
+                android.hardware.wifi.hostapd.V1_3.IHostapd.kInterfaceName);
     }
 
     private boolean checkHalVersionByInterfaceName(String interfaceName) {
@@ -314,6 +326,23 @@ public class HostapdHal {
         }
     }
 
+    private boolean registerCallback_1_3(
+            android.hardware.wifi.hostapd.V1_3.IHostapdCallback callback) {
+        synchronized (mLock) {
+            String methodStr = "registerCallback_1_3";
+            try {
+                android.hardware.wifi.hostapd.V1_3.IHostapd iHostapdV1_3 = getHostapdMockableV1_3();
+                if (iHostapdV1_3 == null) return false;
+                android.hardware.wifi.hostapd.V1_2.HostapdStatus status =
+                        iHostapdV1_3.registerCallback_1_3(callback);
+                return checkStatusAndLogFailure12(status, methodStr);
+            } catch (RemoteException e) {
+                handleRemoteException(e, methodStr);
+                return false;
+            }
+        }
+    }
+
     /**
      * Initialize the IHostapd object.
      * @return true on success, false otherwise.
@@ -339,7 +368,13 @@ public class HostapdHal {
                 return false;
             }
             // Register for callbacks for 1.1 hostapd.
-            if (isV1_1() && !registerCallback(new HostapdCallback())) {
+            if (isV1_3()) {
+                if (!registerCallback_1_3(new HostapdCallback_1_3())) {
+                    Log.e(TAG, "Fail to regiester Callback 1_3, Stopping hostapd HIDL startup");
+                    mIHostapd = null;
+                    return false;
+                }
+            } else if (isV1_1() && !registerCallback(new HostapdCallback())) {
                 Log.e(TAG, "Fail to regiester Callback, Stopping hostapd HIDL startup");
                 mIHostapd = null;
                 return false;
@@ -373,60 +408,30 @@ public class HostapdHal {
         mForceApChannel = false;
     }
 
-    private boolean isSendFreqRangesNeeded(@BandType int band) {
-        // Fist we check if one of the selected bands has restrictions in the overlay file.
-        // Note,
-        //   - We store the config string here for future use, hence we need to check all bands.
-        //   - If there is no OEM restriction, we store the full band
-        boolean retVal = false;
-        if ((band & SoftApConfiguration.BAND_2GHZ) != 0) {
-            mConfig2gChannelList =
-                mContext.getResources().getString(R.string.config_wifiSoftap2gChannelList);
-            if (TextUtils.isEmpty(mConfig2gChannelList)) {
-                mConfig2gChannelList = "1-14";
-            } else {
-                retVal = true;
-            }
+    /**
+     * Register the provided callback handler for SoftAp events.
+     * <p>
+     * Note that only one callback can be registered at a time - any registration overrides previous
+     * registrations.
+     *
+     * @param ifaceName Name of the interface.
+     * @param listener Callback listener for AP events.
+     * @return true on success, false on failure.
+     */
+    public boolean registerApCallback(@NonNull String ifaceName,
+            @NonNull SoftApListener listener) {
+        if (listener == null) {
+            Log.e(TAG, "registerApCallback called with a null callback");
+            return false;
         }
 
-        if ((band & SoftApConfiguration.BAND_5GHZ) != 0) {
-            mConfig5gChannelList =
-                mContext.getResources().getString(R.string.config_wifiSoftap5gChannelList);
-            if (TextUtils.isEmpty(mConfig5gChannelList)) {
-                mConfig5gChannelList = "34-173";
-            } else {
-                retVal = true;
-            }
+        if (!isV1_3()) {
+            Log.d(TAG, "The current HAL doesn't support event callback.");
+            return false;
         }
-
-        if ((band & SoftApConfiguration.BAND_6GHZ) != 0) {
-            mConfig6gChannelList =
-                mContext.getResources().getString(R.string.config_wifiSoftap6gChannelList);
-            if (TextUtils.isEmpty(mConfig6gChannelList)) {
-                mConfig6gChannelList = "1-254";
-            } else {
-                retVal = true;
-            }
-        }
-
-        // If any of the selected band has restriction in the overlay file, we return true.
-        if (retVal) {
-            return true;
-        }
-
-        // Next, if only one of 5G or 6G is selected, then we need freqList to separate them
-        // Since there is no other way.
-        if (((band & SoftApConfiguration.BAND_5GHZ) != 0)
-                && ((band & SoftApConfiguration.BAND_6GHZ) == 0)) {
-            return true;
-        }
-        if (((band & SoftApConfiguration.BAND_5GHZ) == 0)
-                && ((band & SoftApConfiguration.BAND_6GHZ) != 0)) {
-            return true;
-        }
-
-        // In all other cases, we don't need to set the freqList
-        return false;
+        mSoftApEventListener = listener;
+        Log.i(TAG, "registerApCallback Successful in " + ifaceName);
+        return true;
     }
 
     /**
@@ -527,7 +532,7 @@ public class HostapdHal {
 
                         // Prepare freq ranges/lists if needed
                         if (ifaceParams.channelParams.enableAcs
-                                && isSendFreqRangesNeeded(band)) {
+                                && ApConfigUtil.isSendFreqRangesNeeded(band, mContext)) {
                             if ((band & SoftApConfiguration.BAND_2GHZ) != 0) {
                                 ifaceParams1_2.channelParams.acsChannelFreqRangesMhz.addAll(
                                         toAcsFreqRanges(SoftApConfiguration.BAND_2GHZ));
@@ -580,6 +585,7 @@ public class HostapdHal {
                     return false;
                 }
                 mSoftApFailureListeners.remove(ifaceName);
+                mSoftApEventListener = null;
                 return true;
             } catch (RemoteException e) {
                 handleRemoteException(e, methodStr);
@@ -826,6 +832,19 @@ public class HostapdHal {
         }
     }
 
+    @VisibleForTesting
+    protected android.hardware.wifi.hostapd.V1_3.IHostapd getHostapdMockableV1_3()
+            throws RemoteException {
+        synchronized (mLock) {
+            try {
+                return android.hardware.wifi.hostapd.V1_3.IHostapd.castFrom(mIHostapd);
+            } catch (NoSuchElementException e) {
+                Log.e(TAG, "Failed to get IHostapd", e);
+                return null;
+            }
+        }
+    }
+
     private android.hardware.wifi.hostapd.V1_2.IHostapd.NetworkParams
             prepareNetworkParams(SoftApConfiguration config) {
         android.hardware.wifi.hostapd.V1_2.IHostapd.NetworkParams nwParamsV1_2 =
@@ -998,13 +1017,25 @@ public class HostapdHal {
         String channelListStr;
         switch (band) {
             case SoftApConfiguration.BAND_2GHZ:
-                channelListStr = mConfig2gChannelList;
+                channelListStr = mContext.getResources().getString(
+                        R.string.config_wifiSoftap2gChannelList);
+                if (TextUtils.isEmpty(channelListStr)) {
+                    channelListStr = "1-14";
+                }
                 break;
             case SoftApConfiguration.BAND_5GHZ:
-                channelListStr = mConfig5gChannelList;
+                channelListStr = mContext.getResources().getString(
+                        R.string.config_wifiSoftap5gChannelList);
+                if (TextUtils.isEmpty(channelListStr)) {
+                    channelListStr = "34-173";
+                }
                 break;
             case SoftApConfiguration.BAND_6GHZ:
-                channelListStr = mConfig6gChannelList;
+                channelListStr = mContext.getResources().getString(
+                        R.string.config_wifiSoftap6gChannelList);
+                if (TextUtils.isEmpty(channelListStr)) {
+                    channelListStr = "1-254";
+                }
                 break;
             default:
                 return acsFrequencyRanges;
@@ -1317,7 +1348,7 @@ public class HostapdHal {
 
                         // Prepare freq ranges/lists if needed
                         if (ifaceParams.channelParams.enableAcs
-                                && isSendFreqRangesNeeded(band)) {
+                                && ApConfigUtil.isSendFreqRangesNeeded(band, mContext)) {
                             if ((band & SoftApConfiguration.BAND_2GHZ) != 0) {
                                 vendorIfaceParams1_2.channelParams.acsChannelFreqRangesMhz.addAll(
                                         toVendorAcsFreqRanges(SoftApConfiguration.BAND_2GHZ));
@@ -1504,25 +1535,27 @@ public class HostapdHal {
 
     private class HostapdVendorIfaceHalCallback extends IHostapdVendorIfaceCallback.Stub {
         private SoftApListener mSoftApListener;
+        private String mIfaceName;
 
         HostapdVendorIfaceHalCallback(@NonNull String ifaceName, SoftApListener listener) {
+           mIfaceName = ifaceName;
            mSoftApListener = listener;
         }
 
         @Override
         public void onStaConnected(byte[/* 6 */] bssid) {
             if (bssid == null) return;
-            NativeWifiClient client = new NativeWifiClient(MacAddress.fromBytes(bssid));
-            Log.d(TAG, "Client " + client.getMacAddress() + " connected.");
-            mSoftApListener.onConnectedClientsChanged(client, true);
+            MacAddress macAddress = MacAddress.fromBytes(bssid);
+            Log.d(TAG, "Client " + macAddress + " connected.");
+            mSoftApListener.onConnectedClientsChanged(mIfaceName, macAddress, true);
         }
 
         @Override
         public void onStaDisconnected(byte[/* 6 */] bssid) {
             if (bssid == null) return;
-            NativeWifiClient client = new NativeWifiClient(MacAddress.fromBytes(bssid));
-            Log.d(TAG, "Client " + client.getMacAddress() + " disconnected.");
-            mSoftApListener.onConnectedClientsChanged(client, false);
+            MacAddress macAddress = MacAddress.fromBytes(bssid);
+            Log.d(TAG, "Client " + macAddress + " disconnected.");
+            mSoftApListener.onConnectedClientsChanged(mIfaceName, macAddress, false);
         }
     }
 
@@ -1545,25 +1578,27 @@ public class HostapdHal {
     private class HostapdVendorIfaceHalCallbackV1_1 extends
             vendor.qti.hardware.wifi.hostapd.V1_1.IHostapdVendorIfaceCallback.Stub {
         private SoftApListener mSoftApListener;
+        private String mIfaceName;
 
         HostapdVendorIfaceHalCallbackV1_1(@NonNull String ifaceName, SoftApListener listener) {
+           mIfaceName = ifaceName;
            mSoftApListener = listener;
         }
 
         @Override
         public void onStaConnected(byte[/* 6 */] bssid) {
             if (bssid == null) return;
-            NativeWifiClient client = new NativeWifiClient(MacAddress.fromBytes(bssid));
-            Log.d(TAG, "Client " + client.getMacAddress() + " connected.");
-            mSoftApListener.onConnectedClientsChanged(client, true);
+            MacAddress macAddress = MacAddress.fromBytes(bssid);
+            Log.d(TAG, "Client " + macAddress + " connected.");
+            mSoftApListener.onConnectedClientsChanged(mIfaceName, macAddress, true);
         }
 
         @Override
         public void onStaDisconnected(byte[/* 6 */] bssid) {
             if (bssid == null) return;
-            NativeWifiClient client = new NativeWifiClient(MacAddress.fromBytes(bssid));
-            Log.d(TAG, "Client " + client.getMacAddress() + " disconnected.");
-            mSoftApListener.onConnectedClientsChanged(client, false);
+            MacAddress macAddress = MacAddress.fromBytes(bssid);
+            Log.d(TAG, "Client " + macAddress + " disconnected.");
+            mSoftApListener.onConnectedClientsChanged(mIfaceName, macAddress, false);
         }
         @Override
         public void onFailure(String ifaceName) {
@@ -1590,6 +1625,97 @@ public class HostapdHal {
         }
     }
 
+
+    /**
+     * Map hal bandwidth to SoftApInfo.
+     *
+     * @param bandwidth The channel bandwidth of the AP which is defined in the HAL.
+     * @return The channel bandwidth in the SoftApinfo.
+     */
+    @VisibleForTesting
+    public int mapHalBandwidthToSoftApInfo(int bandwidth) {
+        switch (bandwidth) {
+            case Bandwidth.WIFI_BANDWIDTH_20_NOHT:
+                return SoftApInfo.CHANNEL_WIDTH_20MHZ_NOHT;
+            case Bandwidth.WIFI_BANDWIDTH_20:
+                return SoftApInfo.CHANNEL_WIDTH_20MHZ;
+            case Bandwidth.WIFI_BANDWIDTH_40:
+                return SoftApInfo.CHANNEL_WIDTH_40MHZ;
+            case Bandwidth.WIFI_BANDWIDTH_80:
+                return SoftApInfo.CHANNEL_WIDTH_80MHZ;
+            case Bandwidth.WIFI_BANDWIDTH_80P80:
+                return SoftApInfo.CHANNEL_WIDTH_80MHZ_PLUS_MHZ;
+            case Bandwidth.WIFI_BANDWIDTH_160:
+                return SoftApInfo.CHANNEL_WIDTH_160MHZ;
+            default:
+                return SoftApInfo.CHANNEL_WIDTH_INVALID;
+        }
+    }
+
+    /**
+     * Map hal generation to wifi standard.
+     *
+     * @param generation The operation mode of the AP which is defined in HAL.
+     * @return The wifi standard in the ScanResult.
+     */
+    @VisibleForTesting
+    public int mapHalGenerationToWifiStandard(int generation) {
+        switch (generation) {
+            case Generation.WIFI_STANDARD_LEGACY:
+                return ScanResult.WIFI_STANDARD_LEGACY;
+            case Generation.WIFI_STANDARD_11N:
+                return ScanResult.WIFI_STANDARD_11N;
+            case Generation.WIFI_STANDARD_11AC:
+                return ScanResult.WIFI_STANDARD_11AC;
+            case Generation.WIFI_STANDARD_11AX:
+                return ScanResult.WIFI_STANDARD_11AX;
+            default:
+                return ScanResult.WIFI_STANDARD_UNKNOWN;
+        }
+    }
+
+    private class HostapdCallback_1_3 extends
+            android.hardware.wifi.hostapd.V1_3.IHostapdCallback.Stub {
+        @Override
+        public void onFailure(String ifaceName) {
+            Log.w(TAG, "Failure on iface " + ifaceName);
+            Runnable onFailureListener = mSoftApFailureListeners.get(ifaceName);
+            if (onFailureListener != null) {
+                onFailureListener.run();
+            }
+        }
+
+        @Override
+        public void onApInstanceInfoChanged(String ifaceName, String apIfaceInstance,
+                int frequency, int bandwidth, int generation, byte[] apIfaceInstanceMacAddress) {
+            try {
+                if (mSoftApEventListener != null) {
+                    mSoftApEventListener.onInfoChanged(apIfaceInstance, frequency,
+                            mapHalBandwidthToSoftApInfo(bandwidth),
+                            mapHalGenerationToWifiStandard(generation),
+                            MacAddress.fromBytes(apIfaceInstanceMacAddress));
+                }
+            } catch (IllegalArgumentException iae) {
+                Log.e(TAG, " Invalid apIfaceInstanceMacAddress, " + iae);
+            }
+        }
+
+        @Override
+        public void onConnectedClientsChanged(String ifaceName, String apIfaceInstance,
+                    byte[] clientAddress, boolean isConnected) {
+            try {
+                Log.d(TAG, "onConnectedClientsChanged on " + ifaceName + " / " + apIfaceInstance
+                        + " and Mac is " + MacAddress.fromBytes(clientAddress).toString()
+                        + " isConnected: " + isConnected);
+                if (mSoftApEventListener != null) {
+                    mSoftApEventListener.onConnectedClientsChanged(apIfaceInstance,
+                            MacAddress.fromBytes(clientAddress), isConnected);
+                }
+            } catch (IllegalArgumentException iae) {
+                Log.e(TAG, " Invalid clientAddress, " + iae);
+            }
+        }
+    }
 
     /**
      * Set the debug log level for hostapd.
