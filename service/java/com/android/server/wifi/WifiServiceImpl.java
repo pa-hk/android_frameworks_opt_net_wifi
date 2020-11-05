@@ -85,6 +85,7 @@ import android.net.wifi.hotspot2.OsuProvider;
 import android.net.wifi.hotspot2.PasspointConfiguration;
 import android.net.wifi.WifiDppConfig;
 import android.net.wifi.SupplicantState;
+import android.net.wifi.util.SdkLevelUtil;
 import android.os.AsyncTask;
 import android.os.Binder;
 import android.os.Build;
@@ -368,7 +369,7 @@ public class WifiServiceImpl extends BaseWifiService {
                                     TelephonyManager.SIM_STATE_UNKNOWN);
                             if (TelephonyManager.SIM_STATE_ABSENT == state) {
                                 Log.d(TAG, "resetting networks because SIM was removed");
-                                resetSimAuthNetworks(RESET_SIM_REASON_SIM_REMOVED);
+                                resetCarrierNetworks(RESET_SIM_REASON_SIM_REMOVED);
                             }
                         }
                     },
@@ -382,7 +383,7 @@ public class WifiServiceImpl extends BaseWifiService {
                                     TelephonyManager.SIM_STATE_UNKNOWN);
                             if (TelephonyManager.SIM_STATE_LOADED == state) {
                                 Log.d(TAG, "resetting networks because SIM was loaded");
-                                resetSimAuthNetworks(RESET_SIM_REASON_SIM_INSERTED);
+                                resetCarrierNetworks(RESET_SIM_REASON_SIM_INSERTED);
                             }
                         }
                     },
@@ -397,7 +398,7 @@ public class WifiServiceImpl extends BaseWifiService {
                                     SubscriptionManager.INVALID_SUBSCRIPTION_ID);
                             if (subId != mLastSubId) {
                                 Log.d(TAG, "resetting networks as default data SIM is changed");
-                                resetSimAuthNetworks(RESET_SIM_REASON_DEFAULT_DATA_SIM_CHANGED);
+                                resetCarrierNetworks(RESET_SIM_REASON_DEFAULT_DATA_SIM_CHANGED);
                                 mLastSubId = subId;
                             }
                         }
@@ -425,24 +426,28 @@ public class WifiServiceImpl extends BaseWifiService {
 
             mActiveModeWarden.start();
             registerForCarrierConfigChange();
+            mWifiInjector.getAdaptiveConnectivityEnabledSettingObserver().initialize();
             mIsControllerStarted = true;
         });
     }
 
-    private void resetSimAuthNetworks(@ClientModeImpl.ResetSimReason int resetReason) {
+    private void resetCarrierNetworks(@ClientModeImpl.ResetSimReason int resetReason) {
         mWifiThreadRunner.post(() -> {
-            Log.d(TAG, "resetting EAP-SIM/AKA/AKA' networks since SIM was changed");
+            Log.d(TAG, "resetting carrier networks since SIM was changed");
             if (resetReason == RESET_SIM_REASON_SIM_INSERTED) {
                 // whenever a SIM is inserted clear all SIM related notifications
                 mSimRequiredNotifier.dismissSimRequiredNotification();
             } else {
                 mWifiConfigManager.resetSimNetworks();
             }
-            if (resetReason != RESET_SIM_REASON_DEFAULT_DATA_SIM_CHANGED) {
-                mWifiNetworkSuggestionsManager.resetCarrierPrivilegedApps();
-            }
+
             // do additional handling if we are current connected to a sim auth network
             mActiveModeWarden.getPrimaryClientModeManager().resetSimAuthNetworks(resetReason);
+            mWifiNetworkSuggestionsManager.resetCarrierPrivilegedApps();
+            if (resetReason != RESET_SIM_REASON_SIM_INSERTED) {
+                // Remove all ephemeral carrier networks keep subscriptionId update with SIM changes
+                mWifiConfigManager.removeEphemeralCarrierNetworks();
+            }
         });
     }
 
@@ -497,6 +502,7 @@ public class WifiServiceImpl extends BaseWifiService {
                     mWifiInjector.getPasspointProvisionerHandlerThread().getLooper());
             mWifiInjector.getWifiNetworkFactory().register();
             mWifiInjector.getUntrustedWifiNetworkFactory().register();
+            mWifiInjector.getOemPaidWifiNetworkFactory().register();
             mWifiInjector.getWifiP2pConnection().handleBootCompleted();
             mTetheredSoftApTracker.handleBootCompleted();
         });
@@ -1074,7 +1080,8 @@ public class WifiServiceImpl extends BaseWifiService {
         // null wifiConfig is a meaningful input for CMD_SET_AP; it means to use the persistent
         // AP config.
         if (softApConfig != null
-                && (!WifiApConfigStore.validateApWifiConfiguration(softApConfig, privileged)
+                && (!WifiApConfigStore.validateApWifiConfiguration(
+                    softApConfig, privileged, mContext)
                     || !validateSoftApBand(softApConfig.getBand()))) {
             Log.e(TAG, "Invalid SoftApConfiguration");
             return false;
@@ -1892,6 +1899,7 @@ public class WifiServiceImpl extends BaseWifiService {
 
         mLog.info("start uid=% pid=%").c(uid).c(pid).flush();
 
+        WorkSource requestorWs;
         // Permission requirements are different with/without custom config.
         if (customConfig == null) {
             if (enforceChangePermission(packageName) != MODE_ALLOWED) {
@@ -1907,10 +1915,23 @@ public class WifiServiceImpl extends BaseWifiService {
             } finally {
                 Binder.restoreCallingIdentity(ident);
             }
+            // TODO(b/162344695): Exception added for LOHS. This exception is need to avoid breaking
+            // existing LOHS behavior: LOHS AP iface is allowed to delete STA iface (even if LOHS
+            // app has lower priority than user toggled on STA iface). This does not
+            // fit in with the new context based concurrency priority in HalDeviceManager, but we
+            // cannot break existing API's. So, we artificially boost the priority of the
+            // request by "faking" the requestor context as settings app.
+            // We probably need some UI dialog to allow the user to grant the app's LOHS request.
+            // Once that UI dialog is added, we can get rid of this hack and use the UI to elevate
+            // the priority of LOHS request only if user approves the request to toggle wifi off for
+            // LOHS.
+            requestorWs = mFrameworkFacade.getSettingsWorkSource(mContext);
         } else {
             if (!isSettingsOrSuw(Binder.getCallingPid(), Binder.getCallingUid())) {
                 throw new SecurityException(TAG + ": Permission denied");
             }
+            // Already privileged, no need to fake.
+            requestorWs = new WorkSource(uid, packageName);
         }
 
         // verify that tethering is not disabled
@@ -1930,7 +1951,6 @@ public class WifiServiceImpl extends BaseWifiService {
             Binder.restoreCallingIdentity(ident);
         }
 
-        WorkSource requestorWs = new WorkSource(uid, packageName);
         // check if we are currently tethering
         if (!mActiveModeWarden.canRequestMoreSoftApManagers(requestorWs)
                 && mTetheredSoftApTracker.getState() == WIFI_AP_STATE_ENABLED) {
@@ -2075,7 +2095,7 @@ public class WifiServiceImpl extends BaseWifiService {
         SoftApConfiguration softApConfig = ApConfigUtil.fromWifiConfiguration(wifiConfig);
         if (softApConfig == null) return false;
         if (WifiApConfigStore.validateApWifiConfiguration(
-                softApConfig, false)) {
+                softApConfig, false, mContext)) {
             mWifiThreadRunner.post(() -> mWifiApConfigStore.setApConfiguration(softApConfig));
             return true;
         } else {
@@ -2103,7 +2123,7 @@ public class WifiServiceImpl extends BaseWifiService {
         }
         mLog.info("setSoftApConfiguration uid=%").c(uid).flush();
         if (softApConfig == null) return false;
-        if (WifiApConfigStore.validateApWifiConfiguration(softApConfig, privileged)) {
+        if (WifiApConfigStore.validateApWifiConfiguration(softApConfig, privileged, mContext)) {
             mActiveModeWarden.updateSoftApConfiguration(softApConfig);
             mWifiThreadRunner.post(() -> mWifiApConfigStore.setApConfiguration(softApConfig));
             return true;
@@ -2275,24 +2295,11 @@ public class WifiServiceImpl extends BaseWifiService {
         }
 
         final long rxIdleTimeMillis = stats.on_time - stats.tx_time - stats.rx_time;
-        final long[] txTimePerLevelMillis;
-        if (stats.tx_time_per_level == null) {
-            // This will happen if the HAL get link layer API returned null.
-            txTimePerLevelMillis = new long[0];
-        } else {
-            // need to manually copy since we are converting an int[] to a long[]
-            txTimePerLevelMillis = new long[stats.tx_time_per_level.length];
-            for (int i = 0; i < txTimePerLevelMillis.length; i++) {
-                txTimePerLevelMillis[i] = stats.tx_time_per_level[i];
-                // TODO(b/27227497): Need to read the power consumed per level from config
-            }
-        }
         if (VDBG || rxIdleTimeMillis < 0 || stats.on_time < 0 || stats.tx_time < 0
                 || stats.rx_time < 0 || stats.on_time_scan < 0) {
             Log.d(TAG, " getWifiActivityEnergyInfo: "
                     + " on_time_millis=" + stats.on_time
                     + " tx_time_millis=" + stats.tx_time
-                    + " tx_time_per_level_millis=" + Arrays.toString(txTimePerLevelMillis)
                     + " rx_time_millis=" + stats.rx_time
                     + " rxIdleTimeMillis=" + rxIdleTimeMillis
                     + " scan_time_millis=" + stats.on_time_scan);
@@ -2740,7 +2747,7 @@ public class WifiServiceImpl extends BaseWifiService {
         enforceNetworkSettingsPermission();
 
         int callingUid = Binder.getCallingUid();
-        mLog.info("allowAutojoin=% uid=%").c(choice).c(callingUid).flush();
+        mLog.info("allowAutojoinGlobal=% uid=%").c(choice).c(callingUid).flush();
 
         mWifiThreadRunner.post(() -> mWifiConnectivityManager.setAutoJoinEnabledExternal(choice));
     }
@@ -3133,7 +3140,7 @@ public class WifiServiceImpl extends BaseWifiService {
 
     @Override
     public boolean is60GHzBandSupported() {
-        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.R) {
+        if (!SdkLevelUtil.isAtLeastS()) {
             throw new UnsupportedOperationException();
         }
 
@@ -3484,6 +3491,7 @@ public class WifiServiceImpl extends BaseWifiService {
             mCountryCode.dump(fd, pw, args);
             mWifiInjector.getWifiNetworkFactory().dump(fd, pw, args);
             mWifiInjector.getUntrustedWifiNetworkFactory().dump(fd, pw, args);
+            mWifiInjector.getOemPaidWifiNetworkFactory().dump(fd, pw, args);
             pw.println("Wlan Wake Reasons:" + mWifiNative.getWlanWakeReasonCount());
             pw.println();
             mWifiConfigManager.dump(fd, pw, args);
@@ -3497,8 +3505,9 @@ public class WifiServiceImpl extends BaseWifiService {
             mWifiHealthMonitor.dump(fd, pw, args);
             mWifiInjector.getWakeupController().dump(fd, pw, args);
             mWifiInjector.getWifiLastResortWatchdog().dump(fd, pw, args);
+            mWifiInjector.getAdaptiveConnectivityEnabledSettingObserver().dump(fd, pw, args);
+            mWifiInjector.getWifiGlobals().dump(fd, pw, args);
             pw.println();
-
         }
     }
 
@@ -3927,11 +3936,19 @@ public class WifiServiceImpl extends BaseWifiService {
             // no corresponding flags in vendor HAL, set if overlay enables it.
             supportedFeatureSet |= WifiManager.WIFI_FEATURE_AP_RAND_MAC;
         }
-        if (mWifiThreadRunner.call(
-                () -> mActiveModeWarden.isStaApConcurrencySupported(),
-                false)) {
-            supportedFeatureSet |= WifiManager.WIFI_FEATURE_AP_STA;
-        }
+        supportedFeatureSet |= mWifiThreadRunner.call(
+                () -> {
+                    long concurrencyFeatureSet = 0L;
+                    if (mActiveModeWarden.isStaApConcurrencySupported()) {
+                        concurrencyFeatureSet |= WifiManager.WIFI_FEATURE_AP_STA;
+                    }
+                    // New feature flag in S.
+                    if (SdkLevelUtil.isAtLeastS()
+                            && mActiveModeWarden.isStaStaConcurrencySupported()) {
+                        concurrencyFeatureSet |= WifiManager.WIFI_FEATURE_ADDITIONAL_STA;
+                    }
+                    return concurrencyFeatureSet;
+                }, 0L);
         return supportedFeatureSet;
     }
 
@@ -4484,8 +4501,11 @@ public class WifiServiceImpl extends BaseWifiService {
                     .flush();
         }
         // Post operation to handler thread
-        mWifiThreadRunner.post(() ->
-                mWifiMetrics.incrementWifiUsabilityScoreCount(seqNum, score, predictionHorizonSec));
+        mWifiThreadRunner.post(() -> {
+            String ifaceName = mActiveModeWarden.getPrimaryClientModeManager().getInterfaceName();
+            mWifiMetrics.incrementWifiUsabilityScoreCount(
+                    ifaceName, seqNum, score, predictionHorizonSec);
+        });
     }
 
     /**

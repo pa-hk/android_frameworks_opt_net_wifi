@@ -94,6 +94,7 @@ public class WifiNative {
     private final WifiInjector mWifiInjector;
     private NetdWrapper mNetdWrapper;
     private boolean mVerboseLoggingEnabled = false;
+    private boolean mIsEnhancedOpenSupported = false;
 
     public WifiNative(WifiVendorHal vendorHal,
                       SupplicantStaIfaceHal staIfaceHal, HostapdHal hostapdHal,
@@ -683,8 +684,12 @@ public class WifiNative {
             } else if (iface.type == Iface.IFACE_TYPE_BRIDGE) {
                 onBridgeInterfaceDestroyed(iface);
             }
-            // Invoke the external callback.
-            iface.externalListener.onDestroyed(iface.name);
+            // Invoke the external callback only if the iface was not destroyed because of vendor
+            // HAL crash. In case of vendor HAL crash, let the crash recovery destroy the mode
+            // managers.
+            if (mWifiVendorHal.isVendorHalReady()) {
+                iface.externalListener.onDestroyed(iface.name);
+            }
         }
     }
 
@@ -1219,6 +1224,7 @@ public class WifiNative {
             Log.i(TAG, "Successfully setup " + iface);
 
             iface.featureSet = getSupportedFeatureSetInternal(iface.name);
+            mIsEnhancedOpenSupported = (iface.featureSet & WIFI_FEATURE_OWE) != 0;
             return iface.name;
         }
     }
@@ -1465,6 +1471,7 @@ public class WifiNative {
             }
             iface.type = Iface.IFACE_TYPE_STA_FOR_CONNECTIVITY;
             iface.featureSet = getSupportedFeatureSetInternal(iface.name);
+            mIsEnhancedOpenSupported = (iface.featureSet & WIFI_FEATURE_OWE) != 0;
             Log.i(TAG, "Successfully switched to connectivity mode on iface=" + iface);
             return true;
         }
@@ -1699,7 +1706,7 @@ public class WifiNative {
                     InformationElementUtil.parseInformationElements(result.getInformationElements());
             InformationElementUtil.Capabilities capabilities =
                     new InformationElementUtil.Capabilities();
-            capabilities.from(ies, result.getCapabilities(), isEnhancedOpenSupported(),
+            capabilities.from(ies, result.getCapabilities(), mIsEnhancedOpenSupported,
                               result.getFrequencyMhz());
             String flags = capabilities.generateCapabilitiesString();
             NetworkDetail networkDetail;
@@ -1753,30 +1760,6 @@ public class WifiNative {
             default:
                 return ScanResult.WIFI_STANDARD_UNKNOWN;
         }
-    }
-
-    private boolean mIsEnhancedOpenSupportedInitialized = false;
-    private boolean mIsEnhancedOpenSupported;
-
-    /**
-     * Check if OWE (Enhanced Open) is supported on the device
-     *
-     * @return true if OWE is supported
-     */
-    private boolean isEnhancedOpenSupported() {
-        if (mIsEnhancedOpenSupportedInitialized) {
-            return mIsEnhancedOpenSupported;
-        }
-
-        String iface = getClientInterfaceName();
-        if (iface == null) {
-            // Client interface might not be initialized during boot or Wi-Fi off
-            return false;
-        }
-
-        mIsEnhancedOpenSupportedInitialized = true;
-        mIsEnhancedOpenSupported = (getSupportedFeatureSet(iface) & WIFI_FEATURE_OWE) != 0;
-        return mIsEnhancedOpenSupported;
     }
 
     /**
@@ -1957,11 +1940,13 @@ public class WifiNative {
      *
      * @param ifaceName Name of the interface.
      * @param config Configuration to use for the soft ap created.
+     * @param isMetered Indicates the network is metered or not.
      * @param listener Callback for AP events.
      * @return true on success, false otherwise.
      */
     public boolean startSoftAp(
-            @NonNull String ifaceName, SoftApConfiguration config, SoftApListener listener) {
+            @NonNull String ifaceName, SoftApConfiguration config, boolean isMetered,
+            SoftApListener listener) {
         if (!mHostapdHal.registerApCallback(ifaceName, listener)) {
             SoftApListenerFromWificond softApListenerFromWificond =
                     new SoftApListenerFromWificond(ifaceName, listener);
@@ -1979,7 +1964,7 @@ public class WifiNative {
                 mWifiMetrics.incrementNumSetupSoftApInterfaceFailureDueToHostapd();
                 return false;
             }
-        } else if (!mHostapdHal.addAccessPoint(ifaceName, config, listener::onFailure)) {
+        } else if (!mHostapdHal.addAccessPoint(ifaceName, config, isMetered, listener::onFailure)) {
             Log.e(TAG, "Failed to add acccess point");
             mWifiMetrics.incrementNumSetupSoftApInterfaceFailureDueToHostapd();
             return false;
@@ -3179,11 +3164,20 @@ public class WifiNative {
     }
 
     /**
-     * Returns whether STA/AP concurrency is supported or not.
+     * Returns whether STA + AP concurrency is supported or not.
      */
     public boolean isStaApConcurrencySupported() {
         synchronized (mLock) {
             return mWifiVendorHal.isStaApConcurrencySupported();
+        }
+    }
+
+    /**
+     * Returns whether STA + STA concurrency is supported or not.
+     */
+    public boolean isStaStaConcurrencySupported() {
+        synchronized (mLock) {
+            return mWifiVendorHal.isStaStaConcurrencySupported();
         }
     }
 

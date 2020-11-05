@@ -16,8 +16,6 @@
 
 package com.android.server.wifi;
 
-import static android.net.wifi.nl80211.WifiNl80211Manager.SEND_MGMT_FRAME_ERROR_UNKNOWN;
-
 import android.net.DhcpResultsParcelable;
 import android.net.Network;
 import android.net.wifi.IWifiConnectedNetworkScorer;
@@ -29,7 +27,6 @@ import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
 import android.net.wifi.hotspot2.IProvisioningCallback;
 import android.net.wifi.hotspot2.OsuProvider;
-import android.net.wifi.nl80211.WifiNl80211Manager;
 import android.os.IBinder;
 import android.os.Message;
 import android.os.WorkSource;
@@ -46,6 +43,8 @@ import java.io.PrintWriter;
  * Note: this class is currently a singleton as it has no state.
  */
 public class ScanOnlyModeImpl implements ClientMode {
+
+    private static final long ID = -2;
 
     @Override
     public void dump(FileDescriptor fd, PrintWriter pw, String[] args) { }
@@ -222,14 +221,19 @@ public class ScanOnlyModeImpl implements ClientMode {
     }
 
     @Override
-    public void probeLink(WifiNl80211Manager.SendMgmtFrameCallback callback, int mcs) {
-        callback.onFailure(SEND_MGMT_FRAME_ERROR_UNKNOWN);
+    public void probeLink(LinkProbeCallback callback, int mcs) {
+        callback.onFailure(LinkProbeCallback.LINK_PROBE_ERROR_NOT_CONNECTED);
     }
     @Override
     public void setTrafficPoller(WifiTrafficPoller trafficPoller) {}
 
     @Override
     public void sendMessageToClientModeImpl(Message msg) { }
+
+    @Override
+    public long getId() {
+        return ID;
+    }
 
     @Override
     public int syncDppAddBootstrapQrCode(String uri) {

@@ -26,6 +26,7 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assume.assumeTrue;
 import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -38,6 +39,7 @@ import android.net.MacAddress;
 import android.net.wifi.SoftApConfiguration;
 import android.net.wifi.SoftApConfiguration.Builder;
 import android.net.wifi.WifiInfo;
+import android.net.wifi.util.SdkLevelUtil;
 import android.os.Build;
 import android.os.Handler;
 import android.os.test.TestLooper;
@@ -113,6 +115,7 @@ public class WifiApConfigStoreTest extends WifiBaseTest {
                              TEST_DEFAULT_AP_SSID);
         mResources.setString(R.string.wifi_localhotspot_configure_ssid_default,
                              TEST_DEFAULT_HOTSPOT_SSID);
+        mResources.setBoolean(R.bool.config_wifiSoftapPassphraseAsciiEncodableCheck, true);
         /* Default to device that does not require ap band conversion */
         when(mActiveModeWarden.isStaApConcurrencySupported())
                 .thenReturn(false);
@@ -441,7 +444,7 @@ public class WifiApConfigStoreTest extends WifiBaseTest {
     public void getDefaultApConfigurationIsValid() throws Exception {
         WifiApConfigStore store = createWifiApConfigStore();
         SoftApConfiguration config = store.getApConfiguration();
-        assertTrue(WifiApConfigStore.validateApWifiConfiguration(config, true));
+        assertTrue(WifiApConfigStore.validateApWifiConfiguration(config, true, mContext));
     }
 
     /**
@@ -456,7 +459,7 @@ public class WifiApConfigStoreTest extends WifiBaseTest {
                 SoftApConfiguration.BAND_2GHZ);
 
         // verify that the config passes the validateApWifiConfiguration check
-        assertTrue(WifiApConfigStore.validateApWifiConfiguration(config, true));
+        assertTrue(WifiApConfigStore.validateApWifiConfiguration(config, true, mContext));
     }
 
     /**
@@ -470,7 +473,7 @@ public class WifiApConfigStoreTest extends WifiBaseTest {
                 SoftApConfiguration.BAND_5GHZ);
 
         // verify that the config passes the validateApWifiConfiguration check
-        assertTrue(WifiApConfigStore.validateApWifiConfiguration(config, true));
+        assertTrue(WifiApConfigStore.validateApWifiConfiguration(config, true, mContext));
     }
 
     @Test
@@ -537,9 +540,8 @@ public class WifiApConfigStoreTest extends WifiBaseTest {
 
     @Test
     public void randomizeBssid__usesFactoryMacWhenRandomizationOffInConfig() throws Exception {
-        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.R) {
-            return;
-        }
+        assumeTrue(SdkLevelUtil.isAtLeastS());
+
         mResources.setBoolean(R.bool.config_wifi_ap_mac_randomization_supported, true);
         SoftApConfiguration baseConfig = new SoftApConfiguration.Builder()
                 .setMacRandomizationSetting(SoftApConfiguration.RANDOMIZATION_NONE).build();
@@ -583,30 +585,37 @@ public class WifiApConfigStoreTest extends WifiBaseTest {
     public void testSsidVerificationInValidateApWifiConfigurationCheck() {
         Builder configBuilder = new SoftApConfiguration.Builder();
         configBuilder.setSsid(null);
-        assertFalse(WifiApConfigStore.validateApWifiConfiguration(configBuilder.build(), true));
+        assertFalse(WifiApConfigStore.validateApWifiConfiguration(
+                configBuilder.build(), true, mContext));
         // check a string if it's larger than 32 bytes with UTF-8 encode
         // Case 1 : one byte per character (use english words and Arabic numerals)
         configBuilder.setSsid(generateRandomString(WifiApConfigStore.SSID_MAX_LEN + 1));
-        assertFalse(WifiApConfigStore.validateApWifiConfiguration(configBuilder.build(), true));
+        assertFalse(WifiApConfigStore.validateApWifiConfiguration(
+                configBuilder.build(), true, mContext));
         // Case 2 : two bytes per character
         configBuilder.setSsid(TEST_STRING_UTF8_WITH_34_BYTES);
-        assertFalse(WifiApConfigStore.validateApWifiConfiguration(configBuilder.build(), true));
+        assertFalse(WifiApConfigStore.validateApWifiConfiguration(
+                configBuilder.build(), true, mContext));
         // Case 3 : three bytes per character
         configBuilder.setSsid(TEST_STRING_UTF8_WITH_33_BYTES);
-        assertFalse(WifiApConfigStore.validateApWifiConfiguration(configBuilder.build(), true));
+        assertFalse(WifiApConfigStore.validateApWifiConfiguration(
+                configBuilder.build(), true, mContext));
 
         // now check a valid SSID within 32 bytes
         // Case 1 :  one byte per character with random length
         int validLength = WifiApConfigStore.SSID_MAX_LEN - WifiApConfigStore.SSID_MIN_LEN;
         configBuilder.setSsid(generateRandomString(
                 mRandom.nextInt(validLength) + WifiApConfigStore.SSID_MIN_LEN));
-        assertTrue(WifiApConfigStore.validateApWifiConfiguration(configBuilder.build(), true));
+        assertTrue(WifiApConfigStore.validateApWifiConfiguration(
+                configBuilder.build(), true, mContext));
         // Case 2 : two bytes per character
         configBuilder.setSsid(TEST_STRING_UTF8_WITH_32_BYTES);
-        assertTrue(WifiApConfigStore.validateApWifiConfiguration(configBuilder.build(), true));
+        assertTrue(WifiApConfigStore.validateApWifiConfiguration(
+                configBuilder.build(), true, mContext));
         // Case 3 : three bytes per character
         configBuilder.setSsid(TEST_STRING_UTF8_WITH_30_BYTES);
-        assertTrue(WifiApConfigStore.validateApWifiConfiguration(configBuilder.build(), true));
+        assertTrue(WifiApConfigStore.validateApWifiConfiguration(
+                configBuilder.build(), true, mContext));
     }
 
     /**
@@ -621,7 +630,7 @@ public class WifiApConfigStoreTest extends WifiBaseTest {
         assertTrue(WifiApConfigStore.validateApWifiConfiguration(
                 new SoftApConfiguration.Builder()
                 .setSsid(TEST_DEFAULT_HOTSPOT_SSID)
-                .build(), true));
+                .build(), true, mContext));
     }
 
     /**
@@ -642,8 +651,33 @@ public class WifiApConfigStoreTest extends WifiBaseTest {
         configBuilder.setPassphrase(
                 generateRandomString(mRandom.nextInt(maxLen - minLen) + minLen),
                 SoftApConfiguration.SECURITY_TYPE_WPA2_PSK);
-        assertTrue(WifiApConfigStore.validateApWifiConfiguration(configBuilder.build(), true));
+        assertTrue(WifiApConfigStore.validateApWifiConfiguration(
+                configBuilder.build(), true, mContext));
     }
+
+    /**
+     * Verify the WPA2_PSK network checks in validateApWifiConfiguration.
+     *
+     * If the configured network is configured with a preSharedKey, verify that the passwork is set
+     * and it meets ascii encoding when ascii encodable check enabled.
+     */
+    @Test
+    public void testWpa2PskNonAsciiPassphraseConfigInValidateApWifiConfigurationCheck() {
+        Builder configBuilder = new SoftApConfiguration.Builder();
+        configBuilder.setSsid(TEST_DEFAULT_HOTSPOT_SSID);
+        // Builder will auto check auth type and passphrase
+
+        configBuilder.setPassphrase(
+                "測試測試測試測試",
+                SoftApConfiguration.SECURITY_TYPE_WPA2_PSK);
+        assertFalse(WifiApConfigStore.validateApWifiConfiguration(
+                configBuilder.build(), true, mContext));
+        // Disable ascii encodable check
+        mResources.setBoolean(R.bool.config_wifiSoftapPassphraseAsciiEncodableCheck, false);
+        assertTrue(WifiApConfigStore.validateApWifiConfiguration(
+                configBuilder.build(), true, mContext));
+    }
+
 
     /**
      * Verify the default configuration security when SAE support.
@@ -668,7 +702,7 @@ public class WifiApConfigStoreTest extends WifiBaseTest {
                 SoftApConfiguration.BAND_5GHZ, true);
 
         // verify that the config passes the validateApWifiConfiguration check
-        assertTrue(WifiApConfigStore.validateApWifiConfiguration(config, true));
+        assertTrue(WifiApConfigStore.validateApWifiConfiguration(config, true, mContext));
 
     }
 
@@ -785,7 +819,7 @@ public class WifiApConfigStoreTest extends WifiBaseTest {
         WifiApConfigStore store = createWifiApConfigStore();
         SoftApConfiguration config = new SoftApConfiguration.Builder(store.getApConfiguration())
                 .setBssid(TEST_SAP_BSSID_MAC).build();
-        assertFalse(WifiApConfigStore.validateApWifiConfiguration(config, false));
+        assertFalse(WifiApConfigStore.validateApWifiConfiguration(config, false, mContext));
     }
 
     /**
@@ -796,6 +830,6 @@ public class WifiApConfigStoreTest extends WifiBaseTest {
         WifiApConfigStore store = createWifiApConfigStore();
         SoftApConfiguration config = new SoftApConfiguration.Builder(store.getApConfiguration())
                 .setBssid(TEST_SAP_BSSID_MAC).build();
-        assertTrue(WifiApConfigStore.validateApWifiConfiguration(config, true));
+        assertTrue(WifiApConfigStore.validateApWifiConfiguration(config, true, mContext));
     }
 }

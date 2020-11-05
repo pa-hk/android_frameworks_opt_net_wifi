@@ -588,7 +588,11 @@ public class PasspointManager {
                                 ? UserActionEvent.EVENT_CONFIGURE_AUTO_CONNECT_ON
                                 : UserActionEvent.EVENT_CONFIGURE_AUTO_CONNECT_OFF,
                         provider.isFromSuggestion(), true);
+                // Update WifiConfigManager if changed.
+                updateWifiConfigInWcmIfPresent(provider.getWifiConfig(), provider.getCreatorUid(),
+                        provider.getPackageName(), provider.isFromSuggestion());
             }
+
             mWifiConfigManager.saveToStore(true);
             return true;
         }
@@ -604,6 +608,10 @@ public class PasspointManager {
                                     ? UserActionEvent.EVENT_CONFIGURE_AUTO_CONNECT_ON
                                     : UserActionEvent.EVENT_CONFIGURE_AUTO_CONNECT_OFF,
                             provider.isFromSuggestion(), true);
+                    // Update WifiConfigManager if changed.
+                    updateWifiConfigInWcmIfPresent(provider.getWifiConfig(),
+                            provider.getCreatorUid(), provider.getPackageName(),
+                            provider.isFromSuggestion());
                 }
                 found = true;
             }
@@ -1091,7 +1099,7 @@ public class PasspointManager {
             if (mWifiConfigManager.shouldUseEnhancedRandomization(config)) {
                 config.setRandomizedMacAddress(MacAddress.fromString(DEFAULT_MAC_ADDRESS));
             } else {
-                MacAddress result = mMacAddressUtil.calculatePersistentMac(config.getKey(),
+                MacAddress result = mMacAddressUtil.calculatePersistentMac(config.getMacRandomKey(),
                         mMacAddressUtil.obtainMacRandHashFunction(Process.WIFI_UID));
                 if (result != null) {
                     config.setRandomizedMacAddress(result);

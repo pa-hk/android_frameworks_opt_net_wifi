@@ -98,6 +98,10 @@ public class WifiInjector {
                     .setLinkDownstreamBandwidthKbps(1024 * 1024)
                     .setNetworkSpecifier(new MatchAllNetworkSpecifier())
                     .build();
+    private static final NetworkCapabilities OEM_PAID_NETWORK_CAPABILITIES_FILTER =
+            new NetworkCapabilities.Builder(NETWORK_CAPABILITIES_FILTER)
+                    .addCapability(NetworkCapabilities.NET_CAPABILITY_OEM_PAID)
+                    .build();
 
     static WifiInjector sWifiInjector = null;
 
@@ -189,11 +193,14 @@ public class WifiInjector {
     private final ConnectionFailureNotifier mConnectionFailureNotifier;
     private final WifiNetworkFactory mWifiNetworkFactory;
     private final UntrustedWifiNetworkFactory mUntrustedWifiNetworkFactory;
+    private final OemPaidWifiNetworkFactory mOemPaidWifiNetworkFactory;
     private final SupplicantStateTracker mSupplicantStateTracker;
     private final WifiP2pConnection mWifiP2pConnection;
     private final WifiGlobals mWifiGlobals;
     private final SimRequiredNotifier mSimRequiredNotifier;
     private final ScanOnlyModeImpl mScanOnlyModeImpl;
+    private final AdaptiveConnectivityEnabledSettingObserver
+            mAdaptiveConnectivityEnabledSettingObserver;
 
     public WifiInjector(WifiContext context) {
         if (context == null) {
@@ -252,6 +259,9 @@ public class WifiInjector {
                 awareMetrics, rttMetrics, new WifiPowerMetrics(mBatteryStats), mWifiP2pMetrics,
                 mDppMetrics, mWifiMonitor);
         mDeviceConfigFacade = new DeviceConfigFacade(mContext, wifiHandler, mWifiMetrics);
+        mAdaptiveConnectivityEnabledSettingObserver =
+                new AdaptiveConnectivityEnabledSettingObserver(wifiHandler, mWifiMetrics,
+                        mFrameworkFacade, mContext);
         // Modules interacting with Native.
         mHalDeviceManager = new HalDeviceManager(mClock, this, wifiHandler);
         mWifiVendorHal = new WifiVendorHal(mHalDeviceManager, wifiHandler);
@@ -407,8 +417,15 @@ public class WifiInjector {
                 mClock, this, mWifiConnectivityManager, mWifiConfigManager,
                 mWifiConfigStore, mWifiPermissionsUtil, mWifiMetrics, mActiveModeWarden,
                 mConnectHelper);
+        // We can't filter untrusted network in the capabilities filter because a trusted
+        // network would still satisfy a request that accepts untrusted ones.
+        // We need a second network factory for untrusted network requests because we need a
+        // different score filter for these requests.
         mUntrustedWifiNetworkFactory = new UntrustedWifiNetworkFactory(
                 wifiLooper, mContext, NETWORK_CAPABILITIES_FILTER, mWifiConnectivityManager);
+        mOemPaidWifiNetworkFactory = new OemPaidWifiNetworkFactory(
+                wifiLooper, mContext, OEM_PAID_NETWORK_CAPABILITIES_FILTER,
+                mWifiConnectivityManager);
         mWifiScanAlwaysAvailableSettingsCompatibility =
                 new WifiScanAlwaysAvailableSettingsCompatibility(mContext, wifiHandler,
                         mSettingsStore, mActiveModeWarden, mFrameworkFacade);
@@ -610,12 +627,18 @@ public class WifiInjector {
      * @param config SoftApModeConfiguration object holding the config and mode
      * @return an instance of SoftApManager
      */
-    public SoftApManager makeSoftApManager(@NonNull ActiveModeManager.Listener listener,
+    public SoftApManager makeSoftApManager(
+            @NonNull ActiveModeManager.Listener<SoftApManager> listener,
             @NonNull WifiManager.SoftApCallback callback,
-            @NonNull SoftApModeConfiguration config) {
+            @NonNull SoftApModeConfiguration config,
+            @NonNull WorkSource requestorWs,
+            @NonNull ActiveModeManager.SoftApRole role,
+            boolean verboseLoggingEnabled) {
         return new SoftApManager(mContext, mWifiHandlerThread.getLooper(),
                 mFrameworkFacade, mWifiNative, mCountryCode.getCountryCode(), listener, callback,
-                mWifiApConfigStore, config, mWifiMetrics, mWifiDiagnostics);
+                mWifiApConfigStore, config, mWifiMetrics, mWifiDiagnostics,
+                new SoftApNotifier(mContext, mFrameworkFacade),
+                mClock.getElapsedSinceBootMillis(), requestorWs, role, verboseLoggingEnabled);
     }
 
     /**
@@ -625,7 +648,8 @@ public class WifiInjector {
      */
     public ClientModeImpl makeClientModeImpl(
             @NonNull String ifaceName,
-            @NonNull ConcreteClientModeManager clientModeManager) {
+            @NonNull ConcreteClientModeManager clientModeManager,
+            boolean verboseLoggingEnabled) {
         return new ClientModeImpl(mContext, mWifiMetrics, mClock,
                 mWifiScoreCard, mWifiStateTracker, mWifiPermissionsUtil, mWifiConfigManager,
                 mPasspointManager, mWifiMonitor, mWifiDiagnostics, mWifiPermissionsWrapper,
@@ -633,19 +657,21 @@ public class WifiInjector {
                 mWifiNetworkSuggestionsManager, mWifiHealthMonitor, mThroughputPredictor,
                 mDeviceConfigFacade, mScanRequestProxy, mWifiInfo, mWifiConnectivityManager,
                 mBssidBlocklistMonitor, mConnectionFailureNotifier, NETWORK_CAPABILITIES_FILTER,
-                mWifiNetworkFactory, mUntrustedWifiNetworkFactory, mWifiLastResortWatchdog,
-                mWakeupController, mLockManager, mSelfRecovery,
+                mWifiNetworkFactory, mUntrustedWifiNetworkFactory, mOemPaidWifiNetworkFactory,
+                mWifiLastResortWatchdog, mWakeupController, mLockManager, mSelfRecovery,
                 mFrameworkFacade, mWifiHandlerThread.getLooper(), mCountryCode, mWifiNative,
                 new WrongPasswordNotifier(mContext, mFrameworkFacade), mWifiTrafficPoller,
-                mLinkProbeManager, mBatteryStats, mSupplicantStateTracker, mMboOceController,
-                mWifiCarrierInfoManager,
+                mLinkProbeManager, mClock.getElapsedSinceBootMillis(), mBatteryStats,
+                mSupplicantStateTracker, mMboOceController, mWifiCarrierInfoManager,
                 new EapFailureNotifier(mContext, mFrameworkFacade, mWifiCarrierInfoManager),
                 mSimRequiredNotifier,
                 new WifiScoreReport(mScoringParams, mClock, mWifiMetrics, mWifiInfo,
                         mWifiNative, mBssidBlocklistMonitor, mWifiThreadRunner, mWifiDataStall,
                         mDeviceConfigFacade, mContext, mWifiHandlerThread.getLooper(),
-                        mFrameworkFacade),
-                mWifiP2pConnection, mWifiGlobals, ifaceName, clientModeManager);
+                        mFrameworkFacade, mAdaptiveConnectivityEnabledSettingObserver,
+                        ifaceName),
+                mWifiP2pConnection, mWifiGlobals, ifaceName, clientModeManager,
+                verboseLoggingEnabled);
     }
 
     /**
@@ -654,10 +680,16 @@ public class WifiInjector {
      * @param listener listener for ClientModeManager state changes
      * @return a new instance of ClientModeManager
      */
-    public ConcreteClientModeManager makeClientModeManager(ClientModeManager.Listener listener) {
-        return new ConcreteClientModeManager(mContext, mWifiHandlerThread.getLooper(), mClock,
+    public ConcreteClientModeManager makeClientModeManager(
+            @NonNull ClientModeManager.Listener<ConcreteClientModeManager> listener,
+            @NonNull WorkSource requestorWs,
+            @NonNull ActiveModeManager.ClientRole role,
+            boolean verboseLoggingEnabled) {
+        return new ConcreteClientModeManager(
+                mContext, mWifiHandlerThread.getLooper(), mClock,
                 mWifiNative, listener, mWifiMetrics, mWakeupController,
-                this, mSelfRecovery, mWifiGlobals, mScanOnlyModeImpl);
+                this, mSelfRecovery, mWifiGlobals, mScanOnlyModeImpl,
+                mClock.getElapsedSinceBootMillis(), requestorWs, role, verboseLoggingEnabled);
     }
 
     /**
@@ -865,6 +897,10 @@ public class WifiInjector {
         return mUntrustedWifiNetworkFactory;
     }
 
+    public OemPaidWifiNetworkFactory getOemPaidWifiNetworkFactory() {
+        return mOemPaidWifiNetworkFactory;
+    }
+
     public WifiDiagnostics getWifiDiagnostics() {
         return mWifiDiagnostics;
     }
@@ -887,5 +923,10 @@ public class WifiInjector {
     public WorkSourceHelper makeWsHelper(WorkSource ws) {
         return new WorkSourceHelper(ws, mWifiPermissionsUtil,
                 mContext.getSystemService(ActivityManager.class), mContext.getPackageManager());
+    }
+
+    public AdaptiveConnectivityEnabledSettingObserver
+            getAdaptiveConnectivityEnabledSettingObserver() {
+        return mAdaptiveConnectivityEnabledSettingObserver;
     }
 }

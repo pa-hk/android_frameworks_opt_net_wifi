@@ -40,7 +40,6 @@ import org.junit.Test;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 import org.xmlpull.v1.XmlPullParser;
-import org.xmlpull.v1.XmlPullParserException;
 import org.xmlpull.v1.XmlSerializer;
 
 import java.io.ByteArrayInputStream;
@@ -84,6 +83,7 @@ public class NetworkListStoreDataTest extends WifiBaseTest {
                     + "<boolean name=\"Shared\" value=\"%s\" />\n"
                     + "<boolean name=\"AutoJoinEnabled\" value=\"true\" />\n"
                     + "<boolean name=\"Trusted\" value=\"true\" />\n"
+                    + "<boolean name=\"OemPaid\" value=\"false\" />\n"
                     + "<null name=\"BSSID\" />\n"
                     + "<int name=\"Status\" value=\"2\" />\n"
                     + "<null name=\"FQDN\" />\n"
@@ -106,6 +106,7 @@ public class NetworkListStoreDataTest extends WifiBaseTest {
                     + "<int name=\"MacRandomizationSetting\" value=\"3\" />\n"
                     + "<int name=\"CarrierId\" value=\"-1\" />\n"
                     + "<boolean name=\"IsMostRecentlyConnected\" value=\"false\" />\n"
+                    + "<int name=\"SubscriptionId\" value=\"-1\" />\n"
                     + "</WifiConfiguration>\n"
                     + "<NetworkStatus>\n"
                     + "<string name=\"SelectionStatus\">NETWORK_SELECTION_ENABLED</string>\n"
@@ -139,6 +140,7 @@ public class NetworkListStoreDataTest extends WifiBaseTest {
                     + "<boolean name=\"Shared\" value=\"%s\" />\n"
                     + "<boolean name=\"AutoJoinEnabled\" value=\"true\" />\n"
                     + "<boolean name=\"Trusted\" value=\"true\" />\n"
+                    + "<boolean name=\"OemPaid\" value=\"false\" />\n"
                     + "<null name=\"BSSID\" />\n"
                     + "<int name=\"Status\" value=\"2\" />\n"
                     + "<null name=\"FQDN\" />\n"
@@ -161,6 +163,7 @@ public class NetworkListStoreDataTest extends WifiBaseTest {
                     + "<int name=\"MacRandomizationSetting\" value=\"3\" />\n"
                     + "<int name=\"CarrierId\" value=\"-1\" />\n"
                     + "<boolean name=\"IsMostRecentlyConnected\" value=\"false\" />\n"
+                    + "<int name=\"SubscriptionId\" value=\"-1\" />\n"
                     + "</WifiConfiguration>\n"
                     + "<NetworkStatus>\n"
                     + "<string name=\"SelectionStatus\">NETWORK_SELECTION_ENABLED</string>\n"
@@ -215,6 +218,7 @@ public class NetworkListStoreDataTest extends WifiBaseTest {
                     + "<boolean name=\"Shared\" value=\"%s\" />\n"
                     + "<boolean name=\"AutoJoinEnabled\" value=\"true\" />\n"
                     + "<boolean name=\"Trusted\" value=\"true\" />\n"
+                    + "<boolean name=\"OemPaid\" value=\"false\" />\n"
                     + "<null name=\"BSSID\" />\n"
                     + "<int name=\"Status\" value=\"2\" />\n"
                     + "<null name=\"FQDN\" />\n"
@@ -237,6 +241,7 @@ public class NetworkListStoreDataTest extends WifiBaseTest {
                     + "<int name=\"MacRandomizationSetting\" value=\"3\" />\n"
                     + "<int name=\"CarrierId\" value=\"-1\" />\n"
                     + "<boolean name=\"IsMostRecentlyConnected\" value=\"false\" />\n"
+                    + "<int name=\"SubscriptionId\" value=\"-1\" />\n"
                     + "</WifiConfiguration>\n"
                     + "<NetworkStatus>\n"
                     + "<string name=\"SelectionStatus\">NETWORK_SELECTION_ENABLED</string>\n"
@@ -563,12 +568,11 @@ public class NetworkListStoreDataTest extends WifiBaseTest {
     }
 
     /**
-     * Verify that a XmlPullParseException will be thrown when parsing a network configuration
+     * Verify that no exception will be thrown when parsing a network configuration
      * containing a mismatched config key.
      *
      * @throws Exception
      */
-    @Test(expected = XmlPullParserException.class)
     public void parseNetworkWithMismatchConfigKey() throws Exception {
         WifiConfiguration openNetwork = WifiConfigurationTestUtil.createOpenNetwork();
         byte[] xmlData = String.format(SINGLE_OPEN_NETWORK_DATA_XML_STRING_FORMAT,

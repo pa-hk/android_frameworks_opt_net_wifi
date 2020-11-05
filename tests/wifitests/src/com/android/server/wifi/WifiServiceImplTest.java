@@ -48,6 +48,7 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
+import static org.junit.Assume.assumeTrue;
 import static org.mockito.AdditionalAnswers.returnsSecondArg;
 import static org.mockito.AdditionalMatchers.aryEq;
 import static org.mockito.ArgumentMatchers.notNull;
@@ -127,6 +128,7 @@ import android.net.wifi.hotspot2.OsuProvider;
 import android.net.wifi.hotspot2.PasspointConfiguration;
 import android.net.wifi.hotspot2.pps.Credential;
 import android.net.wifi.hotspot2.pps.HomeSp;
+import android.net.wifi.util.SdkLevelUtil;
 import android.os.Binder;
 import android.os.Build;
 import android.os.Binder;
@@ -236,6 +238,7 @@ public class WifiServiceImplTest extends WifiBaseTest {
     private static final String TEST_BSSID = "01:02:03:04:05:06";
     private static final String TEST_PACKAGE = "package";
     private static final int TEST_NETWORK_ID = 567;
+    private static final WorkSource TEST_SETTINGS_WORKSOURCE = new WorkSource();
 
     private SoftApInfo mTestSoftApInfo;
     private WifiServiceImpl mWifiServiceImpl;
@@ -322,10 +325,12 @@ public class WifiServiceImplTest extends WifiBaseTest {
     @Mock IActionListener mActionListener;
     @Mock WifiNetworkFactory mWifiNetworkFactory;
     @Mock UntrustedWifiNetworkFactory mUntrustedWifiNetworkFactory;
+    @Mock OemPaidWifiNetworkFactory mOemPaidWifiNetworkFactory;
     @Mock WifiDiagnostics mWifiDiagnostics;
     @Mock WifiP2pConnection mWifiP2pConnection;
     @Mock SimRequiredNotifier mSimRequiredNotifier;
     @Mock WifiGlobals mWifiGlobals;
+    @Mock AdaptiveConnectivityEnabledSettingObserver mAdaptiveConnectivityEnabledSettingObserver;
 
     @Captor ArgumentCaptor<Intent> mIntentCaptor;
 
@@ -351,6 +356,8 @@ public class WifiServiceImplTest extends WifiBaseTest {
         when(mWifiInjector.getWifiNetworkFactory()).thenReturn(mWifiNetworkFactory);
         when(mWifiInjector.getUntrustedWifiNetworkFactory())
                 .thenReturn(mUntrustedWifiNetworkFactory);
+        when(mWifiInjector.getOemPaidWifiNetworkFactory())
+                .thenReturn(mOemPaidWifiNetworkFactory);
         when(mWifiInjector.getWifiDiagnostics()).thenReturn(mWifiDiagnostics);
         when(mWifiInjector.getActiveModeWarden()).thenReturn(mActiveModeWarden);
         when(mWifiInjector.getWifiHandlerThread()).thenReturn(mHandlerThread);
@@ -365,6 +372,7 @@ public class WifiServiceImplTest extends WifiBaseTest {
         when(mWifiInjector.getWifiApConfigStore()).thenReturn(mWifiApConfigStore);
         doNothing().when(mFrameworkFacade).registerContentObserver(eq(mContext), any(),
                 anyBoolean(), any());
+        when(mFrameworkFacade.getSettingsWorkSource(any())).thenReturn(TEST_SETTINGS_WORKSOURCE);
         when(mContext.getSystemService(Context.ACTIVITY_SERVICE)).thenReturn(mActivityManager);
         when(mContext.getSystemService(Context.APP_OPS_SERVICE)).thenReturn(mAppOpsManager);
         IPowerManager powerManagerService = mock(IPowerManager.class);
@@ -396,6 +404,7 @@ public class WifiServiceImplTest extends WifiBaseTest {
         when(mWifiInjector.getWifiConfigManager()).thenReturn(mWifiConfigManager);
         when(mWifiInjector.getPasspointManager()).thenReturn(mPasspointManager);
         when(mActiveModeWarden.getPrimaryClientModeManager()).thenReturn(mClientModeManager);
+        when(mClientModeManager.getInterfaceName()).thenReturn(WIFI_IFACE_NAME);
         when(mWifiInjector.getWifiScoreCard()).thenReturn(mWifiScoreCard);
         when(mWifiInjector.getWifiHealthMonitor()).thenReturn(mWifiHealthMonitor);
         when(mWifiInjector.getWifiNetworkScoreCache())
@@ -415,6 +424,8 @@ public class WifiServiceImplTest extends WifiBaseTest {
         when(mWifiInjector.getWifiP2pConnection()).thenReturn(mWifiP2pConnection);
         when(mWifiInjector.getSimRequiredNotifier()).thenReturn(mSimRequiredNotifier);
         when(mWifiInjector.getWifiGlobals()).thenReturn(mWifiGlobals);
+        when(mWifiInjector.getAdaptiveConnectivityEnabledSettingObserver())
+                .thenReturn(mAdaptiveConnectivityEnabledSettingObserver);
         when(mClientModeManager.syncStartSubscriptionProvisioning(anyInt(),
                 any(OsuProvider.class), any(IProvisioningCallback.class))).thenReturn(true);
         // Create an OSU provider that can be provisioned via an open OSU AP
@@ -2136,6 +2147,9 @@ public class WifiServiceImplTest extends WifiBaseTest {
     @Test
     public void testStartLocalOnlyHotspotSingleRegistrationReturnsRequestRegistered() {
         registerLOHSRequestFull();
+        // Use settings worksouce.
+        verify(mActiveModeWarden).startSoftAp(mSoftApModeConfigCaptor.capture(),
+                eq(TEST_SETTINGS_WORKSOURCE));
     }
 
     /**
@@ -2406,7 +2420,7 @@ public class WifiServiceImplTest extends WifiBaseTest {
 
     private void verifyLohsBand(int expectedBand) {
         verify(mActiveModeWarden).startSoftAp(mSoftApModeConfigCaptor.capture(),
-                eq(new WorkSource(Binder.getCallingUid(), TEST_PACKAGE_NAME)));
+                eq(TEST_SETTINGS_WORKSOURCE));
         final SoftApConfiguration configuration =
                 mSoftApModeConfigCaptor.getValue().getSoftApConfiguration();
         assertNotNull(configuration);
@@ -2519,6 +2533,10 @@ public class WifiServiceImplTest extends WifiBaseTest {
                         config)).isEqualTo(REQUEST_REGISTERED);
         mLooper.dispatchAll();
 
+        // Use app's worksouce.
+        verify(mActiveModeWarden).startSoftAp(any(),
+                eq(new WorkSource(Binder.getCallingUid(), TEST_PACKAGE_NAME)));
+
         assertThat(callback.mIsStarted).isTrue();
         assertThat(callback.mSoftApConfig.getSsid()).isEqualTo("customSsid");
         assertThat(callback.mSoftApConfig.getSecurityType())
@@ -2538,6 +2556,10 @@ public class WifiServiceImplTest extends WifiBaseTest {
                 mWifiServiceImpl.startLocalOnlyHotspot(callback, TEST_PACKAGE_NAME, TEST_FEATURE_ID,
                         config)).isEqualTo(REQUEST_REGISTERED);
         mLooper.dispatchAll();
+
+        // Use app's worksouce.
+        verify(mActiveModeWarden).startSoftAp(any(),
+                eq(new WorkSource(Binder.getCallingUid(), TEST_PACKAGE_NAME)));
 
         assertThat(callback.mIsStarted).isTrue();
         assertThat(callback.mSoftApConfig.getSsid()).isEqualTo("customSsid");
@@ -2559,6 +2581,10 @@ public class WifiServiceImplTest extends WifiBaseTest {
                         config)).isEqualTo(REQUEST_REGISTERED);
         mLooper.dispatchAll();
 
+        // Use app's worksouce.
+        verify(mActiveModeWarden).startSoftAp(any(),
+                eq(new WorkSource(Binder.getCallingUid(), TEST_PACKAGE_NAME)));
+
         assertThat(callback.mIsStarted).isTrue();
         assertThat(callback.mSoftApConfig.getSsid()).isNotEmpty();
     }
@@ -2575,6 +2601,10 @@ public class WifiServiceImplTest extends WifiBaseTest {
                 mWifiServiceImpl.startLocalOnlyHotspot(callback, TEST_PACKAGE_NAME, TEST_FEATURE_ID,
                         config)).isEqualTo(REQUEST_REGISTERED);
         mLooper.dispatchAll();
+
+        // Use app's worksouce.
+        verify(mActiveModeWarden).startSoftAp(any(),
+                eq(new WorkSource(Binder.getCallingUid(), TEST_PACKAGE_NAME)));
 
         assertThat(callback.mIsStarted).isTrue();
         assertThat(callback.mSoftApConfig.getBssid().toString())
@@ -4484,6 +4514,7 @@ public class WifiServiceImplTest extends WifiBaseTest {
         verify(mWifiConfigManager).resetSimNetworks();
         verify(mSimRequiredNotifier, never()).dismissSimRequiredNotification();
         verify(mWifiNetworkSuggestionsManager).resetCarrierPrivilegedApps();
+        verify(mWifiConfigManager, never()).removeAllEphemeralOrPasspointConfiguredNetworks();
     }
 
     /**
@@ -4506,6 +4537,7 @@ public class WifiServiceImplTest extends WifiBaseTest {
         verify(mWifiConfigManager, never()).resetSimNetworks();
         verify(mSimRequiredNotifier).dismissSimRequiredNotification();
         verify(mWifiNetworkSuggestionsManager).resetCarrierPrivilegedApps();
+        verify(mWifiConfigManager, never()).removeAllEphemeralOrPasspointConfiguredNetworks();
     }
 
     @Test
@@ -4524,7 +4556,8 @@ public class WifiServiceImplTest extends WifiBaseTest {
 
         verify(mWifiConfigManager).resetSimNetworks();
         verify(mSimRequiredNotifier, never()).dismissSimRequiredNotification();
-        verify(mWifiNetworkSuggestionsManager, never()).resetCarrierPrivilegedApps();
+        verify(mWifiNetworkSuggestionsManager).resetCarrierPrivilegedApps();
+        verify(mWifiConfigManager).removeEphemeralCarrierNetworks();
     }
 
     /**
@@ -5321,7 +5354,7 @@ public class WifiServiceImplTest extends WifiBaseTest {
     public void testWifiUsabilityScoreUpdateAfterScoreEvent() {
         mWifiServiceImpl.updateWifiUsabilityScore(5, 10, 15);
         mLooper.dispatchAll();
-        verify(mWifiMetrics).incrementWifiUsabilityScoreCount(5, 10, 15);
+        verify(mWifiMetrics).incrementWifiUsabilityScoreCount(WIFI_IFACE_NAME, 5, 10, 15);
     }
 
     private void startLohsAndTethering(boolean isApConcurrencySupported) throws Exception {
@@ -6281,6 +6314,34 @@ public class WifiServiceImplTest extends WifiBaseTest {
                 .thenReturn(true);
         mLooper.startAutoDispatch();
         assertEquals(supportedFeaturesFromClientModeManager | WifiManager.WIFI_FEATURE_AP_STA,
+                mWifiServiceImpl.getSupportedFeatures());
+        mLooper.stopAutoDispatchAndIgnoreExceptions();
+    }
+
+    /**
+     * Verifies that syncGetSupportedFeatures() adds capabilities based on interface
+     * combination.
+     */
+    @Test
+    public void syncGetSupportedFeaturesForStaStaConcurrency() {
+        assumeTrue(SdkLevelUtil.isAtLeastS());
+
+        long supportedFeaturesFromClientModeManager = WifiManager.WIFI_FEATURE_OWE;
+        when(mClientModeManager.syncGetSupportedFeatures())
+                .thenReturn(supportedFeaturesFromClientModeManager);
+
+        when(mActiveModeWarden.isStaStaConcurrencySupported())
+                .thenReturn(false);
+        mLooper.startAutoDispatch();
+        assertEquals(supportedFeaturesFromClientModeManager,
+                mWifiServiceImpl.getSupportedFeatures());
+        mLooper.stopAutoDispatchAndIgnoreExceptions();
+
+        when(mActiveModeWarden.isStaStaConcurrencySupported())
+                .thenReturn(true);
+        mLooper.startAutoDispatch();
+        assertEquals(supportedFeaturesFromClientModeManager
+                        | WifiManager.WIFI_FEATURE_ADDITIONAL_STA,
                 mWifiServiceImpl.getSupportedFeatures());
         mLooper.stopAutoDispatchAndIgnoreExceptions();
     }

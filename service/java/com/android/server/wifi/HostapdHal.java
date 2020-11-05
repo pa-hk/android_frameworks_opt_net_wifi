@@ -439,11 +439,12 @@ public class HostapdHal {
      *
      * @param ifaceName Name of the interface.
      * @param config Configuration to use for the AP.
+     * @param isMetered Indicates the network is metered or not.
      * @param onFailureListener A runnable to be triggered on failure.
      * @return true on success, false otherwise.
      */
     public boolean addAccessPoint(@NonNull String ifaceName, @NonNull SoftApConfiguration config,
-                                  @NonNull Runnable onFailureListener) {
+                                  boolean isMetered, @NonNull Runnable onFailureListener) {
         synchronized (mLock) {
             final String methodStr = "addAccessPoint";
             IHostapd.IfaceParams ifaceParams = new IHostapd.IfaceParams();
@@ -470,7 +471,8 @@ public class HostapdHal {
             if (!checkHostapdAndLogFailure(methodStr)) return false;
             try {
                 HostapdStatus status;
-                if (!isV1_1() && !isV1_2()) {
+                if (!isV1_1()) {
+                    // V1_0 case
                     ifaceParams.channelParams.band = getHalBand(band);
                     status = mIHostapd.addAccessPoint(ifaceParams, nwParamsV1_2.V1_0);
                     if (!checkStatusAndLogFailure(status, methodStr)) {
@@ -481,6 +483,7 @@ public class HostapdHal {
                             new android.hardware.wifi.hostapd.V1_1.IHostapd.IfaceParams();
                     ifaceParams1_1.V1_0 = ifaceParams;
                     if (!isV1_2()) {
+                        // V1_1 case
                         ifaceParams.channelParams.band = getHalBand(band);
 
                         if (ifaceParams.channelParams.enableAcs) {
@@ -505,6 +508,7 @@ public class HostapdHal {
                             return false;
                         }
                     } else {
+                        // V1_2 & V1_3 case
                         android.hardware.wifi.hostapd.V1_2.HostapdStatus status12;
                         android.hardware.wifi.hostapd.V1_2.IHostapd.IfaceParams ifaceParams1_2 =
                                 new android.hardware.wifi.hostapd.V1_2.IHostapd.IfaceParams();
@@ -547,10 +551,27 @@ public class HostapdHal {
                             }
                         }
 
-                        android.hardware.wifi.hostapd.V1_2.IHostapd iHostapdV1_2 =
-                                getHostapdMockableV1_2();
-                        if (iHostapdV1_2 == null) return false;
-                        status12 = iHostapdV1_2.addAccessPoint_1_2(ifaceParams1_2, nwParamsV1_2);
+                        if (!isV1_3()) {
+                            // V1_2 case
+                            android.hardware.wifi.hostapd.V1_2.IHostapd iHostapdV1_2 =
+                                    getHostapdMockableV1_2();
+                            if (iHostapdV1_2 == null) return false;
+                            status12 = iHostapdV1_2.addAccessPoint_1_2(ifaceParams1_2,
+                                    nwParamsV1_2);
+                        } else {
+                            // V1_3 case
+                            android.hardware.wifi.hostapd.V1_3
+                                    .IHostapd.NetworkParams nwParamsV1_3 =
+                                    new android.hardware.wifi.hostapd.V1_3
+                                    .IHostapd.NetworkParams();
+                            nwParamsV1_3.V1_2 = nwParamsV1_2;
+                            nwParamsV1_3.isMetered = isMetered;
+                            android.hardware.wifi.hostapd.V1_3.IHostapd iHostapdV1_3 =
+                                    getHostapdMockableV1_3();
+                            if (iHostapdV1_3 == null) return false;
+                            status12 = iHostapdV1_3.addAccessPoint_1_3(ifaceParams1_2,
+                                    nwParamsV1_3);
+                        }
                         if (!checkStatusAndLogFailure12(status12, methodStr)) {
                             return false;
                         }

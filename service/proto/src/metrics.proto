@@ -1471,6 +1471,13 @@ message StaEvent {
 
   // Whether cellular data network is available
   optional bool is_cellular_data_available = 25;
+
+  // Whether Adaptive Connectivity is enabled
+  optional bool is_adaptive_connectivity_enabled = 26;
+
+  // The wireless interface name e.g. "wlan0", "wlan1". Used to distinguish which event stream this
+  // StaEvent belongs to when multiple interfaces are active concurrently.
+  optional string interface_name = 27;
 }
 
 // Wi-Fi Aware metrics
@@ -3175,6 +3182,10 @@ message UserActionEvent {
     EVENT_CONFIGURE_METERED_STATUS_AUTO = 12;
     // User adds a new network or updates configurations for an existing network.
     EVENT_ADD_OR_UPDATE_NETWORK = 13;
+    // User sets the adaptive connectivity to on
+    EVENT_CONFIGURE_ADAPTIVE_CONNECTIVITY_ON = 14;
+    // User sets the adaptive connectivity to off
+    EVENT_CONFIGURE_ADAPTIVE_CONNECTIVITY_OFF = 15;
   }
 
   // The type of user action
@@ -3319,6 +3330,9 @@ message ConnectionDurationStats {
   optional int32 total_time_insufficient_throughput_ms = 2;
   // Total time with cellular data off
   optional int32 total_time_cellular_data_off_ms = 3;
+  // Total time with insufficient Wifi throughput and with cellular data on
+  // while wifi is the default network
+  optional int32 total_time_insufficient_throughput_default_wifi_ms = 4;
 }
 
 // Wi-Fi off metrics

@@ -23,7 +23,7 @@ import android.net.MacAddress;
 import android.net.util.MacAddressUtils;
 import android.net.wifi.ScanResult;
 import android.net.wifi.SoftApConfiguration;
-import android.os.Build;
+import android.net.wifi.util.SdkLevelUtil;
 import android.os.Handler;
 import android.os.Process;
 import android.os.SystemProperties;
@@ -34,6 +34,7 @@ import com.android.internal.annotations.VisibleForTesting;
 import com.android.server.wifi.util.ApConfigUtil;
 import com.android.wifi.resources.R;
 
+import java.nio.charset.CharsetEncoder;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.util.ArrayList;
@@ -365,7 +366,7 @@ public class WifiApConfigStore {
         SoftApConfiguration.Builder configBuilder = new SoftApConfiguration.Builder(config);
         if (config.getBssid() == null && context.getResources().getBoolean(
                 R.bool.config_wifi_ap_mac_randomization_supported)) {
-            if (Build.VERSION.SDK_INT > Build.VERSION_CODES.R && config.getMacRandomizationSetting()
+            if (SdkLevelUtil.isAtLeastS() && config.getMacRandomizationSetting()
                     == SoftApConfiguration.RANDOMIZATION_NONE) {
                 return configBuilder.build();
             }
@@ -440,7 +441,7 @@ public class WifiApConfigStore {
      * otherwise.
      */
     static boolean validateApWifiConfiguration(@NonNull SoftApConfiguration apConfig,
-            boolean isPrivileged) {
+            boolean isPrivileged, Context context) {
         // first check the SSID
         if (!validateApConfigSsid(apConfig.getSsid())) {
             // failed SSID verificiation checks
@@ -479,6 +480,16 @@ public class WifiApConfigStore {
                 Log.d(TAG, "softap network password must be set");
                 return false;
             }
+
+            if (context.getResources().getBoolean(
+                    R.bool.config_wifiSoftapPassphraseAsciiEncodableCheck)) {
+                final CharsetEncoder asciiEncoder = StandardCharsets.US_ASCII.newEncoder();
+                if (!asciiEncoder.canEncode(preSharedKey)) {
+                    Log.d(TAG, "passphrase not ASCII encodable");
+                    return false;
+                }
+            }
+
             if (authType != SoftApConfiguration.SECURITY_TYPE_WPA3_SAE
                     && !validateApConfigPreSharedKey(preSharedKey)) {
                 // failed preSharedKey checks for WPA2 and WPA3 SAE Transition mode.
