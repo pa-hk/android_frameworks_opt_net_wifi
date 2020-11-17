@@ -416,7 +416,7 @@ public class WifiConfigManager {
 
         mDisableReasonInfo.put(NetworkSelectionStatus.DISABLED_DHCP_FAILURE,
                 new DisableReasonInfo(
-                        "config_wifiDisableReasonDhcpFailureThreshold",
+                        "NETWORK_SELECTION_DISABLED_DHCP_FAILURE",
                         mContext.getResources().getInteger(R.integer
                                 .config_wifiDisableReasonDhcpFailureThreshold),
                         5 * 60 * 1000));
@@ -485,11 +485,24 @@ public class WifiConfigManager {
         if (config.getIpConfiguration().getIpAssignment() == IpConfiguration.IpAssignment.STATIC) {
             return false;
         }
+        if (config.isOpenNetwork() && shouldEnableEnhancedRandomizationOnOpenNetwork(config)) {
+            return true;
+        }
         if (config.isPasspoint()) {
             return isNetworkOptInForEnhancedRandomization(config.FQDN);
         } else {
             return isNetworkOptInForEnhancedRandomization(config.SSID);
         }
+    }
+
+    private boolean shouldEnableEnhancedRandomizationOnOpenNetwork(WifiConfiguration config) {
+        if (!mDeviceConfigFacade.allowEnhancedMacRandomizationOnOpenSsids()
+                && !mContext.getResources().getBoolean(
+                        R.bool.config_wifiAllowEnhancedMacRandomizationOnOpenSsids)) {
+            return false;
+        }
+        return config.getNetworkSelectionStatus().hasEverConnected()
+                && config.getNetworkSelectionStatus().hasNeverDetectedCaptivePortal();
     }
 
     private boolean isNetworkOptInForEnhancedRandomization(String ssidOrFqdn) {
@@ -954,7 +967,9 @@ public class WifiConfigManager {
         if (!isConfigEligibleForLockdown) {
             // App that created the network or settings app (i.e user) has permission to
             // modify the network.
-            return isCreator || mWifiPermissionsUtil.checkNetworkSettingsPermission(uid);
+            return isCreator
+                    || mWifiPermissionsUtil.checkNetworkSettingsPermission(uid)
+                    || mWifiPermissionsUtil.checkNetworkSetupWizardPermission(uid);
         }
 
         final ContentResolver resolver = mContext.getContentResolver();
@@ -962,7 +977,9 @@ public class WifiConfigManager {
                 Settings.Global.WIFI_DEVICE_OWNER_CONFIGS_LOCKDOWN, 0) != 0;
         return !isLockdownFeatureEnabled
                 // If not locked down, settings app (i.e user) has permission to modify the network.
-                && mWifiPermissionsUtil.checkNetworkSettingsPermission(uid);
+                && (mWifiPermissionsUtil.checkNetworkSettingsPermission(uid)
+                || mWifiPermissionsUtil.checkNetworkSetupWizardPermission(uid));
+
     }
 
     /**
@@ -1112,9 +1129,9 @@ public class WifiConfigManager {
         internalConfig.meteredHint = externalConfig.meteredHint;
         internalConfig.meteredOverride = externalConfig.meteredOverride;
 
-        // Copy trusted bit
         internalConfig.trusted = externalConfig.trusted;
         internalConfig.oemPaid = externalConfig.oemPaid;
+        internalConfig.oemPrivate = externalConfig.oemPrivate;
 
         // Copy over macRandomizationSetting
         internalConfig.macRandomizationSetting = externalConfig.macRandomizationSetting;
@@ -1778,8 +1795,9 @@ public class WifiConfigManager {
         if (reason == NetworkSelectionStatus.DISABLED_NONE) {
             setNetworkSelectionEnabled(config);
             setNetworkStatus(config, WifiConfiguration.Status.ENABLED);
-        } else if (reason < NetworkSelectionStatus.PERMANENTLY_DISABLED_STARTING_INDEX) {
+        } else if (getNetworkSelectionDisableTimeoutMillis(reason) < Integer.MAX_VALUE) {
             setNetworkSelectionTemporarilyDisabled(config, reason);
+            sendConfiguredNetworkChangedBroadcast(WifiManager.CHANGE_REASON_CONFIG_CHANGE);
         } else {
             setNetworkSelectionPermanentlyDisabled(config, reason);
             setNetworkStatus(config, WifiConfiguration.Status.DISABLED);
@@ -1861,6 +1879,17 @@ public class WifiConfigManager {
     }
 
     /**
+     * Re-enable all temporary disabled configured networks.
+     */
+    public void enableTemporaryDisabledNetworks() {
+        for (WifiConfiguration config : getInternalConfiguredNetworks()) {
+            if (config.getNetworkSelectionStatus().isNetworkTemporaryDisabled()) {
+                setNetworkSelectionStatus(config, NetworkSelectionStatus.DISABLED_NONE);
+            }
+        }
+    }
+
+    /**
      * Attempt to re-enable a network for network selection, if this network was either:
      * a) Previously temporarily disabled, but its disable timeout has expired, or
      * b) Previously disabled because of a user switch, but is now visible to the current
@@ -1880,9 +1909,6 @@ public class WifiConfigManager {
             int blockedBssids = Math.min(MAX_BLOCKED_BSSID_PER_NETWORK,
                     mBssidBlocklistMonitor.updateAndGetNumBlockedBssidsForSsid(config.SSID));
             long disableTimeoutMs = (long) getNetworkSelectionDisableTimeoutMillis(disableReason);
-            // TODO b/169272385: Now that we no longer immediately re-enable a WifiConfiguration
-            // when 0 BSSIDs are blocked, need to add code to re-enable temporarily disabled
-            // WifiConfigurations when the user toggles wifi.
             if (blockedBssids > 1) {
                 disableTimeoutMs *= Math.pow(2.0, blockedBssids - 1.0);
             }
@@ -2077,6 +2103,17 @@ public class WifiConfigManager {
         setNetworkStatus(config, WifiConfiguration.Status.CURRENT);
         saveToStore(false);
         return true;
+    }
+
+    /**
+     * Set captive portal to be detected for this network.
+     * @param networkId
+     */
+    public void noteCaptivePortalDetected(int networkId) {
+        WifiConfiguration config = getInternalConfiguredNetwork(networkId);
+        if (config != null) {
+            config.getNetworkSelectionStatus().setHasNeverDetectedCaptivePortal(false);
+        }
     }
 
     /**
@@ -3342,7 +3379,7 @@ public class WifiConfigManager {
         if (config == null) {
             return;
         }
-        config.recentFailure.setAssociationStatus(reason);
+        config.recentFailure.setAssociationStatus(reason, mClock.getElapsedSinceBootMillis());
     }
 
     /**
@@ -3354,6 +3391,22 @@ public class WifiConfigManager {
             return;
         }
         config.recentFailure.clear();
+    }
+
+    /**
+     * Clear all recent failure reasons that have timed out.
+     */
+    public void cleanupExpiredRecentFailureReasons() {
+        long timeoutDuration = mContext.getResources().getInteger(
+                R.integer.config_wifiRecentFailureReasonExpirationMinutes) * 60 * 1000;
+        for (WifiConfiguration config : getInternalConfiguredNetworks()) {
+            if (config.recentFailure.getAssociationStatus()
+                    != WifiConfiguration.RECENT_FAILURE_NONE
+                    && mClock.getElapsedSinceBootMillis()
+                    >= config.recentFailure.getLastUpdateTimeSinceBootMillis() + timeoutDuration) {
+                config.recentFailure.clear();
+            }
+        }
     }
 
     /**

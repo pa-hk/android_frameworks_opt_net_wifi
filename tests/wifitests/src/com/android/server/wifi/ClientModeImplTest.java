@@ -396,6 +396,7 @@ public class ClientModeImplTest extends WifiBaseTest {
     @Mock WifiNetworkFactory mWifiNetworkFactory;
     @Mock UntrustedWifiNetworkFactory mUntrustedWifiNetworkFactory;
     @Mock OemPaidWifiNetworkFactory mOemPaidWifiNetworkFactory;
+    @Mock OemPrivateWifiNetworkFactory mOemPrivateWifiNetworkFactory;
     @Mock WifiNetworkSuggestionsManager mWifiNetworkSuggestionsManager;
     @Mock LinkProbeManager mLinkProbeManager;
     @Mock PackageManager mPackageManager;
@@ -472,6 +473,7 @@ public class ClientModeImplTest extends WifiBaseTest {
         when(mWifiNetworkFactory.hasConnectionRequests()).thenReturn(true);
         when(mUntrustedWifiNetworkFactory.hasConnectionRequests()).thenReturn(true);
         when(mOemPaidWifiNetworkFactory.hasConnectionRequests()).thenReturn(true);
+        when(mOemPrivateWifiNetworkFactory.hasConnectionRequests()).thenReturn(true);
 
         mFrameworkFacade = getFrameworkFacade();
         mContext = getContext();
@@ -577,7 +579,7 @@ public class ClientModeImplTest extends WifiBaseTest {
                 mBssidBlocklistMonitor, mConnectionFailureNotifier,
                 WifiInjector.NETWORK_CAPABILITIES_FILTER, mWifiNetworkFactory,
                 mUntrustedWifiNetworkFactory, mOemPaidWifiNetworkFactory,
-                mWifiLastResortWatchdog, mWakeupController,
+                mOemPrivateWifiNetworkFactory, mWifiLastResortWatchdog, mWakeupController,
                 mWifiLockManager, null /*SelfRecovery*/, mFrameworkFacade, mLooper.getLooper(),
                 mCountryCode, mWifiNative,
                 mWrongPasswordNotifier, mWifiTrafficPoller, mLinkProbeManager,
@@ -598,6 +600,8 @@ public class ClientModeImplTest extends WifiBaseTest {
         mLooper.dispatchAll();
 
         verify(mWifiLastResortWatchdog, atLeastOnce()).clearAllFailureCounts();
+        // set ready for country code changes at initialization.
+        verify(mCountryCode, atLeastOnce()).setReadyForChange(true);
         assertEquals("DisconnectedState", getCurrentState().getName());
     }
 
@@ -704,6 +708,7 @@ public class ClientModeImplTest extends WifiBaseTest {
         verify(mWifiConnectivityManager).prepareForForcedConnection(eq(config.networkId));
         verify(mWifiConfigManager).getConfiguredNetworkWithoutMasking(eq(config.networkId));
         verify(mWifiNative).connectToNetwork(eq(WIFI_IFACE_NAME), eq(config));
+        verify(mCountryCode, atLeastOnce()).setReadyForChange(false);
         assertEquals("L2ConnectingState", mCmi.getCurrentState().getName());
     }
 
@@ -763,6 +768,7 @@ public class ClientModeImplTest extends WifiBaseTest {
         when(mWifiNetworkFactory.hasConnectionRequests()).thenReturn(false);
         when(mUntrustedWifiNetworkFactory.hasConnectionRequests()).thenReturn(false);
         when(mOemPaidWifiNetworkFactory.hasConnectionRequests()).thenReturn(false);
+        when(mOemPrivateWifiNetworkFactory.hasConnectionRequests()).thenReturn(false);
 
         WifiConfiguration config = WifiConfigurationTestUtil.createOpenNetwork();
         config.networkId = FRAMEWORK_NETWORK_ID;
@@ -844,7 +850,7 @@ public class ClientModeImplTest extends WifiBaseTest {
         verify(mWifiLockManager).updateWifiClientConnected(true);
         verify(mWifiNative).getConnectionCapabilities(any());
         verify(mThroughputPredictor).predictMaxTxThroughput(any());
-        verify(mWifiMetrics).setConnectionMaxSupportedLinkSpeedMbps(90, 80);
+        verify(mWifiMetrics).setConnectionMaxSupportedLinkSpeedMbps(WIFI_IFACE_NAME, 90, 80);
         verify(mWifiDataStall).setConnectionCapabilities(any());
         assertEquals(90, wifiInfo.getMaxSupportedTxLinkSpeedMbps());
     }
@@ -1238,6 +1244,7 @@ public class ClientModeImplTest extends WifiBaseTest {
         when(mWifiNetworkFactory.hasConnectionRequests()).thenReturn(false);
         when(mUntrustedWifiNetworkFactory.hasConnectionRequests()).thenReturn(false);
         when(mOemPaidWifiNetworkFactory.hasConnectionRequests()).thenReturn(false);
+        when(mOemPrivateWifiNetworkFactory.hasConnectionRequests()).thenReturn(false);
 
         WifiConfiguration config = WifiConfigurationTestUtil.createOpenNetwork();
         config.networkId = FRAMEWORK_NETWORK_ID + 1;
@@ -1264,6 +1271,7 @@ public class ClientModeImplTest extends WifiBaseTest {
         when(mWifiNetworkFactory.hasConnectionRequests()).thenReturn(false);
         when(mUntrustedWifiNetworkFactory.hasConnectionRequests()).thenReturn(false);
         when(mOemPaidWifiNetworkFactory.hasConnectionRequests()).thenReturn(false);
+        when(mOemPrivateWifiNetworkFactory.hasConnectionRequests()).thenReturn(false);
 
         when(mWifiPermissionsUtil.checkNetworkSettingsPermission(anyInt())).thenReturn(false);
 
@@ -1480,7 +1488,7 @@ public class ClientModeImplTest extends WifiBaseTest {
 
         // Ensure we don't end the new connection event.
         verify(mWifiMetrics, never()).endConnectionEvent(
-                eq(WifiMetrics.ConnectionEvent.FAILURE_NETWORK_DISCONNECTION),
+                any(), eq(WifiMetrics.ConnectionEvent.FAILURE_NETWORK_DISCONNECTION),
                 anyInt(), anyInt(), anyInt());
         verify(mWifiConnectivityManager).prepareForForcedConnection(FRAMEWORK_NETWORK_ID + 1);
     }
@@ -1663,7 +1671,7 @@ public class ClientModeImplTest extends WifiBaseTest {
         mLooper.dispatchAll();
 
         verify(mWifiMetrics).endConnectionEvent(
-                eq(WifiMetrics.ConnectionEvent.FAILURE_NETWORK_DISCONNECTION),
+                any(), eq(WifiMetrics.ConnectionEvent.FAILURE_NETWORK_DISCONNECTION),
                 anyInt(), anyInt(), anyInt());
         verify(mWifiConnectivityManager).handleConnectionAttemptEnded(
                 any(), anyInt(), any(), any());
@@ -1709,7 +1717,8 @@ public class ClientModeImplTest extends WifiBaseTest {
      */
     @Test
     public void testEapSimErrorVendorSpecific() throws Exception {
-        when(mWifiMetrics.startConnectionEvent(any(), anyString(), anyInt())).thenReturn(80000);
+        when(mWifiMetrics.startConnectionEvent(any(), any(), anyString(), anyInt()))
+                .thenReturn(80000);
         initializeAndAddNetworkAndVerifySuccess();
 
         startConnectSuccess();
@@ -1842,6 +1851,7 @@ public class ClientModeImplTest extends WifiBaseTest {
         verify(mWifiNative).disableNetwork(WIFI_IFACE_NAME);
         // Set MAC address thrice - once at bootup, once for new connection, once for disconnect.
         verify(mWifiNative, times(3)).setStaMacAddress(eq(WIFI_IFACE_NAME), any());
+        verify(mCountryCode, times(2)).setReadyForChange(true);
     }
 
     /**
@@ -2928,6 +2938,59 @@ public class ClientModeImplTest extends WifiBaseTest {
 
         verify(mBssidBlocklistMonitor).handleBssidConnectionFailure(sBSSID, sSSID,
                 BssidBlocklistMonitor.REASON_ASSOCIATION_TIMEOUT, testLowRssi);
+    }
+
+    /**
+     * Verify that the recent failure association status is updated properly when
+     * ASSOC_REJECTED_TEMPORARILY occurs.
+     */
+    @Test
+    public void testAssocRejectedTemporarilyUpdatesRecentAssociationFailureStatus()
+            throws Exception {
+        initializeAndAddNetworkAndVerifySuccess();
+        mCmi.sendMessage(ClientModeImpl.CMD_START_CONNECT, 0, 0, sBSSID);
+        mCmi.sendMessage(WifiMonitor.ASSOCIATION_REJECTION_EVENT,
+                new AssocRejectEventInfo(sSSID, sBSSID,
+                        ISupplicantStaIfaceCallback.StatusCode.ASSOC_REJECTED_TEMPORARILY,
+                        false));
+        mLooper.dispatchAll();
+        verify(mWifiConfigManager).setRecentFailureAssociationStatus(anyInt(),
+                eq(WifiConfiguration.RECENT_FAILURE_REFUSED_TEMPORARILY));
+    }
+
+    /**
+     * Verify that the recent failure association status is updated properly when
+     * DENIED_POOR_CHANNEL_CONDITIONS occurs.
+     */
+    @Test
+    public void testAssocRejectedPoorChannelConditionsUpdatesRecentAssociationFailureStatus()
+            throws Exception {
+        initializeAndAddNetworkAndVerifySuccess();
+        mCmi.sendMessage(ClientModeImpl.CMD_START_CONNECT, 0, 0, sBSSID);
+        mCmi.sendMessage(WifiMonitor.ASSOCIATION_REJECTION_EVENT,
+                new AssocRejectEventInfo(sSSID, sBSSID,
+                        ISupplicantStaIfaceCallback.StatusCode.DENIED_POOR_CHANNEL_CONDITIONS,
+                        false));
+        mLooper.dispatchAll();
+        verify(mWifiConfigManager).setRecentFailureAssociationStatus(anyInt(),
+                eq(WifiConfiguration.RECENT_FAILURE_POOR_CHANNEL_CONDITIONS));
+    }
+
+    /**
+     * Verify that the recent failure association status is updated properly when a disconnection
+     * with reason code DISASSOC_AP_BUSY occurs.
+     */
+    @Test
+    public void testNetworkDisconnectionApBusyUpdatesRecentAssociationFailureStatus()
+            throws Exception {
+        connect();
+        // Disconnection with reason = DISASSOC_AP_BUSY
+        DisconnectEventInfo disconnectEventInfo =
+                new DisconnectEventInfo(sSSID, sBSSID, 5, false);
+        mCmi.sendMessage(WifiMonitor.NETWORK_DISCONNECTION_EVENT, disconnectEventInfo);
+        mLooper.dispatchAll();
+        verify(mWifiConfigManager).setRecentFailureAssociationStatus(anyInt(),
+                eq(WifiConfiguration.RECENT_FAILURE_DISCONNECTION_AP_BUSY));
     }
 
     /**
@@ -4599,10 +4662,10 @@ public class ClientModeImplTest extends WifiBaseTest {
      */
     @Test
     public void testWifiInfoOnConnectingNextNetwork() throws Exception {
-
         mConnectedNetwork.ephemeral = true;
         mConnectedNetwork.trusted = true;
         mConnectedNetwork.oemPaid = true;
+        mConnectedNetwork.oemPrivate = true;
         mConnectedNetwork.osu = true;
 
         triggerConnect();
@@ -4627,6 +4690,7 @@ public class ClientModeImplTest extends WifiBaseTest {
         assertEquals(mConnectedNetwork.ephemeral, mWifiInfo.isEphemeral());
         assertEquals(mConnectedNetwork.trusted, mWifiInfo.isTrusted());
         assertEquals(mConnectedNetwork.oemPaid, mWifiInfo.isOemPaid());
+        assertEquals(mConnectedNetwork.oemPrivate, mWifiInfo.isOemPrivate());
         assertEquals(mConnectedNetwork.osu, mWifiInfo.isOsuAp());
     }
 
@@ -5050,7 +5114,7 @@ public class ClientModeImplTest extends WifiBaseTest {
 
     /**
      * Ensure that {@link ClientModeImpl#dump(FileDescriptor, PrintWriter, String[])}
-     * {@link ClientModeImpl#updateLinkLayerStatsRssiAndScoreReport()}, at least once before calling
+     * {@link WifiNative#getWifiLinkLayerStats(String)}, at least once before calling
      * {@link WifiScoreReport#dump(FileDescriptor, PrintWriter, String[])}.
      *
      * This ensures that WifiScoreReport will always get updated RSSI and link layer stats before
@@ -5136,7 +5200,6 @@ public class ClientModeImplTest extends WifiBaseTest {
                     assertTrue(cap.hasCapability(NetworkCapabilities.NET_CAPABILITY_OEM_PAID));
                 });
     }
-
     @Test
     public void testNotOemPaidNetworkCapability() throws Exception {
         mConnectedNetwork.oemPaid = false;
@@ -5144,6 +5207,26 @@ public class ClientModeImplTest extends WifiBaseTest {
         expectRegisterNetworkAgent((agentConfig) -> { },
                 (cap) -> {
                     assertFalse(cap.hasCapability(NetworkCapabilities.NET_CAPABILITY_OEM_PAID));
+                });
+    }
+
+    @Test
+    public void testOemPrivateNetworkCapability() throws Exception {
+        mConnectedNetwork.oemPrivate = true;
+        connect();
+        expectRegisterNetworkAgent((agentConfig) -> { },
+                (cap) -> {
+                    assertTrue(cap.hasCapability(NetworkCapabilities.NET_CAPABILITY_OEM_PRIVATE));
+                });
+    }
+
+    @Test
+    public void testNotOemPrivateNetworkCapability() throws Exception {
+        mConnectedNetwork.oemPrivate = false;
+        connect();
+        expectRegisterNetworkAgent((agentConfig) -> { },
+                (cap) -> {
+                    assertFalse(cap.hasCapability(NetworkCapabilities.NET_CAPABILITY_OEM_PRIVATE));
                 });
     }
 

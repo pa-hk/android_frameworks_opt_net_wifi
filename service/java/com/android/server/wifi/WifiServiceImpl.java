@@ -85,7 +85,6 @@ import android.net.wifi.hotspot2.OsuProvider;
 import android.net.wifi.hotspot2.PasspointConfiguration;
 import android.net.wifi.WifiDppConfig;
 import android.net.wifi.SupplicantState;
-import android.net.wifi.util.SdkLevelUtil;
 import android.os.AsyncTask;
 import android.os.Binder;
 import android.os.Build;
@@ -113,6 +112,7 @@ import android.util.MutableBoolean;
 
 import com.android.internal.annotations.GuardedBy;
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.Inet4AddressUtils;
 import com.android.server.wifi.hotspot2.PasspointManager;
 import com.android.server.wifi.hotspot2.PasspointProvider;
@@ -158,8 +158,6 @@ import java.util.concurrent.TimeUnit;
  */
 public class WifiServiceImpl extends BaseWifiService {
     private static final String TAG = "WifiService";
-    private static final int APP_INFO_FLAGS_SYSTEM_APP =
-            ApplicationInfo.FLAG_SYSTEM | ApplicationInfo.FLAG_UPDATED_SYSTEM_APP;
     private static final boolean VDBG = false;
 
     /** Max wait time for posting blocking runnables */
@@ -442,7 +440,9 @@ public class WifiServiceImpl extends BaseWifiService {
             }
 
             // do additional handling if we are current connected to a sim auth network
-            mActiveModeWarden.getPrimaryClientModeManager().resetSimAuthNetworks(resetReason);
+            for (ClientModeManager cmm : mActiveModeWarden.getClientModeManagers()) {
+                cmm.resetSimAuthNetworks(resetReason);
+            }
             mWifiNetworkSuggestionsManager.resetCarrierPrivilegedApps();
             if (resetReason != RESET_SIM_REASON_SIM_INSERTED) {
                 // Remove all ephemeral carrier networks keep subscriptionId update with SIM changes
@@ -503,6 +503,7 @@ public class WifiServiceImpl extends BaseWifiService {
             mWifiInjector.getWifiNetworkFactory().register();
             mWifiInjector.getUntrustedWifiNetworkFactory().register();
             mWifiInjector.getOemPaidWifiNetworkFactory().register();
+            mWifiInjector.getOemPrivateWifiNetworkFactory().register();
             mWifiInjector.getWifiP2pConnection().handleBootCompleted();
             mTetheredSoftApTracker.handleBootCompleted();
         });
@@ -684,23 +685,6 @@ public class WifiServiceImpl extends BaseWifiService {
                 || checkNetworkSetupWizardPermission(pid, uid);
     }
 
-    /** Helper method to check if the entity initiating the binder call is a system app. */
-    private boolean isSystem(String packageName, int uid) {
-        long ident = Binder.clearCallingIdentity();
-        try {
-            ApplicationInfo info = mContext.getPackageManager().getApplicationInfoAsUser(
-                    packageName, 0, UserHandle.getUserHandleForUid(uid));
-            return (info.flags & APP_INFO_FLAGS_SYSTEM_APP) != 0;
-        } catch (PackageManager.NameNotFoundException e) {
-            // In case of exception, assume unknown app (more strict checking)
-            // Note: This case will never happen since checkPackage is
-            // called to verify validity before checking App's version.
-        } finally {
-            Binder.restoreCallingIdentity(ident);
-        }
-        return false;
-    }
-
     /** Helper method to check if the entity initiating the binder call is a DO/PO app. */
     private boolean isDeviceOrProfileOwner(int uid, String packageName) {
         return mWifiPermissionsUtil.isDeviceOwner(uid, packageName)
@@ -802,7 +786,7 @@ public class WifiServiceImpl extends BaseWifiService {
         return mWifiPermissionsUtil.isTargetSdkLessThan(packageName, Build.VERSION_CODES.Q, uid)
                 || isPrivileged(pid, uid)
                 || isDeviceOrProfileOwner(uid, packageName)
-                || isSystem(packageName, uid)
+                || mWifiPermissionsUtil.isSystem(packageName, uid)
                 // TODO(b/140540984): Remove this bypass.
                 || mWifiPermissionsUtil.checkSystemAlertWindowPermission(uid, packageName);
     }
@@ -816,7 +800,7 @@ public class WifiServiceImpl extends BaseWifiService {
         return mWifiPermissionsUtil.isTargetSdkLessThan(packageName, Build.VERSION_CODES.R, uid)
                 || isPrivileged(pid, uid)
                 || isDeviceOrProfileOwner(uid, packageName)
-                || isSystem(packageName, uid);
+                || mWifiPermissionsUtil.isSystem(packageName, uid);
     }
 
     /**
@@ -834,7 +818,7 @@ public class WifiServiceImpl extends BaseWifiService {
         if (!isPrivileged && !isDeviceOrProfileOwner(Binder.getCallingUid(), packageName)
                 && !mWifiPermissionsUtil.isTargetSdkLessThan(packageName, Build.VERSION_CODES.Q,
                   Binder.getCallingUid())
-                && !isSystem(packageName, Binder.getCallingUid())) {
+                && !mWifiPermissionsUtil.isSystem(packageName, Binder.getCallingUid())) {
             mLog.info("setWifiEnabled not allowed for uid=%")
                     .c(Binder.getCallingUid()).flush();
             return false;
@@ -2148,8 +2132,7 @@ public class WifiServiceImpl extends BaseWifiService {
         } finally {
             Binder.restoreCallingIdentity(ident);
         }
-        mActiveModeWarden.scanAlwaysModeChanged(
-                new WorkSource(Binder.getCallingUid(), packageName));
+        mActiveModeWarden.scanAlwaysModeChanged();
     }
 
     /**
@@ -2161,7 +2144,7 @@ public class WifiServiceImpl extends BaseWifiService {
         if (mVerboseLoggingEnabled) {
             mLog.info("isScanAlwaysAvailable uid=%").c(Binder.getCallingUid()).flush();
         }
-        return mSettingsStore.isScanAlwaysAvailable();
+        return mSettingsStore.isScanAlwaysAvailableToggleEnabled();
     }
 
     /**
@@ -3140,7 +3123,7 @@ public class WifiServiceImpl extends BaseWifiService {
 
     @Override
     public boolean is60GHzBandSupported() {
-        if (!SdkLevelUtil.isAtLeastS()) {
+        if (!SdkLevel.isAtLeastS()) {
             throw new UnsupportedOperationException();
         }
 
@@ -3403,7 +3386,7 @@ public class WifiServiceImpl extends BaseWifiService {
             @NonNull ParcelFileDescriptor out, @NonNull ParcelFileDescriptor err,
             @NonNull String[] args) {
         WifiShellCommand shellCommand =  new WifiShellCommand(mWifiInjector, this, mContext,
-                mActiveModeWarden.getPrimaryClientModeManager(), mWifiGlobals);
+                mWifiGlobals);
         return shellCommand.exec(this, in.getFileDescriptor(), out.getFileDescriptor(),
                 err.getFileDescriptor(), args);
     }
@@ -3418,7 +3401,8 @@ public class WifiServiceImpl extends BaseWifiService {
                 WifiConfigManager.ENHANCED_MAC_RANDOMIZATION_FEATURE_FORCE_ENABLE_FLAG, 0) == 1
                 ? true : false;
         mWifiMetrics.setEnhancedMacRandomizationForceEnabled(isEnhancedMacRandEnabled);
-        mWifiMetrics.setIsScanningAlwaysEnabled(mSettingsStore.isScanAlwaysAvailable());
+        mWifiMetrics.setIsScanningAlwaysEnabled(
+                mSettingsStore.isScanAlwaysAvailableToggleEnabled());
         mWifiMetrics.setVerboseLoggingEnabled(mVerboseLoggingEnabled);
         mWifiMetrics.setWifiWakeEnabled(mWifiInjector.getWakeupController().isEnabled());
     }
@@ -3492,6 +3476,7 @@ public class WifiServiceImpl extends BaseWifiService {
             mWifiInjector.getWifiNetworkFactory().dump(fd, pw, args);
             mWifiInjector.getUntrustedWifiNetworkFactory().dump(fd, pw, args);
             mWifiInjector.getOemPaidWifiNetworkFactory().dump(fd, pw, args);
+            mWifiInjector.getOemPrivateWifiNetworkFactory().dump(fd, pw, args);
             pw.println("Wlan Wake Reasons:" + mWifiNative.getWlanWakeReasonCount());
             pw.println();
             mWifiConfigManager.dump(fd, pw, args);
@@ -3943,7 +3928,7 @@ public class WifiServiceImpl extends BaseWifiService {
                         concurrencyFeatureSet |= WifiManager.WIFI_FEATURE_AP_STA;
                     }
                     // New feature flag in S.
-                    if (SdkLevelUtil.isAtLeastS()
+                    if (SdkLevel.isAtLeastS()
                             && mActiveModeWarden.isStaStaConcurrencySupported()) {
                         concurrencyFeatureSet |= WifiManager.WIFI_FEATURE_ADDITIONAL_STA;
                     }

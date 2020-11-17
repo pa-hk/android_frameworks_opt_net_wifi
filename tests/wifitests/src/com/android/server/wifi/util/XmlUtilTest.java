@@ -232,6 +232,7 @@ public class XmlUtilTest extends WifiBaseTest {
         configuration.useExternalScores = true;
         configuration.numAssociation = 5;
         configuration.oemPaid = true;
+        configuration.oemPrivate = true;
         configuration.lastUpdateUid = configuration.lastConnectUid = configuration.creatorUid;
         configuration.creatorName = configuration.lastUpdateName = TEST_PACKAGE_NAME;
         configuration.setRandomizedMacAddress(MacAddressUtils.createRandomUnicastAddress());
@@ -499,6 +500,30 @@ public class XmlUtilTest extends WifiBaseTest {
         config.enterpriseConfig.setPlmn("1234");
         config.enterpriseConfig.setRealm("test.com");
         serializeDeserializeWifiConfigurationForConfigStore(config);
+    }
+
+    /**
+     * Verify that when XML_TAG_IS_CAPTIVE_PORTAL_NEVER_DETECTED is not found in the XML file, the
+     * corresponding field defaults to false.
+     * @throws IOException
+     * @throws XmlPullParserException
+     */
+    @Test
+    public void testCaptivePortalNeverDetected_DefaultToFalse()
+            throws IOException, XmlPullParserException {
+        // First generate XML data that only has the header filled in
+        final XmlSerializer out = new FastXmlSerializer();
+        final ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+        out.setOutput(outputStream, StandardCharsets.UTF_8.name());
+        XmlUtil.writeDocumentStart(out, mXmlDocHeader);
+        XmlUtil.writeDocumentEnd(out, mXmlDocHeader);
+
+        // Deserialize the data
+        NetworkSelectionStatus retrieved =
+                deserializeNetworkSelectionStatus(outputStream.toByteArray());
+
+        // Verify that hasNeverDetectedCaptivePortal returns false.
+        assertFalse(retrieved.hasNeverDetectedCaptivePortal());
     }
 
     /**

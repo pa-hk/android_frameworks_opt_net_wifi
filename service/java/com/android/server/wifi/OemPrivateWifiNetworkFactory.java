@@ -28,16 +28,16 @@ import java.io.FileDescriptor;
 import java.io.PrintWriter;
 
 /**
- * Network factory to handle oem paid wifi network requests.
+ * Network factory to handle oem private wifi network requests.
  */
-public class OemPaidWifiNetworkFactory extends NetworkFactory {
-    private static final String TAG = "OemPaidWifiNetworkFactory";
+public class OemPrivateWifiNetworkFactory extends NetworkFactory {
+    private static final String TAG = "OemPrivateWifiNetworkFactory";
     private static final int SCORE_FILTER = Integer.MAX_VALUE;
 
     private final WifiConnectivityManager mWifiConnectivityManager;
     private int mConnectionReqCount = 0;
 
-    public OemPaidWifiNetworkFactory(Looper l, Context c, NetworkCapabilities f,
+    public OemPrivateWifiNetworkFactory(Looper l, Context c, NetworkCapabilities f,
                                        WifiConnectivityManager connectivityManager) {
         super(l, c, TAG, f);
         mWifiConnectivityManager = connectivityManager;
@@ -47,24 +47,24 @@ public class OemPaidWifiNetworkFactory extends NetworkFactory {
 
     @Override
     protected void needNetworkFor(NetworkRequest networkRequest, int score) {
-        if (networkRequest.hasCapability(NetworkCapabilities.NET_CAPABILITY_OEM_PAID)) {
+        if (networkRequest.hasCapability(NetworkCapabilities.NET_CAPABILITY_OEM_PRIVATE)) {
             if (++mConnectionReqCount == 1) {
-                mWifiConnectivityManager.setOemPaidConnectionAllowed(
+                mWifiConnectivityManager.setOemPrivateConnectionAllowed(
                         true, new WorkSource(networkRequest.getRequestorUid(),
-                                networkRequest.getRequestorPackageName()));
+                        networkRequest.getRequestorPackageName()));
             }
         }
     }
 
     @Override
     protected void releaseNetworkFor(NetworkRequest networkRequest) {
-        if (networkRequest.hasCapability(NetworkCapabilities.NET_CAPABILITY_OEM_PAID)) {
+        if (networkRequest.hasCapability(NetworkCapabilities.NET_CAPABILITY_OEM_PRIVATE)) {
             if (mConnectionReqCount == 0) {
                 Log.e(TAG, "No valid network request to release");
                 return;
             }
             if (--mConnectionReqCount == 0) {
-                mWifiConnectivityManager.setOemPaidConnectionAllowed(false, null);
+                mWifiConnectivityManager.setOemPrivateConnectionAllowed(false, null);
             }
         }
     }

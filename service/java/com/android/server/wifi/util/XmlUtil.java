@@ -356,6 +356,7 @@ public class XmlUtil {
         public static final String XML_TAG_IS_AUTO_JOIN = "AutoJoinEnabled";
         public static final String XML_TAG_IS_TRUSTED = "Trusted";
         public static final String XML_TAG_IS_OEM_PAID = "OemPaid";
+        public static final String XML_TAG_IS_OEM_PRIVATE = "OemPrivate";
         private static final String XML_TAG_IS_MOST_RECENTLY_CONNECTED = "IsMostRecentlyConnected";
         public static final String XML_TAG_SHARE_THIS_AP = "ShareThisAp";
 
@@ -495,6 +496,7 @@ public class XmlUtil {
             writeCommonElementsToXml(out, configuration, encryptionUtil);
             XmlUtil.writeNextValue(out, XML_TAG_IS_TRUSTED, configuration.trusted);
             XmlUtil.writeNextValue(out, XML_TAG_IS_OEM_PAID, configuration.oemPaid);
+            XmlUtil.writeNextValue(out, XML_TAG_IS_OEM_PRIVATE, configuration.oemPrivate);
             XmlUtil.writeNextValue(out, XML_TAG_BSSID, configuration.BSSID);
             XmlUtil.writeNextValue(out, XML_TAG_STATUS, configuration.status);
             XmlUtil.writeNextValue(out, XML_TAG_FQDN, configuration.FQDN);
@@ -747,6 +749,9 @@ public class XmlUtil {
                             break;
                         case XML_TAG_IS_OEM_PAID:
                             configuration.oemPaid = (boolean) value;
+                            break;
+                        case XML_TAG_IS_OEM_PRIVATE:
+                            configuration.oemPrivate = (boolean) value;
                             break;
                         case XML_TAG_IS_MOST_RECENTLY_CONNECTED:
                             configuration.isMostRecentlyConnected = (boolean) value;
@@ -1048,6 +1053,8 @@ public class XmlUtil {
         public static final String XML_TAG_DISABLE_REASON = "DisableReason";
         public static final String XML_TAG_CONNECT_CHOICE = "ConnectChoice";
         public static final String XML_TAG_HAS_EVER_CONNECTED = "HasEverConnected";
+        public static final String XML_TAG_IS_CAPTIVE_PORTAL_NEVER_DETECTED =
+                "CaptivePortalNeverDetected";
 
         /**
          * Write the NetworkSelectionStatus data elements from the provided status to the XML
@@ -1066,6 +1073,8 @@ public class XmlUtil {
             XmlUtil.writeNextValue(out, XML_TAG_CONNECT_CHOICE, selectionStatus.getConnectChoice());
             XmlUtil.writeNextValue(
                     out, XML_TAG_HAS_EVER_CONNECTED, selectionStatus.hasEverConnected());
+            XmlUtil.writeNextValue(out, XML_TAG_IS_CAPTIVE_PORTAL_NEVER_DETECTED,
+                    selectionStatus.hasNeverDetectedCaptivePortal());
         }
 
         /**
@@ -1081,6 +1090,9 @@ public class XmlUtil {
             NetworkSelectionStatus selectionStatus = new NetworkSelectionStatus();
             String statusString = "";
             String disableReasonString = "";
+            // Initialize hasNeverDetectedCaptivePortal to "false" for upgrading legacy configs
+            // which do not have the XML_TAG_IS_CAPTIVE_PORTAL_NEVER_DETECTED tag.
+            selectionStatus.setHasNeverDetectedCaptivePortal(false);
 
             // Loop through and parse out all the elements from the stream within this section.
             while (!XmlUtil.isNextSectionEnd(in, outerTagDepth)) {
@@ -1102,6 +1114,8 @@ public class XmlUtil {
                     case XML_TAG_HAS_EVER_CONNECTED:
                         selectionStatus.setHasEverConnected((boolean) value);
                         break;
+                    case XML_TAG_IS_CAPTIVE_PORTAL_NEVER_DETECTED:
+                        selectionStatus.setHasNeverDetectedCaptivePortal((boolean) value);
                     default:
                         Log.w(TAG, "Ignoring unknown value name found: " + valueName[0]);
                         break;

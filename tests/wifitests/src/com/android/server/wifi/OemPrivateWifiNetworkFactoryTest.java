@@ -33,10 +33,10 @@ import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
 /**
- * Unit tests for {@link com.android.server.wifi.OemPaidWifiNetworkFactory}.
+ * Unit tests for {@link com.android.server.wifi.OemPrivateWifiNetworkFactory}.
  */
 @SmallTest
-public class OemPaidWifiNetworkFactoryTest extends WifiBaseTest {
+public class OemPrivateWifiNetworkFactoryTest extends WifiBaseTest {
     private static final int TEST_UID = 4556;
     private static final String TEST_PACKAGE_NAME = "com.test";
     private static final WorkSource TEST_WORKSOURCE = new WorkSource(TEST_UID, TEST_PACKAGE_NAME);
@@ -47,7 +47,7 @@ public class OemPaidWifiNetworkFactoryTest extends WifiBaseTest {
     TestLooper mLooper;
     NetworkRequest mNetworkRequest;
 
-    private OemPaidWifiNetworkFactory mOemPaidWifiNetworkFactory;
+    private OemPrivateWifiNetworkFactory mOemPrivateWifiNetworkFactory;
 
     /**
      * Setup the mocks.
@@ -59,11 +59,11 @@ public class OemPaidWifiNetworkFactoryTest extends WifiBaseTest {
         mLooper = new TestLooper();
         mNetworkCapabilities = new NetworkCapabilities();
         mNetworkCapabilities.addTransportType(NetworkCapabilities.TRANSPORT_WIFI);
-        mNetworkCapabilities.addCapability(NetworkCapabilities.NET_CAPABILITY_OEM_PAID);
+        mNetworkCapabilities.addCapability(NetworkCapabilities.NET_CAPABILITY_OEM_PRIVATE);
         mNetworkCapabilities.setRequestorUid(TEST_UID);
         mNetworkCapabilities.setRequestorPackageName(TEST_PACKAGE_NAME);
 
-        mOemPaidWifiNetworkFactory = new OemPaidWifiNetworkFactory(
+        mOemPrivateWifiNetworkFactory = new OemPrivateWifiNetworkFactory(
                 mLooper.getLooper(), mContext,
                 mNetworkCapabilities, mWifiConnectivityManager);
 
@@ -85,15 +85,15 @@ public class OemPaidWifiNetworkFactoryTest extends WifiBaseTest {
      */
     @Test
     public void testHandleNetworkRequest() {
-        assertFalse(mOemPaidWifiNetworkFactory.hasConnectionRequests());
-        mOemPaidWifiNetworkFactory.needNetworkFor(mNetworkRequest, 0);
+        assertFalse(mOemPrivateWifiNetworkFactory.hasConnectionRequests());
+        mOemPrivateWifiNetworkFactory.needNetworkFor(mNetworkRequest, 0);
 
         // First network request should turn on auto-join.
-        verify(mWifiConnectivityManager).setOemPaidConnectionAllowed(true, TEST_WORKSOURCE);
-        assertTrue(mOemPaidWifiNetworkFactory.hasConnectionRequests());
+        verify(mWifiConnectivityManager).setOemPrivateConnectionAllowed(true, TEST_WORKSOURCE);
+        assertTrue(mOemPrivateWifiNetworkFactory.hasConnectionRequests());
 
         // Subsequent ones should do nothing.
-        mOemPaidWifiNetworkFactory.needNetworkFor(mNetworkRequest, 0);
+        mOemPrivateWifiNetworkFactory.needNetworkFor(mNetworkRequest, 0);
         verifyNoMoreInteractions(mWifiConnectivityManager);
     }
 
@@ -103,16 +103,16 @@ public class OemPaidWifiNetworkFactoryTest extends WifiBaseTest {
     @Test
     public void testHandleNetworkRelease() {
         // Release network without a corresponding request should be ignored.
-        mOemPaidWifiNetworkFactory.releaseNetworkFor(mNetworkRequest);
-        assertFalse(mOemPaidWifiNetworkFactory.hasConnectionRequests());
+        mOemPrivateWifiNetworkFactory.releaseNetworkFor(mNetworkRequest);
+        assertFalse(mOemPrivateWifiNetworkFactory.hasConnectionRequests());
 
         // Now request & then release the network request
-        mOemPaidWifiNetworkFactory.needNetworkFor(mNetworkRequest, 0);
-        assertTrue(mOemPaidWifiNetworkFactory.hasConnectionRequests());
-        verify(mWifiConnectivityManager).setOemPaidConnectionAllowed(true, TEST_WORKSOURCE);
+        mOemPrivateWifiNetworkFactory.needNetworkFor(mNetworkRequest, 0);
+        assertTrue(mOemPrivateWifiNetworkFactory.hasConnectionRequests());
+        verify(mWifiConnectivityManager).setOemPrivateConnectionAllowed(true, TEST_WORKSOURCE);
 
-        mOemPaidWifiNetworkFactory.releaseNetworkFor(mNetworkRequest);
-        assertFalse(mOemPaidWifiNetworkFactory.hasConnectionRequests());
-        verify(mWifiConnectivityManager).setOemPaidConnectionAllowed(false, null);
+        mOemPrivateWifiNetworkFactory.releaseNetworkFor(mNetworkRequest);
+        assertFalse(mOemPrivateWifiNetworkFactory.hasConnectionRequests());
+        verify(mWifiConnectivityManager).setOemPrivateConnectionAllowed(false, null);
     }
 }

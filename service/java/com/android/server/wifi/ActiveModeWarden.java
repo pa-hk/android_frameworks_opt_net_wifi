@@ -36,6 +36,7 @@ import android.location.LocationManager;
 import android.net.wifi.IWifiConnectedNetworkScorer;
 import android.net.wifi.SoftApCapability;
 import android.net.wifi.SoftApConfiguration;
+import android.net.wifi.WifiConfiguration;
 import android.net.wifi.WifiManager;
 import android.os.BatteryStatsManager;
 import android.os.Handler;
@@ -43,6 +44,7 @@ import android.os.IBinder;
 import android.os.Looper;
 import android.os.Message;
 import android.os.UserHandle;
+import android.os.Process;
 import android.os.WorkSource;
 import android.provider.Settings;
 import android.telephony.TelephonyManager;
@@ -81,6 +83,7 @@ import java.util.stream.Stream;
 public class ActiveModeWarden {
     private static final String TAG = "WifiActiveModeWarden";
     private static final String STATE_MACHINE_EXITED_STATE_NAME = "STATE_MACHINE_EXITED";
+    public static final WorkSource INTERNAL_REQUESTOR_WS = new WorkSource(Process.WIFI_UID);
 
     // Holder for active mode managers
     private final ArraySet<ConcreteClientModeManager> mClientModeManagers = new ArraySet<>();
@@ -358,7 +361,7 @@ public class ActiveModeWarden {
             public void onReceive(Context context, Intent intent) {
                 // Location mode has been toggled...  trigger with the scan change
                 // update to make sure we are in the correct mode
-                scanAlwaysModeChanged(mFacade.getSettingsWorkSource(mContext));
+                scanAlwaysModeChanged();
             }
         }, new IntentFilter(LocationManager.MODE_CHANGED_ACTION));
         mContext.registerReceiver(new BroadcastReceiver() {
@@ -450,8 +453,14 @@ public class ActiveModeWarden {
     }
 
     /** Scan always mode has changed. */
-    public void scanAlwaysModeChanged(WorkSource requestorWs) {
-        mWifiController.sendMessage(WifiController.CMD_SCAN_ALWAYS_MODE_CHANGED, requestorWs);
+    public void scanAlwaysModeChanged() {
+        mWifiController.sendMessage(
+                WifiController.CMD_SCAN_ALWAYS_MODE_CHANGED,
+                // Scan only mode change is not considered a direct user interaction since user
+                // is not explicitly turning on wifi scanning (side-effect of location toggle).
+                // So, use the lowest priority internal requestor worksource to ensure that this
+                // is treated with the lowest priority.
+                INTERNAL_REQUESTOR_WS);
     }
 
     /**
@@ -466,56 +475,87 @@ public class ActiveModeWarden {
     }
 
     private static class AdditionalClientModeManagerRequestInfo {
-        public final ExternalClientModeManagerRequestListener listener;
-        public final WorkSource requestorWs;
-        public final ClientConnectivityRole clientRole;
+        @NonNull public final ExternalClientModeManagerRequestListener listener;
+        @NonNull public final WorkSource requestorWs;
+        @NonNull public final ClientConnectivityRole clientRole;
+        @NonNull public final String ssid;
+        @Nullable public final String bssid;
 
         AdditionalClientModeManagerRequestInfo(
-                ExternalClientModeManagerRequestListener listener, WorkSource requestorWs,
-                ClientConnectivityRole clientRole) {
+                @NonNull  ExternalClientModeManagerRequestListener listener,
+                @NonNull WorkSource requestorWs,
+                @NonNull ClientConnectivityRole clientRole,
+                @NonNull String ssid,
+                // For some use-cases, bssid is selected by firmware.
+                @Nullable String bssid) {
             this.listener = listener;
             this.requestorWs = requestorWs;
             this.clientRole = clientRole;
+            this.ssid = ssid;
+            this.bssid = bssid;
         }
     }
 
     /**
-     * Request a new local only client manager.
+     * Request a local only client manager.
+     *
+     * @param listener used to receive the requested ClientModeManager. Will receive:
+     *                 1. null - if Wifi is toggled off
+     *                 2. The primary ClientModeManager - if a new ClientModeManager cannot be
+     *                    created.
+     *                 3. The new ClientModeManager - if it was created successfully.
+     * @param requestorWs the WorkSource for this request
      */
     public void requestLocalOnlyClientModeManager(
             @NonNull ExternalClientModeManagerRequestListener listener,
-            @NonNull WorkSource requestorWs) {
+            @NonNull WorkSource requestorWs, @NonNull String ssid, @NonNull String bssid) {
         mWifiController.sendMessage(
                 WifiController.CMD_REQUEST_ADDITIONAL_CLIENT_MODE_MANAGER,
                 new AdditionalClientModeManagerRequestInfo(
                         Objects.requireNonNull(listener), Objects.requireNonNull(requestorWs),
-                        ROLE_CLIENT_LOCAL_ONLY));
+                        ROLE_CLIENT_LOCAL_ONLY, ssid, bssid));
     }
 
     /**
-     * Request a new secondary long lived client manager.
+     * Request a secondary long lived client manager.
+     *
+     * @param listener used to receive the requested ClientModeManager. Will receive:
+     *                 1. null - if Wifi is toggled off
+     *                 2. The primary ClientModeManager - if a new ClientModeManager cannot be
+     *                    created.
+     *                 3. The new ClientModeManager - if it was created successfully.
+     * @param requestorWs the WorkSource for this request
      */
     public void requestSecondaryLongLivedClientModeManager(
             @NonNull ExternalClientModeManagerRequestListener listener,
-            @NonNull WorkSource requestorWs) {
+            @NonNull WorkSource requestorWs, @NonNull String ssid, @Nullable String bssid) {
         mWifiController.sendMessage(
                 WifiController.CMD_REQUEST_ADDITIONAL_CLIENT_MODE_MANAGER,
                 new AdditionalClientModeManagerRequestInfo(
                         Objects.requireNonNull(listener), Objects.requireNonNull(requestorWs),
-                        ROLE_CLIENT_SECONDARY_LONG_LIVED));
+                        ROLE_CLIENT_SECONDARY_LONG_LIVED, ssid, bssid));
     }
 
     /**
-     * Request a new secondary transient client manager.
+     * Request a secondary transient client manager.
+     *
+     * @param listener used to receive the requested ClientModeManager. Will receive:
+     *                 1. null - if Wifi is toggled off.
+     *                 2. An existing secondary transient ClientModeManager - if it already exists.
+     *                 3. A new secondary transient ClientModeManager - if one doesn't exist and one
+     *                    was created successfully.
+     *                 4. The primary ClientModeManager - if a new ClientModeManager cannot be
+     *                    created.
+     * @param requestorWs the WorkSource for this request
      */
     public void requestSecondaryTransientClientModeManager(
             @NonNull ExternalClientModeManagerRequestListener listener,
-            @NonNull WorkSource requestorWs) {
+            @NonNull WorkSource requestorWs, @NonNull String ssid, @Nullable String bssid) {
         mWifiController.sendMessage(
                 WifiController.CMD_REQUEST_ADDITIONAL_CLIENT_MODE_MANAGER,
                 new AdditionalClientModeManagerRequestInfo(
                         Objects.requireNonNull(listener), Objects.requireNonNull(requestorWs),
-                        ROLE_CLIENT_SECONDARY_TRANSIENT));
+                        ROLE_CLIENT_SECONDARY_TRANSIENT, ssid, bssid));
     }
 
     /**
@@ -524,6 +564,13 @@ public class ActiveModeWarden {
     public void removeClientModeManager(ClientModeManager clientModeManager) {
         mWifiController.sendMessage(
                 WifiController.CMD_REMOVE_ADDITIONAL_CLIENT_MODE_MANAGER, clientModeManager);
+    }
+
+    /**
+     * Check whether we have a primary client mode manager (indicates wifi toggle on).
+     */
+    public boolean hasPrimaryClientModeManager() {
+        return getClientModeManagerInRole(ROLE_CLIENT_PRIMARY) != null;
     }
 
     /**
@@ -543,7 +590,7 @@ public class ActiveModeWarden {
 
     /**
      * Returns all instances of ClientModeManager in
-     * {@link ActiveModeManager#CLIENT_INTERNET_CONNECTIVITY_ROLES} roles.
+     * {@link ActiveModeManager.ClientInternetConnectivityRole} roles.
      * @return List of {@link ClientModeManager}.
      */
     @NonNull
@@ -555,6 +602,16 @@ public class ActiveModeWarden {
             }
         }
         return modeManagers;
+    }
+
+    /** Stop all secondary transient ClientModeManagers. */
+    public void stopAllClientModeManagersInRole(ClientRole role) {
+        // there should only be at most one Make Before Break CMM, but check all of them to be safe.
+        for (ConcreteClientModeManager manager : mClientModeManagers) {
+            if (manager.getRole() == role) {
+                stopAdditionalClientModeManager(manager);
+            }
+        }
     }
 
     @NonNull
@@ -736,14 +793,14 @@ public class ActiveModeWarden {
      * Method to switch all client mode manager mode of operation (from ScanOnly To Connect &
      * vice-versa) based on the toggle state.
      */
-    private boolean switchAllPrimaryOrScanOnlyClientModeManagers() {
+    private boolean switchAllPrimaryOrScanOnlyClientModeManagers(@NonNull WorkSource requestorWs) {
         Log.d(TAG, "Switching all client mode managers");
         for (ConcreteClientModeManager clientModeManager : mClientModeManagers) {
             if (clientModeManager.getRole() != ROLE_CLIENT_PRIMARY
                     && clientModeManager.getRole() != ROLE_CLIENT_SCAN_ONLY) {
                 continue;
             }
-            if (!switchPrimaryOrScanOnlyClientModeManagerRole(clientModeManager)) {
+            if (!switchPrimaryOrScanOnlyClientModeManagerRole(clientModeManager, requestorWs)) {
                 return false;
             }
         }
@@ -766,10 +823,10 @@ public class ActiveModeWarden {
      * vice-versa) based on the toggle state.
      */
     private boolean switchPrimaryOrScanOnlyClientModeManagerRole(
-            @NonNull ConcreteClientModeManager modeManager) {
+            @NonNull ConcreteClientModeManager modeManager, @NonNull WorkSource requestorWs) {
         ActiveModeManager.ClientRole role = getRoleForPrimaryOrScanOnlyClientModeManager();
         if (role == null) return false;
-        modeManager.setRole(role);
+        modeManager.setRole(role, requestorWs);
         return true;
     }
 
@@ -1369,32 +1426,121 @@ public class ActiveModeWarden {
                 super.exit();
             }
 
+            private boolean shouldRequestAdditionalClientModeManager(
+                    AdditionalClientModeManagerRequestInfo requestInfo) {
+                if (!canRequestMoreClientModeManagers(requestInfo.requestorWs)) {
+                    return false;
+                }
+                if (requestInfo.clientRole == ROLE_CLIENT_LOCAL_ONLY) {
+                    return mContext.getResources().getBoolean(
+                            R.bool.config_wifiMultiStaLocalOnlyConcurrencyEnabled);
+                }
+                if (requestInfo.clientRole == ROLE_CLIENT_SECONDARY_TRANSIENT) {
+                    return mContext.getResources().getBoolean(
+                            R.bool.config_wifiMultiStaNetworkSwitchingMakeBeforeBreakEnabled);
+                }
+                if (requestInfo.clientRole == ROLE_CLIENT_SECONDARY_LONG_LIVED) {
+                    return mContext.getResources().getBoolean(
+                            R.bool.config_wifiMultiStaRestrictedConcurrencyEnabled);
+                }
+                Log.e(TAG, "Unrecognized role=" + requestInfo.clientRole);
+                return false;
+            }
+
+            private boolean isClientModeManagerConnectedOrConnectingToBssid(
+                    @NonNull ClientModeManager clientModeManager,
+                    @NonNull String ssid, @NonNull String bssid) {
+                WifiConfiguration connectedOrConnectingWifiConfiguration = coalesce(
+                        clientModeManager.getConnectingWifiConfiguration(),
+                        clientModeManager.getConnectedWifiConfiguration());
+                String connectedOrConnectingBssid = coalesce(
+                        clientModeManager.getConnectingBssid(),
+                        clientModeManager.getConnectedBssid());
+                String connectedOrConnectingSsid =
+                        connectedOrConnectingWifiConfiguration == null
+                                ? null : connectedOrConnectingWifiConfiguration.SSID;
+                return Objects.equals(ssid, connectedOrConnectingSsid)
+                        && Objects.equals(bssid, connectedOrConnectingBssid);
+            }
+
+            @Nullable
+            private ConcreteClientModeManager findAnyClientModeManagerConnectingOrConnectedToBssid(
+                    @NonNull String ssid, @Nullable String bssid) {
+                if (bssid == null) {
+                    return null;
+                }
+                for (ConcreteClientModeManager cmm : mClientModeManagers) {
+                    if (isClientModeManagerConnectedOrConnectingToBssid(cmm, ssid, bssid)) {
+                        return cmm;
+                    }
+                }
+                return null;
+            }
+
+            private void handleAdditionalClientModeManagerRequest(
+                    @NonNull AdditionalClientModeManagerRequestInfo requestInfo) {
+                ConcreteClientModeManager cmmForSameBssid =
+                        findAnyClientModeManagerConnectingOrConnectedToBssid(
+                                requestInfo.ssid, requestInfo.bssid);
+                if (cmmForSameBssid != null) {
+                    // Can't allow 2 client mode managers triggering connection to same bssid.
+                    // Fallback to single STA behavior.
+                    // TODO(b/158666312): Switch role here non primary CMM & wait for it to
+                    //  complete before handing it to the requestor, making sure to destroy any
+                    //  existing CMM in the new role beforehand.
+                    Log.v(TAG, "already connected to bssid=" + requestInfo.bssid
+                            + " on ClientModeManager=" + cmmForSameBssid);
+                    requestInfo.listener.onAnswer(cmmForSameBssid);
+                    return;
+                }
+
+                ClientModeManager cmmForSameRole =
+                        getClientModeManagerInRole(requestInfo.clientRole);
+                if (cmmForSameRole != null) {
+                    // Already have a client mode manager in the requested role.
+                    // Note: This logic results in the framework not supporting more than 1 CMM in
+                    // the same role concurrently. There is no use-case for that currently &
+                    // none of the clients (i.e WifiNetworkFactory, WifiConnectivityManager, etc)
+                    // are ready to support that either. If this assumption changes in the future
+                    // when the device supports 3 STA's for example, change this logic!
+                    Log.v(TAG, "Already exists ClientModeManager for role: " + cmmForSameRole);
+                    requestInfo.listener.onAnswer(cmmForSameRole);
+                    return;
+                }
+                if (shouldRequestAdditionalClientModeManager(requestInfo)) {
+                    // Can create an additional client mode manager.
+                    Log.v(TAG, "Starting a new ClientModeManager");
+                    startAdditionalClientModeManager(
+                            requestInfo.clientRole,
+                            requestInfo.listener, requestInfo.requestorWs);
+                    return;
+                }
+                // Fall back to single STA behavior.
+                ClientModeManager primaryManager = getPrimaryClientModeManager();
+                Log.v(TAG, "Falling back to single STA behavior using primary ClientModeManager="
+                        + primaryManager);
+                requestInfo.listener.onAnswer(primaryManager);
+            }
+
             @Override
             public boolean processMessageFiltered(Message msg) {
                 switch (msg.what) {
                     case CMD_WIFI_TOGGLED:
                     case CMD_SCAN_ALWAYS_MODE_CHANGED:
+                        WorkSource requestorWs = (WorkSource) msg.obj;
                         if (shouldEnableSta()) {
                             if (hasAnyClientModeManager()) {
-                                switchAllPrimaryOrScanOnlyClientModeManagers();
+                                switchAllPrimaryOrScanOnlyClientModeManagers(requestorWs);
                             } else {
-                                startPrimaryOrScanOnlyClientModeManager((WorkSource) msg.obj);
+                                startPrimaryOrScanOnlyClientModeManager(requestorWs);
                             }
                         } else {
                             stopAllClientModeManagers();
                         }
                         break;
                     case CMD_REQUEST_ADDITIONAL_CLIENT_MODE_MANAGER:
-                        AdditionalClientModeManagerRequestInfo requestInfo =
-                                (AdditionalClientModeManagerRequestInfo) msg.obj;
-                        if (canRequestMoreClientModeManagers(requestInfo.requestorWs)) {
-                            // Can create an additional client mode manager.
-                            startAdditionalClientModeManager(
-                                    requestInfo.clientRole,
-                                    requestInfo.listener, requestInfo.requestorWs);
-                        } else {
-                            requestInfo.listener.onAnswer(getPrimaryClientModeManager());
-                        }
+                        handleAdditionalClientModeManagerRequest(
+                                (AdditionalClientModeManagerRequestInfo) msg.obj);
                         break;
                     case CMD_REMOVE_ADDITIONAL_CLIENT_MODE_MANAGER:
                         stopAdditionalClientModeManager((ClientModeManager) msg.obj);
@@ -1497,5 +1643,9 @@ public class ActiveModeWarden {
                 return HANDLED;
             }
         }
+    }
+
+    private static <T> T coalesce(T a, T  b) {
+        return a != null ? a : b;
     }
 }

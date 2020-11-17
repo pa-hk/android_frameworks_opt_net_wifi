@@ -473,6 +473,11 @@ public class ApConfigUtil {
             features |= SoftApCapability.SOFTAP_FEATURE_WPA3_SAE;
         }
 
+        if (isMacCustomizationSupported(context)) {
+            Log.d(TAG, "Update Softap capability, add MAC customization support");
+            features |= SoftApCapability.SOFTAP_FEATURE_MAC_ADDRESS_CUSTOMIZATION;
+        }
+
         if (isWpa3OweSupported(context)) {
             Log.d(TAG, "Update Softap capability, add OWE feature support");
             features |= SoftApCapability.SOFTAP_FEATURE_WPA3_OWE;
@@ -530,6 +535,17 @@ public class ApConfigUtil {
     public static boolean isAcsSupported(@NonNull Context context) {
         return context.getResources().getBoolean(
                 R.bool.config_wifi_softap_acs_supported);
+    }
+
+    /**
+     * Helper function to get MAC Address customization or not.
+     *
+     * @param context the caller context used to get value from resource file.
+     * @return true if supported, false otherwise.
+     */
+    public static boolean isMacCustomizationSupported(@NonNull Context context) {
+        return context.getResources().getBoolean(
+                R.bool.config_wifiSoftapMacAddressCustomizationSupported);
     }
 
     /**

@@ -80,6 +80,7 @@
           <item type="bool" name="config_wifi_softap_acs_supported" />
           <item type="bool" name="config_wifi_softap_acs_include_dfs" />
           <item type="bool" name="config_wifi_softap_sae_supported" />
+          <item type="bool" name="config_wifiSoftapMacAddressCustomizationSupported" />
           <item type="bool" name="config_vendor_wifi_softap_owe_supported" />
           <item type="bool" name="config_wifi_softap_ieee80211ac_supported" />
           <item type="bool" name="config_wifiSoftapIeee80211axSupported" />
@@ -91,10 +92,12 @@
           <item type="bool" name="config_wifiLocalOnlyHotspot6ghz" />
           <item type="bool" name="config_wifi_local_only_hotspot_5ghz" />
           <item type="bool" name="config_wifi_connected_mac_randomization_supported" />
+          <item type="bool" name="config_wifiAllowEnhancedMacRandomizationOnOpenSsids" />
           <item type="bool" name="config_wifi_p2p_mac_randomization_supported" />
           <item type="bool" name="config_wifi_ap_mac_randomization_supported" />
           <item type="array" name="config_wifi_aggressive_randomization_ssid_allowlist" />
           <item type="array" name="config_wifi_aggressive_randomization_ssid_blocklist" />
+          <item type="integer" name="config_wifiRecentFailureReasonExpirationMinutes" />
           <item type="bool" name="config_wifi_link_probing_supported" />
           <item type="string" name="config_wifi_tcp_buffers" />
           <item type="string" name="wifi_tether_configure_ssid_default" />
@@ -153,6 +156,9 @@
           <item type="integer" name="config_wifiDelayDisconnectOnImsLostMs" />
           <item type="bool" name="config_vendorWifi11axReadySupport" />
           <item type="bool" name="config_wifiMinConfirmationDurationSendNetworkScoreEnabled" />
+          <item type="bool" name="config_wifiMultiStaNetworkSwitchingMakeBeforeBreakEnabled" />
+          <item type="bool" name="config_wifiMultiStaLocalOnlyConcurrencyEnabled" />
+          <item type="bool" name="config_wifiMultiStaRestrictedConcurrencyEnabled" />
           <!-- Params from config.xml that can be overlayed -->
 
           <!-- Params from strings.xml that can be overlayed -->

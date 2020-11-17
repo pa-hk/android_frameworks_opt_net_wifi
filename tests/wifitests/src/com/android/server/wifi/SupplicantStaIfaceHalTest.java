@@ -158,6 +158,8 @@ public class SupplicantStaIfaceHalTest extends WifiBaseTest {
 
     SupplicantStatus mStatusSuccess;
     SupplicantStatus mStatusFailure;
+    android.hardware.wifi.supplicant.V1_4.SupplicantStatus mStatusSuccessV14;
+    android.hardware.wifi.supplicant.V1_4.SupplicantStatus mStatusFailureV14;
     ISupplicant.IfaceInfo mStaIface0;
     ISupplicant.IfaceInfo mStaIface1;
     ISupplicant.IfaceInfo mP2pIface;
@@ -169,6 +171,9 @@ public class SupplicantStaIfaceHalTest extends WifiBaseTest {
             mISupplicantStaIfaceCallbackV1_2;
     android.hardware.wifi.supplicant.V1_3.ISupplicantStaIfaceCallback
             mISupplicantStaIfaceCallbackV13 = null;
+    android.hardware.wifi.supplicant.V1_4.ISupplicantStaIfaceCallback
+            mISupplicantStaIfaceCallbackV14 = null;
+
     private TestLooper mLooper = new TestLooper();
     private Handler mHandler = null;
     private SupplicantStaIfaceHal mDut;
@@ -251,6 +256,10 @@ public class SupplicantStaIfaceHalTest extends WifiBaseTest {
         MockitoAnnotations.initMocks(this);
         mStatusSuccess = createSupplicantStatus(SupplicantStatusCode.SUCCESS);
         mStatusFailure = createSupplicantStatus(SupplicantStatusCode.FAILURE_UNKNOWN);
+        mStatusSuccessV14 = createSupplicantStatusV1_4(
+                android.hardware.wifi.supplicant.V1_4.SupplicantStatusCode.SUCCESS);
+        mStatusFailureV14 = createSupplicantStatusV1_4(
+                android.hardware.wifi.supplicant.V1_4.SupplicantStatusCode.FAILURE_UNKNOWN);
         mStaIface0 = createIfaceInfo(IfaceType.STA, WLAN0_IFACE_NAME);
         mStaIface1 = createIfaceInfo(IfaceType.STA, WLAN1_IFACE_NAME);
         mP2pIface = createIfaceInfo(IfaceType.P2P, P2P_IFACE_NAME);
@@ -351,6 +360,16 @@ public class SupplicantStaIfaceHalTest extends WifiBaseTest {
     public void testInitialize_successV1_3() throws Exception {
         setupMocksForHalV1_3();
         executeAndValidateInitializationSequenceV1_3();
+    }
+
+    /**
+     * Sunny day scenario for SupplicantStaIfaceHal initialization
+     * Asserts successful initialization
+     */
+    @Test
+    public void testInitialize_successV1_4() throws Exception {
+        setupMocksForHalV1_4();
+        executeAndValidateInitializationSequenceV1_4();
     }
 
     /**
@@ -963,7 +982,14 @@ public class SupplicantStaIfaceHalTest extends WifiBaseTest {
     @Test
     public void testHs20DeauthImminentCallbackWithNonEssReasonCode() throws Exception {
         executeAndValidateHs20DeauthImminentCallback(false);
+    }
 
+    /**
+     * Tests the handling of HS20 Terms & Conditions acceptance callback.
+     */
+    @Test
+    public void testHs20TermsAndConditionsAcceptance() throws Exception {
+        executeAndValidateHs20TermsAndConditionsCallback();
     }
 
     /**
@@ -1123,6 +1149,33 @@ public class SupplicantStaIfaceHalTest extends WifiBaseTest {
                 NativeUtil.macAddressToByteArray(BSSID), false, reasonCode);
 
         verify(mWifiMonitor).broadcastAuthenticationFailureEvent(
+                eq(WLAN0_IFACE_NAME), eq(WifiManager.ERROR_AUTH_FAILURE_EAP_FAILURE), eq(-1));
+    }
+
+    /**
+     * Tests the handling of EAP failure disconnects.
+     */
+    @Test
+    public void testOnlyOneAuthFailureEap() throws Exception {
+        executeAndValidateInitializationSequence();
+        assertNotNull(mISupplicantStaIfaceCallback);
+        executeAndValidateConnectSequenceWithKeyMgmt(
+                0, false, WifiConfiguration.KeyMgmt.WPA_EAP, null);
+
+        int reasonCode = 3;
+        mISupplicantStaIfaceCallback.onStateChanged(
+                ISupplicantStaIfaceCallback.State.ASSOCIATED,
+                NativeUtil.macAddressToByteArray(BSSID),
+                SUPPLICANT_NETWORK_ID,
+                NativeUtil.decodeSsid(SUPPLICANT_SSID));
+        mISupplicantStaIfaceCallback.onEapFailure();
+        verify(mWifiMonitor).broadcastAuthenticationFailureEvent(
+                eq(WLAN0_IFACE_NAME), eq(WifiManager.ERROR_AUTH_FAILURE_EAP_FAILURE), eq(-1));
+
+        // Ensure that the disconnect is ignored.
+        mISupplicantStaIfaceCallback.onDisconnected(
+                NativeUtil.macAddressToByteArray(BSSID), false, reasonCode);
+        verify(mWifiMonitor, times(1)).broadcastAuthenticationFailureEvent(
                 eq(WLAN0_IFACE_NAME), eq(WifiManager.ERROR_AUTH_FAILURE_EAP_FAILURE), eq(-1));
     }
 
@@ -2055,7 +2108,7 @@ public class SupplicantStaIfaceHalTest extends WifiBaseTest {
 
         public void answer(android.hardware.wifi.supplicant.V1_4.ISupplicantStaIface
                 .getConnectionCapabilities_1_4Callback cb) {
-            cb.onValues(mStatusSuccess, mConnCapabilities);
+            cb.onValues(mStatusSuccessV14, mConnCapabilities);
         }
     }
 
@@ -2094,7 +2147,7 @@ public class SupplicantStaIfaceHalTest extends WifiBaseTest {
     public void testGetConnectionCapabilitiesV1_4() throws Exception {
         setupMocksForHalV1_4();
 
-        executeAndValidateInitializationSequenceV1_3();
+        executeAndValidateInitializationSequenceV1_4();
         int testWifiTechnologyHal = WifiTechnology.LEGACY;
         int testLegacyMode = LegacyMode.B_MODE;
         int testWifiStandardWifiInfo = ScanResult.WIFI_STANDARD_LEGACY;
@@ -2141,6 +2194,18 @@ public class SupplicantStaIfaceHalTest extends WifiBaseTest {
         assertEquals(isEss, wnmDataCaptor.getValue().isEss());
         assertEquals(reauthDelay, wnmDataCaptor.getValue().getDelay());
         assertEquals(HS20_URL, wnmDataCaptor.getValue().getUrl());
+    }
+
+    private void executeAndValidateHs20TermsAndConditionsCallback() throws Exception {
+        setupMocksForHalV1_4();
+        executeAndValidateInitializationSequenceV1_4();
+        assertNotNull(mISupplicantStaIfaceCallbackV14);
+
+        byte[] bssid = NativeUtil.macAddressToByteArray(BSSID);
+        mISupplicantStaIfaceCallbackV14.onHs20TermsAndConditionsAcceptanceRequestedNotification(
+                bssid, HS20_URL);
+
+        //TODO: Add test logic once framework handling is implemented
     }
 
     private void executeAndValidateInitializationSequence() throws  Exception {
@@ -2421,8 +2486,70 @@ public class SupplicantStaIfaceHalTest extends WifiBaseTest {
                                 .class));
     }
 
+    /**
+     * Calls.initialize(), mocking various call back answers and verifying flow, asserting for the
+     * expected result. Verifies if ISupplicantStaIface manager is initialized or reset.
+     * Each of the arguments will cause a different failure mode when set true.
+     */
+    private void executeAndValidateInitializationSequenceV1_4()
+            throws Exception {
+        // Setup callback mock answers
+        doAnswer(new GetAddInterfaceAnswerV1_4(false))
+                .when(mISupplicantMockV1_1).addInterface(any(ISupplicant.IfaceInfo.class),
+                any(android.hardware.wifi.supplicant.V1_1.ISupplicant
+                        .addInterfaceCallback.class));
+
+        /** Callback registration */
+        doAnswer(new MockAnswerUtil.AnswerWithArguments() {
+            public android.hardware.wifi.supplicant.V1_4.SupplicantStatus answer(
+                    android.hardware.wifi.supplicant.V1_4.ISupplicantStaIfaceCallback cb)
+                    throws RemoteException {
+                mISupplicantStaIfaceCallbackV14 = spy(cb);
+                return mStatusSuccessV14;
+            }
+        }).when(mISupplicantStaIfaceMockV14)
+                .registerCallback_1_4(
+                        any(android.hardware.wifi.supplicant.V1_4.ISupplicantStaIfaceCallback
+                                .class));
+
+        mInOrder = inOrder(mServiceManagerMock, mISupplicantMock, mISupplicantMockV1_1,
+                mISupplicantStaIfaceMockV14, mWifiMonitor);
+        // Initialize SupplicantStaIfaceHal, should call serviceManager.registerForNotifications
+        assertTrue(mDut.initialize());
+        // verify: service manager initialization sequence
+        mInOrder.verify(mServiceManagerMock).linkToDeath(mServiceManagerDeathCaptor.capture(),
+                anyLong());
+        mInOrder.verify(mServiceManagerMock).registerForNotifications(
+                eq(ISupplicant.kInterfaceName), eq(""), mServiceNotificationCaptor.capture());
+        // act: cause the onRegistration(...) callback to execute
+        mServiceNotificationCaptor.getValue().onRegistration(ISupplicant.kInterfaceName, "", true);
+
+        assertTrue(mDut.isInitializationComplete());
+        assertTrue(mDut.setupIface(WLAN0_IFACE_NAME));
+        mInOrder.verify(mISupplicantMock).linkToDeath(mSupplicantDeathCaptor.capture(),
+                anyLong());
+        // verify: addInterface is called
+        mInOrder.verify(mISupplicantMockV1_1)
+                .addInterface(any(ISupplicant.IfaceInfo.class),
+                        any(android.hardware.wifi.supplicant.V1_1.ISupplicant
+                                .addInterfaceCallback.class));
+
+        mInOrder.verify(mISupplicantStaIfaceMockV14)
+                .registerCallback_1_4(
+                        any(android.hardware.wifi.supplicant.V1_4.ISupplicantStaIfaceCallback
+                                .class));
+    }
+
     private SupplicantStatus createSupplicantStatus(int code) {
         SupplicantStatus status = new SupplicantStatus();
+        status.code = code;
+        return status;
+    }
+
+    private android.hardware.wifi.supplicant.V1_4.SupplicantStatus
+            createSupplicantStatusV1_4(int code) {
+        android.hardware.wifi.supplicant.V1_4.SupplicantStatus status =
+                new android.hardware.wifi.supplicant.V1_4.SupplicantStatus();
         status.code = code;
         return status;
     }
@@ -2510,6 +2637,24 @@ public class SupplicantStaIfaceHalTest extends WifiBaseTest {
 
         public void answer(ISupplicant.IfaceInfo iface,
                 android.hardware.wifi.supplicant.V1_3.ISupplicant
+                        .addInterfaceCallback cb) {
+            if (mGetNullInterface) {
+                cb.onValues(mStatusSuccess, null);
+            } else {
+                cb.onValues(mStatusSuccess, mISupplicantIfaceMock);
+            }
+        }
+    }
+
+    private class GetAddInterfaceAnswerV1_4 extends MockAnswerUtil.AnswerWithArguments {
+        boolean mGetNullInterface;
+
+        GetAddInterfaceAnswerV1_4(boolean getNullInterface) {
+            mGetNullInterface = getNullInterface;
+        }
+
+        public void answer(ISupplicant.IfaceInfo iface,
+                android.hardware.wifi.supplicant.V1_4.ISupplicant
                         .addInterfaceCallback cb) {
             if (mGetNullInterface) {
                 cb.onValues(mStatusSuccess, null);

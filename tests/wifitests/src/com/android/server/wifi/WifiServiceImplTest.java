@@ -128,7 +128,6 @@ import android.net.wifi.hotspot2.OsuProvider;
 import android.net.wifi.hotspot2.PasspointConfiguration;
 import android.net.wifi.hotspot2.pps.Credential;
 import android.net.wifi.hotspot2.pps.HomeSp;
-import android.net.wifi.util.SdkLevelUtil;
 import android.os.Binder;
 import android.os.Build;
 import android.os.Binder;
@@ -153,6 +152,7 @@ import android.telephony.TelephonyManager;
 import androidx.test.filters.SmallTest;
 
 import com.android.internal.os.PowerProfile;
+import com.android.modules.utils.build.SdkLevel;
 import com.android.server.wifi.WifiServiceImpl.LocalOnlyRequestorCallback;
 import com.android.server.wifi.hotspot2.PasspointManager;
 import com.android.server.wifi.hotspot2.PasspointProvisioningTestUtil;
@@ -326,6 +326,7 @@ public class WifiServiceImplTest extends WifiBaseTest {
     @Mock WifiNetworkFactory mWifiNetworkFactory;
     @Mock UntrustedWifiNetworkFactory mUntrustedWifiNetworkFactory;
     @Mock OemPaidWifiNetworkFactory mOemPaidWifiNetworkFactory;
+    @Mock OemPrivateWifiNetworkFactory mOemPrivateWifiNetworkFactory;
     @Mock WifiDiagnostics mWifiDiagnostics;
     @Mock WifiP2pConnection mWifiP2pConnection;
     @Mock SimRequiredNotifier mSimRequiredNotifier;
@@ -358,6 +359,8 @@ public class WifiServiceImplTest extends WifiBaseTest {
                 .thenReturn(mUntrustedWifiNetworkFactory);
         when(mWifiInjector.getOemPaidWifiNetworkFactory())
                 .thenReturn(mOemPaidWifiNetworkFactory);
+        when(mWifiInjector.getOemPrivateWifiNetworkFactory())
+                .thenReturn(mOemPrivateWifiNetworkFactory);
         when(mWifiInjector.getWifiDiagnostics()).thenReturn(mWifiDiagnostics);
         when(mWifiInjector.getActiveModeWarden()).thenReturn(mActiveModeWarden);
         when(mWifiInjector.getWifiHandlerThread()).thenReturn(mHandlerThread);
@@ -366,8 +369,6 @@ public class WifiServiceImplTest extends WifiBaseTest {
         when(mContext.getResources()).thenReturn(mResources);
         when(mContext.getContentResolver()).thenReturn(mContentResolver);
         when(mContext.getPackageManager()).thenReturn(mPackageManager);
-        when(mPackageManager.getApplicationInfoAsUser(any(), anyInt(), any()))
-                .thenReturn(mApplicationInfo);
         when(mPackageManager.getPackageInfo(anyString(), anyInt())).thenReturn(mPackageInfo);
         when(mWifiInjector.getWifiApConfigStore()).thenReturn(mWifiApConfigStore);
         doNothing().when(mFrameworkFacade).registerContentObserver(eq(mContext), any(),
@@ -443,6 +444,7 @@ public class WifiServiceImplTest extends WifiBaseTest {
         when(mScanRequestProxy.startScan(anyInt(), anyString())).thenReturn(true);
         when(mLohsCallback.asBinder()).thenReturn(mock(IBinder.class));
         when(mWifiSettingsConfigStore.get(eq(WIFI_VERBOSE_LOGGING_ENABLED))).thenReturn(true);
+        when(mWifiPermissionsUtil.isSystem(anyString(), anyInt())).thenReturn(false);
 
         mClientModeManagers = Arrays.asList(mClientModeManager, mock(ClientModeManager.class));
         when(mActiveModeWarden.getClientModeManagers()).thenReturn(mClientModeManagers);
@@ -695,7 +697,7 @@ public class WifiServiceImplTest extends WifiBaseTest {
                 .noteOp(AppOpsManager.OPSTR_CHANGE_WIFI_STATE, Process.myUid(), TEST_PACKAGE_NAME);
         when(mWifiPermissionsUtil.isTargetSdkLessThan(anyString(),
                 eq(Build.VERSION_CODES.Q), anyInt())).thenReturn(false);
-        mApplicationInfo.flags = ApplicationInfo.FLAG_SYSTEM;
+        when(mWifiPermissionsUtil.isSystem(anyString(), anyInt())).thenReturn(true);
 
         when(mSettingsStore.handleWifiToggled(eq(true))).thenReturn(true);
         when(mSettingsStore.isAirplaneModeOn()).thenReturn(false);
@@ -966,7 +968,7 @@ public class WifiServiceImplTest extends WifiBaseTest {
                 .noteOp(AppOpsManager.OPSTR_CHANGE_WIFI_STATE, Process.myUid(), TEST_PACKAGE_NAME);
         when(mWifiPermissionsUtil.isTargetSdkLessThan(anyString(),
                 eq(Build.VERSION_CODES.Q), anyInt())).thenReturn(false);
-        mApplicationInfo.flags = ApplicationInfo.FLAG_SYSTEM;
+        when(mWifiPermissionsUtil.isSystem(anyString(), anyInt())).thenReturn(true);
 
         when(mSettingsStore.handleWifiToggled(eq(false))).thenReturn(true);
         when(mSettingsStore.isAirplaneModeOn()).thenReturn(false);
@@ -4843,7 +4845,7 @@ public class WifiServiceImplTest extends WifiBaseTest {
     public void testAddOrUpdateNetworkIsAllowedForSystemApp() throws Exception {
         doReturn(AppOpsManager.MODE_ALLOWED).when(mAppOpsManager)
                 .noteOp(AppOpsManager.OPSTR_CHANGE_WIFI_STATE, Process.myUid(), TEST_PACKAGE_NAME);
-        mApplicationInfo.flags = ApplicationInfo.FLAG_SYSTEM;
+        when(mWifiPermissionsUtil.isSystem(anyString(), anyInt())).thenReturn(true);
         when(mWifiConfigManager.addOrUpdateNetwork(any(),  anyInt(), any())).thenReturn(
                 new NetworkUpdateResult(0));
 
@@ -5547,7 +5549,7 @@ public class WifiServiceImplTest extends WifiBaseTest {
                 .noteOp(AppOpsManager.OPSTR_CHANGE_WIFI_STATE, Process.myUid(), TEST_PACKAGE_NAME);
         when(mWifiPermissionsUtil.isTargetSdkLessThan(anyString(),
                 eq(Build.VERSION_CODES.R), anyInt())).thenReturn(false);
-        mApplicationInfo.flags = ApplicationInfo.FLAG_SYSTEM;
+        when(mWifiPermissionsUtil.isSystem(anyString(), anyInt())).thenReturn(true);
         PasspointConfiguration config = new PasspointConfiguration();
         HomeSp homeSp = new HomeSp();
         homeSp.setFqdn("test.com");
@@ -6324,7 +6326,7 @@ public class WifiServiceImplTest extends WifiBaseTest {
      */
     @Test
     public void syncGetSupportedFeaturesForStaStaConcurrency() {
-        assumeTrue(SdkLevelUtil.isAtLeastS());
+        assumeTrue(SdkLevel.isAtLeastS());
 
         long supportedFeaturesFromClientModeManager = WifiManager.WIFI_FEATURE_OWE;
         when(mClientModeManager.syncGetSupportedFeatures())
@@ -6421,11 +6423,11 @@ public class WifiServiceImplTest extends WifiBaseTest {
                         eq("WifiService"));
         mWifiServiceImpl.setScanAlwaysAvailable(true, TEST_PACKAGE_NAME);
         verify(mSettingsStore).handleWifiScanAlwaysAvailableToggled(true);
-        verify(mActiveModeWarden).scanAlwaysModeChanged(any());
+        verify(mActiveModeWarden).scanAlwaysModeChanged();
 
         mWifiServiceImpl.setScanAlwaysAvailable(false, TEST_PACKAGE_NAME);
         verify(mSettingsStore).handleWifiScanAlwaysAvailableToggled(false);
-        verify(mActiveModeWarden, times(2)).scanAlwaysModeChanged(any());
+        verify(mActiveModeWarden, times(2)).scanAlwaysModeChanged();
     }
 
     @Test(expected = SecurityException.class)
@@ -6436,7 +6438,14 @@ public class WifiServiceImplTest extends WifiBaseTest {
 
         mWifiServiceImpl.setScanAlwaysAvailable(true, TEST_PACKAGE_NAME);
         verify(mSettingsStore, never()).handleWifiScanAlwaysAvailableToggled(anyBoolean());
-        verify(mActiveModeWarden, never()).scanAlwaysModeChanged(any());
+        verify(mActiveModeWarden, never()).scanAlwaysModeChanged();
+    }
+
+    @Test
+    public void testIsScanAlwaysAvailable() {
+        when(mSettingsStore.isScanAlwaysAvailableToggleEnabled()).thenReturn(true);
+        assertTrue(mWifiServiceImpl.isScanAlwaysAvailable());
+        verify(mSettingsStore).isScanAlwaysAvailableToggleEnabled();
     }
 
     private List<ScanResult> createScanResultList() {

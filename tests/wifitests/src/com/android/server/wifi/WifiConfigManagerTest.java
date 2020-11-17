@@ -583,6 +583,7 @@ public class WifiConfigManagerTest extends WifiBaseTest {
         openNetwork.trusted = false;
         // change the oem paid bit.
         openNetwork.oemPaid = true;
+        openNetwork.oemPrivate = true;
         verifyUpdateNetworkToWifiConfigManagerWithoutIpChange(openNetwork);
 
         // Now verify that the modification has been effective.
@@ -597,10 +598,12 @@ public class WifiConfigManagerTest extends WifiBaseTest {
         assertEquals(openNetwork.networkId, newConfig.networkId);
         assertFalse(newConfig.trusted);
         assertTrue(newConfig.oemPaid);
+        assertTrue(newConfig.oemPrivate);
         assertEquals(TEST_BSSID, newConfig.BSSID);
         assertEquals(openNetwork.networkId, oldConfig.networkId);
         assertTrue(oldConfig.trusted);
         assertFalse(oldConfig.oemPaid);
+        assertFalse(oldConfig.oemPrivate);
         assertNull(oldConfig.BSSID);
     }
 
@@ -646,6 +649,7 @@ public class WifiConfigManagerTest extends WifiBaseTest {
         openNetwork.trusted = false;
         // change the oem paid bit.
         openNetwork.oemPaid = true;
+        openNetwork.oemPrivate = true;
         verifyUpdateNetworkToWifiConfigManagerWithoutIpChange(openNetwork);
 
         // Now verify that the modification has been effective.
@@ -660,10 +664,12 @@ public class WifiConfigManagerTest extends WifiBaseTest {
         assertEquals(openNetwork.networkId, newConfig.networkId);
         assertFalse(newConfig.trusted);
         assertTrue(newConfig.oemPaid);
+        assertTrue(newConfig.oemPrivate);
         assertEquals(TEST_BSSID, newConfig.BSSID);
         assertEquals(openNetwork.networkId, oldConfig.networkId);
         assertTrue(oldConfig.trusted);
         assertFalse(oldConfig.oemPaid);
+        assertFalse(oldConfig.oemPrivate);
         assertNull(oldConfig.BSSID);
 
         assertEquals(0, mBssidBlocklistMonitor.updateAndGetNumBlockedBssidsForSsid(
@@ -1491,6 +1497,41 @@ public class WifiConfigManagerTest extends WifiBaseTest {
         verifyNetworkIsEnabledAfter(result.getNetworkId(),
                 mWifiConfigManager.getNetworkSelectionDisableTimeoutMillis(disableReason)
                         + TEST_ELAPSED_UPDATE_NETWORK_SELECTION_TIME_MILLIS);
+    }
+
+    /**
+     * Verify enableTemporaryDisabledNetworks successfully enable temporarily disabled networks.
+     */
+    @Test
+    public void testEnableTemporaryDisabledNetworks() {
+        WifiConfiguration openNetwork = WifiConfigurationTestUtil.createOpenNetwork();
+        NetworkUpdateResult result = verifyAddNetworkToWifiConfigManager(openNetwork);
+        int disableReason = NetworkSelectionStatus.DISABLED_ASSOCIATION_REJECTION;
+        verifyDisableNetwork(result, disableReason);
+        assertEquals(true, mWifiConfigManager.getConfiguredNetworks().get(0)
+                .getNetworkSelectionStatus().isNetworkTemporaryDisabled());
+
+        mWifiConfigManager.enableTemporaryDisabledNetworks();
+        assertEquals(true, mWifiConfigManager.getConfiguredNetworks().get(0)
+                .getNetworkSelectionStatus().isNetworkEnabled());
+    }
+
+    /**
+     * Verify that permanently disabled network do not get affected by
+     * enableTemporaryDisabledNetworks
+     */
+    @Test
+    public void testEnableTemporaryDisabledNetworks_PermanentDisableNetworksStillDisabled() {
+        WifiConfiguration openNetwork = WifiConfigurationTestUtil.createOpenNetwork();
+        NetworkUpdateResult result = verifyAddNetworkToWifiConfigManager(openNetwork);
+        int disableReason = NetworkSelectionStatus.DISABLED_BY_WRONG_PASSWORD;
+        verifyDisableNetwork(result, disableReason);
+        assertEquals(true, mWifiConfigManager.getConfiguredNetworks().get(0)
+                .getNetworkSelectionStatus().isNetworkPermanentlyDisabled());
+
+        mWifiConfigManager.enableTemporaryDisabledNetworks();
+        assertEquals(true, mWifiConfigManager.getConfiguredNetworks().get(0)
+                .getNetworkSelectionStatus().isNetworkPermanentlyDisabled());
     }
 
     /**
@@ -2384,6 +2425,46 @@ public class WifiConfigManagerTest extends WifiBaseTest {
     }
 
     /**
+     * Verify that shouldUseEnhancedRandomization returns true for an open network that has been
+     * connected before and never had captive portal detected.
+     */
+    @Test
+    public void testShouldUseEnhancedRandomization_openNetworkNoCaptivePortal() {
+        when(mDeviceConfigFacade.allowEnhancedMacRandomizationOnOpenSsids()).thenReturn(true);
+        WifiConfiguration config = WifiConfigurationTestUtil.createOpenNetwork();
+
+        // verify enhanced randomization is not enabled because the config has never been connected.
+        assertTrue(config.getNetworkSelectionStatus().hasNeverDetectedCaptivePortal());
+        assertFalse(mWifiConfigManager.shouldUseEnhancedRandomization(config));
+
+        config.getNetworkSelectionStatus().setHasEverConnected(true);
+        assertTrue(mWifiConfigManager.shouldUseEnhancedRandomization(config));
+    }
+
+    /**
+     * Verify that enhanced randomization on open networks could be turned on/off by 2 feature
+     * flags.
+     */
+    @Test
+    public void testShouldUseEnhancedRandomization_openNetworkFeatureFlag() {
+        WifiConfiguration config = WifiConfigurationTestUtil.createOpenNetwork();
+        config.getNetworkSelectionStatus().setHasEverConnected(true);
+
+        // Test with both feature flags off, and expected no enhanced randomization.
+        when(mDeviceConfigFacade.allowEnhancedMacRandomizationOnOpenSsids()).thenReturn(false);
+        mResources.setBoolean(R.bool.config_wifiAllowEnhancedMacRandomizationOnOpenSsids, false);
+        assertFalse(mWifiConfigManager.shouldUseEnhancedRandomization(config));
+
+        // Verify either feature flag turned on will enable enhanced randomization.
+        when(mDeviceConfigFacade.allowEnhancedMacRandomizationOnOpenSsids()).thenReturn(true);
+        assertTrue(mWifiConfigManager.shouldUseEnhancedRandomization(config));
+
+        when(mDeviceConfigFacade.allowEnhancedMacRandomizationOnOpenSsids()).thenReturn(false);
+        mResources.setBoolean(R.bool.config_wifiAllowEnhancedMacRandomizationOnOpenSsids, true);
+        assertTrue(mWifiConfigManager.shouldUseEnhancedRandomization(config));
+    }
+
+    /**
      * Verify that when DeviceConfigFacade#isEnhancedMacRandomizationEnabled returns true, any
      * networks that already use randomized MAC use enhanced MAC randomization instead.
      */
@@ -2714,6 +2795,43 @@ public class WifiConfigManagerTest extends WifiBaseTest {
                 assertNotNull(network.linkedConfigurations.get(otherNetwork.getKey()));
             }
         }
+    }
+
+    /**
+     * Verify that setRecentFailureAssociationStatus is setting the recent failure reason and
+     * expiration timestamp properly. Then, verify that cleanupExpiredRecentFailureReasons
+     * properly clears expired recent failure statuses.
+     */
+    @Test
+    public void testSetRecentFailureAssociationStatus() {
+        WifiConfiguration config = WifiConfigurationTestUtil.createOpenNetwork();
+        NetworkUpdateResult result = verifyAddNetworkToWifiConfigManager(config);
+        int expectedStatusCode = WifiConfiguration.RECENT_FAILURE_POOR_CHANNEL_CONDITIONS;
+        long updateTimeMs = 1234L;
+        mResources.setInteger(R.integer.config_wifiRecentFailureReasonExpirationMinutes, 1);
+        long expectedExpirationTimeMs = updateTimeMs + 60_000;
+        when(mClock.getElapsedSinceBootMillis()).thenReturn(updateTimeMs);
+        mWifiConfigManager.setRecentFailureAssociationStatus(config.networkId, expectedStatusCode);
+
+        // Verify the recent failure association status is set properly
+        List<WifiConfiguration> configs = mWifiConfigManager.getSavedNetworks(Process.WIFI_UID);
+        assertEquals(1, configs.size());
+        assertEquals(expectedStatusCode, configs.get(0).getRecentFailureReason());
+        assertEquals(updateTimeMs,
+                configs.get(0).recentFailure.getLastUpdateTimeSinceBootMillis());
+
+        // Verify at t-1 the failure status is not cleared yet.
+        when(mClock.getElapsedSinceBootMillis()).thenReturn(expectedExpirationTimeMs - 1);
+        mWifiConfigManager.cleanupExpiredRecentFailureReasons();
+        assertEquals(expectedStatusCode, mWifiConfigManager.getSavedNetworks(Process.WIFI_UID)
+                .get(0).getRecentFailureReason());
+
+        // Verify at the expiration time the failure status is cleared.
+        when(mClock.getElapsedSinceBootMillis()).thenReturn(expectedExpirationTimeMs);
+        mWifiConfigManager.cleanupExpiredRecentFailureReasons();
+        assertEquals(WifiConfiguration.RECENT_FAILURE_NONE,
+                mWifiConfigManager.getSavedNetworks(Process.WIFI_UID)
+                        .get(0).getRecentFailureReason());
     }
 
     /**
@@ -3414,6 +3532,23 @@ public class WifiConfigManagerTest extends WifiBaseTest {
         // Ensure that we only have 1 shared network in the database after the stop.
         assertEquals(1, mWifiConfigManager.getConfiguredNetworks().size());
         assertEquals(sharedNetwork.SSID, mWifiConfigManager.getConfiguredNetworks().get(0).SSID);
+    }
+
+    /**
+     * Verify that hasNeverDetectedCaptivePortal is set to false after noteCaptivePortalDetected
+     * gets called.
+     */
+    @Test
+    public void testNoteCaptivePortalDetected() {
+        WifiConfiguration openNetwork = WifiConfigurationTestUtil.createOpenNetwork();
+        NetworkUpdateResult result = verifyAddNetworkToWifiConfigManager(openNetwork);
+
+        assertTrue(mWifiConfigManager.getConfiguredNetworks().get(0).getNetworkSelectionStatus()
+                .hasNeverDetectedCaptivePortal());
+
+        mWifiConfigManager.noteCaptivePortalDetected(openNetwork.networkId);
+        assertFalse(mWifiConfigManager.getConfiguredNetworks().get(0).getNetworkSelectionStatus()
+                .hasNeverDetectedCaptivePortal());
     }
 
     /**
@@ -5431,7 +5566,8 @@ public class WifiConfigManagerTest extends WifiBaseTest {
                     NetworkSelectionStatus.INVALID_NETWORK_SELECTION_DISABLE_TIMESTAMP,
                     retrievedDisableTime);
             verifyUpdateNetworkStatus(retrievedNetwork, WifiConfiguration.Status.ENABLED);
-        } else if (reason < NetworkSelectionStatus.PERMANENTLY_DISABLED_STARTING_INDEX) {
+        } else if (mWifiConfigManager.getNetworkSelectionDisableTimeoutMillis(reason)
+                < Integer.MAX_VALUE) {
             // For temporarily disabled networks, we need to ensure that the current status remains
             // until the threshold is crossed.
             assertEquals(temporaryDisableReasonCounter, retrievedDisableReasonCounter);
@@ -5445,6 +5581,7 @@ public class WifiConfigManagerTest extends WifiBaseTest {
                 assertTrue(retrievedStatus.isNetworkTemporaryDisabled());
                 assertEquals(
                         TEST_ELAPSED_UPDATE_NETWORK_SELECTION_TIME_MILLIS, retrievedDisableTime);
+                verifyNetworkUpdateBroadcast();
             }
         } else if (reason < NetworkSelectionStatus.NETWORK_SELECTION_DISABLED_MAX) {
             assertEquals(reason, retrievedDisableReason);

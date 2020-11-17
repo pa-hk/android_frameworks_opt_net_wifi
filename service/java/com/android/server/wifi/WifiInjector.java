@@ -102,6 +102,10 @@ public class WifiInjector {
             new NetworkCapabilities.Builder(NETWORK_CAPABILITIES_FILTER)
                     .addCapability(NetworkCapabilities.NET_CAPABILITY_OEM_PAID)
                     .build();
+    private static final NetworkCapabilities OEM_PRIVATE_NETWORK_CAPABILITIES_FILTER =
+            new NetworkCapabilities.Builder(NETWORK_CAPABILITIES_FILTER)
+                    .addCapability(NetworkCapabilities.NET_CAPABILITY_OEM_PRIVATE)
+                    .build();
 
     static WifiInjector sWifiInjector = null;
 
@@ -194,6 +198,7 @@ public class WifiInjector {
     private final WifiNetworkFactory mWifiNetworkFactory;
     private final UntrustedWifiNetworkFactory mUntrustedWifiNetworkFactory;
     private final OemPaidWifiNetworkFactory mOemPaidWifiNetworkFactory;
+    private final OemPrivateWifiNetworkFactory mOemPrivateWifiNetworkFactory;
     private final SupplicantStateTracker mSupplicantStateTracker;
     private final WifiP2pConnection mWifiP2pConnection;
     private final WifiGlobals mWifiGlobals;
@@ -426,6 +431,9 @@ public class WifiInjector {
         mOemPaidWifiNetworkFactory = new OemPaidWifiNetworkFactory(
                 wifiLooper, mContext, OEM_PAID_NETWORK_CAPABILITIES_FILTER,
                 mWifiConnectivityManager);
+        mOemPrivateWifiNetworkFactory = new OemPrivateWifiNetworkFactory(
+                wifiLooper, mContext, OEM_PRIVATE_NETWORK_CAPABILITIES_FILTER,
+                mWifiConnectivityManager);
         mWifiScanAlwaysAvailableSettingsCompatibility =
                 new WifiScanAlwaysAvailableSettingsCompatibility(mContext, wifiHandler,
                         mSettingsStore, mActiveModeWarden, mFrameworkFacade);
@@ -503,6 +511,7 @@ public class WifiInjector {
         mThroughputPredictor.enableVerboseLogging(verboseBool);
         mWifiDataStall.enableVerboseLogging(verboseBool);
         mWifiConnectivityManager.enableVerboseLogging(verboseBool);
+        mWifiNetworkSelector.enableVerboseLogging(verboseBool);
     }
 
     public UserManager getUserManager() {
@@ -658,11 +667,11 @@ public class WifiInjector {
                 mDeviceConfigFacade, mScanRequestProxy, mWifiInfo, mWifiConnectivityManager,
                 mBssidBlocklistMonitor, mConnectionFailureNotifier, NETWORK_CAPABILITIES_FILTER,
                 mWifiNetworkFactory, mUntrustedWifiNetworkFactory, mOemPaidWifiNetworkFactory,
-                mWifiLastResortWatchdog, mWakeupController, mLockManager, mSelfRecovery,
-                mFrameworkFacade, mWifiHandlerThread.getLooper(), mCountryCode, mWifiNative,
-                new WrongPasswordNotifier(mContext, mFrameworkFacade), mWifiTrafficPoller,
-                mLinkProbeManager, mClock.getElapsedSinceBootMillis(), mBatteryStats,
-                mSupplicantStateTracker, mMboOceController, mWifiCarrierInfoManager,
+                mOemPrivateWifiNetworkFactory, mWifiLastResortWatchdog, mWakeupController,
+                mLockManager, mSelfRecovery /*QC value-add*/, mFrameworkFacade, mWifiHandlerThread.getLooper(), mCountryCode,
+                mWifiNative, new WrongPasswordNotifier(mContext, mFrameworkFacade),
+                mWifiTrafficPoller, mLinkProbeManager, mClock.getElapsedSinceBootMillis(),
+                mBatteryStats, mSupplicantStateTracker, mMboOceController, mWifiCarrierInfoManager,
                 new EapFailureNotifier(mContext, mFrameworkFacade, mWifiCarrierInfoManager),
                 mSimRequiredNotifier,
                 new WifiScoreReport(mScoringParams, mClock, mWifiMetrics, mWifiInfo,
@@ -899,6 +908,10 @@ public class WifiInjector {
 
     public OemPaidWifiNetworkFactory getOemPaidWifiNetworkFactory() {
         return mOemPaidWifiNetworkFactory;
+    }
+
+    public OemPrivateWifiNetworkFactory getOemPrivateWifiNetworkFactory() {
+        return mOemPrivateWifiNetworkFactory;
     }
 
     public WifiDiagnostics getWifiDiagnostics() {

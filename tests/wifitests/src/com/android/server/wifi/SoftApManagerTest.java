@@ -118,6 +118,9 @@ public class SoftApManagerTest extends WifiBaseTest {
     private static final int[] EMPTY_CHANNEL_ARRAY = {};
     private static final WorkSource TEST_WORKSOURCE = new WorkSource();
     private SoftApConfiguration mDefaultApConfig = createDefaultApConfig();
+    private final int mBand256G = SoftApConfiguration.BAND_2GHZ | SoftApConfiguration.BAND_5GHZ
+            | SoftApConfiguration.BAND_6GHZ;
+
 
     private TestLooper mLooper;
     private TestAlarmManager mAlarmManager;
@@ -200,7 +203,8 @@ public class SoftApManagerTest extends WifiBaseTest {
         // Default set up all features support.
         long testSoftApFeature = SoftApCapability.SOFTAP_FEATURE_CLIENT_FORCE_DISCONNECT
                 | SoftApCapability.SOFTAP_FEATURE_ACS_OFFLOAD
-                | SoftApCapability.SOFTAP_FEATURE_WPA3_SAE;
+                | SoftApCapability.SOFTAP_FEATURE_WPA3_SAE
+                | SoftApCapability.SOFTAP_FEATURE_MAC_ADDRESS_CUSTOMIZATION;
         mTestSoftApCapability = new SoftApCapability(testSoftApFeature);
         mTestSoftApCapability.setMaxSupportedClients(10);
         when(mWifiApConfigStore.getApConfiguration()).thenReturn(mDefaultApConfig);
@@ -465,7 +469,7 @@ public class SoftApManagerTest extends WifiBaseTest {
     @Test
     public void startSoftApOnAnyGhzNoFailForNoCountryCode() throws Exception {
         Builder configBuilder = new SoftApConfiguration.Builder();
-        configBuilder.setBand(SoftApConfiguration.BAND_ANY);
+        configBuilder.setBand(mBand256G);
         configBuilder.setSsid(TEST_SSID);
         SoftApModeConfiguration softApConfig = new SoftApModeConfiguration(
                 WifiManager.IFACE_IP_MODE_TETHERED, configBuilder.build(),
@@ -502,7 +506,7 @@ public class SoftApManagerTest extends WifiBaseTest {
     @Test
     public void startSoftApOnAnyNoFailForCountryCodeSetFailure() throws Exception {
         Builder configBuilder = new SoftApConfiguration.Builder();
-        configBuilder.setBand(SoftApConfiguration.BAND_ANY);
+        configBuilder.setBand(mBand256G);
         configBuilder.setSsid(TEST_SSID);
         SoftApModeConfiguration softApConfig = new SoftApModeConfiguration(
                 WifiManager.IFACE_IP_MODE_TETHERED, configBuilder.build(),
@@ -822,7 +826,7 @@ public class SoftApManagerTest extends WifiBaseTest {
             throws Exception {
         SoftApConfiguration config = createDefaultApConfig();
         Builder configBuilder = new SoftApConfiguration.Builder(config);
-        configBuilder.setBand(SoftApConfiguration.BAND_ANY);
+        configBuilder.setBand(mBand256G);
 
         SoftApModeConfiguration apConfig = new SoftApModeConfiguration(
                 WifiManager.IFACE_IP_MODE_TETHERED, configBuilder.build(),
@@ -1529,6 +1533,29 @@ public class SoftApManagerTest extends WifiBaseTest {
     }
 
     @Test
+    public void resetsFactoryMacWhenRandomizationDoesntSupport() throws Exception {
+        long testSoftApFeature = SoftApCapability.SOFTAP_FEATURE_CLIENT_FORCE_DISCONNECT
+                | SoftApCapability.SOFTAP_FEATURE_ACS_OFFLOAD
+                | SoftApCapability.SOFTAP_FEATURE_WPA3_SAE;
+        SoftApCapability testSoftApCapability = new SoftApCapability(testSoftApFeature);
+        Builder configBuilder = new SoftApConfiguration.Builder();
+        configBuilder.setBand(SoftApConfiguration.BAND_2GHZ);
+        configBuilder.setSsid(TEST_SSID);
+        configBuilder.setBssid(null);
+
+        SoftApModeConfiguration apConfig = new SoftApModeConfiguration(
+                WifiManager.IFACE_IP_MODE_TETHERED, configBuilder.build(), testSoftApCapability);
+        ArgumentCaptor<MacAddress> mac = ArgumentCaptor.forClass(MacAddress.class);
+        when(mWifiNative.getApFactoryMacAddress(TEST_INTERFACE_NAME)).thenReturn(TEST_MAC_ADDRESS);
+        when(mWifiNative.setApMacAddress(eq(TEST_INTERFACE_NAME), mac.capture())).thenReturn(true);
+
+        startSoftApAndVerifyEnabled(apConfig);
+
+        assertThat(mac.getValue()).isEqualTo(TEST_MAC_ADDRESS);
+        verify(mWifiApConfigStore, never()).randomizeBssidIfUnset(any(), any());
+    }
+
+    @Test
     public void setsCustomMac() throws Exception {
         Builder configBuilder = new SoftApConfiguration.Builder();
         configBuilder.setBand(SoftApConfiguration.BAND_2GHZ);
@@ -1824,7 +1851,8 @@ public class SoftApManagerTest extends WifiBaseTest {
     @Test
     public void testForceClientDisconnectNotInvokeWhenNotSupport() throws Exception {
         long testSoftApFeature = SoftApCapability.SOFTAP_FEATURE_WPA3_SAE
-                | SoftApCapability.SOFTAP_FEATURE_ACS_OFFLOAD;
+                | SoftApCapability.SOFTAP_FEATURE_ACS_OFFLOAD
+                | SoftApCapability.SOFTAP_FEATURE_MAC_ADDRESS_CUSTOMIZATION;
         SoftApCapability noClientControlCapability = new SoftApCapability(testSoftApFeature);
         noClientControlCapability.setMaxSupportedClients(1);
         SoftApModeConfiguration apConfig =

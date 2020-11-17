@@ -20,7 +20,6 @@ import static android.net.wifi.WifiManager.WIFI_FEATURE_OWE;
 
 import android.annotation.IntDef;
 import android.annotation.NonNull;
-import android.hardware.wifi.V1_0.IfaceType;
 import android.net.MacAddress;
 import android.net.TrafficStats;
 import android.net.apf.ApfCapabilities;
@@ -1408,10 +1407,12 @@ public class WifiNative {
      * {@link Iface#IFACE_TYPE_STA_FOR_SCAN}.
      *
      * @param ifaceName Name of the interface.
+     * @param requestorWs Requestor worksource.
      * @return true if the operation succeeded, false if there is an error or the iface is already
      * in scan mode.
      */
-    public boolean switchClientInterfaceToScanMode(@NonNull String ifaceName) {
+    public boolean switchClientInterfaceToScanMode(@NonNull String ifaceName,
+            @NonNull WorkSource requestorWs) {
         synchronized (mLock) {
             final Iface iface = mIfaceMgr.getIface(ifaceName);
             if (iface == null) {
@@ -1421,6 +1422,12 @@ public class WifiNative {
             if (iface.type == Iface.IFACE_TYPE_STA_FOR_SCAN) {
                 Log.e(TAG, "Already in scan mode on iface=" + ifaceName);
                 return true;
+            }
+            if (mWifiVendorHal.isVendorHalSupported()
+                    && !mWifiVendorHal.replaceStaIfaceRequestorWs(iface.name, requestorWs)) {
+                Log.e(TAG, "Failed to replace requestor ws on " + iface);
+                teardownInterface(iface.name);
+                return false;
             }
             if (!mSupplicantStaIfaceHal.teardownIface(iface.name)) {
                 Log.e(TAG, "Failed to teardown iface in supplicant on " + iface);
@@ -1442,10 +1449,12 @@ public class WifiNative {
      * {@link Iface#IFACE_TYPE_STA_FOR_CONNECTIVITY}.
      *
      * @param ifaceName Name of the interface.
+     * @param requestorWs Requestor worksource.
      * @return true if the operation succeeded, false if there is an error or the iface is already
      * in scan mode.
      */
-    public boolean switchClientInterfaceToConnectivityMode(@NonNull String ifaceName) {
+    public boolean switchClientInterfaceToConnectivityMode(@NonNull String ifaceName,
+            @NonNull WorkSource requestorWs) {
         synchronized (mLock) {
             final Iface iface = mIfaceMgr.getIface(ifaceName);
             if (iface == null) {
@@ -1456,6 +1465,12 @@ public class WifiNative {
             if (iface.type == Iface.IFACE_TYPE_STA_FOR_CONNECTIVITY) {
                 Log.e(TAG, "Already in connectivity mode on iface=" + ifaceName);
                 return true;
+            }
+            if (mWifiVendorHal.isVendorHalSupported()
+                    && !mWifiVendorHal.replaceStaIfaceRequestorWs(iface.name, requestorWs)) {
+                Log.e(TAG, "Failed to replace requestor ws on " + iface);
+                teardownInterface(iface.name);
+                return false;
             }
             if (!startSupplicant()) {
                 Log.e(TAG, "Failed to start supplicant");
