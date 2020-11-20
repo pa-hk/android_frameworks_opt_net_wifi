@@ -732,6 +732,7 @@ public class WifiNetworkSuggestionsManager {
         if (extendedWifiNetworkSuggestions == null) {
             extendedWifiNetworkSuggestions = new HashSet<>();
         }
+        extendedWifiNetworkSuggestions.remove(ewns);
         extendedWifiNetworkSuggestions.add(ewns);
         mPasspointInfo.put(ewns.wns.wifiConfiguration.FQDN, extendedWifiNetworkSuggestions);
     }
@@ -1009,6 +1010,11 @@ public class WifiNetworkSuggestionsManager {
                     return false;
                 }
             }
+            if (!isValidCarrierMergedNetworkSuggestion(wns)) {
+                Log.e(TAG, "Merged carrier network must be a metered, enterprise config with a "
+                        + "valid subscription Id");
+                return false;
+            }
             if (!SdkLevel.isAtLeastS()) {
                 if (wns.wifiConfiguration.oemPaid) {
                     Log.e(TAG, "OEM paid suggestions are only allowed from Android S.");
@@ -1027,7 +1033,30 @@ public class WifiNetworkSuggestionsManager {
                     Log.e(TAG, "Setting Priority group is only allowed from Android S.");
                     return false;
                 }
+                if (wns.wifiConfiguration.carrierMerged) {
+                    Log.e(TAG, "Setting carrier merged network is only allowed from Android S.");
+                }
             }
+        }
+        return true;
+    }
+
+    private boolean isValidCarrierMergedNetworkSuggestion(WifiNetworkSuggestion wns) {
+        if (!wns.wifiConfiguration.carrierMerged) {
+            // Not carrier merged.
+            return true;
+        }
+        if (!wns.wifiConfiguration.isEnterprise() && wns.passpointConfiguration == null) {
+            // Carrier merged network must be a enterprise network.
+            return false;
+        }
+        if (!WifiConfiguration.isMetered(wns.wifiConfiguration, null)) {
+            // Carrier merged network must be metered.
+            return false;
+        }
+        if (wns.wifiConfiguration.subscriptionId == SubscriptionManager.INVALID_SUBSCRIPTION_ID) {
+            // Carrier merged network must have a valid subscription Id.
+            return false;
         }
         return true;
     }
@@ -2167,6 +2196,28 @@ public class WifiNetworkSuggestionsManager {
             }
         }
         return false;
+    }
+
+    /**
+     * Check the suggestion user approval status.
+     */
+    public @WifiManager.SuggestionUserApprovalStatus int getNetworkSuggestionUserApprovalStatus(
+            int uid, String packageName) {
+        if (mAppOps.unsafeCheckOpNoThrow(OPSTR_CHANGE_WIFI_STATE, uid, packageName)
+                == AppOpsManager.MODE_IGNORED) {
+            return WifiManager.STATUS_SUGGESTION_APPROVAL_REJECTED_BY_USER;
+        }
+        if (!mActiveNetworkSuggestionsPerApp.containsKey(packageName)) {
+            return WifiManager.STATUS_SUGGESTION_APPROVAL_UNKNOWN;
+        }
+        PerAppInfo info = mActiveNetworkSuggestionsPerApp.get(packageName);
+        if (info.hasUserApproved) {
+            return WifiManager.STATUS_SUGGESTION_APPROVAL_APPROVED_BY_USER;
+        }
+        if (info.carrierId != TelephonyManager.UNKNOWN_CARRIER_ID) {
+            return WifiManager.STATUS_SUGGESTION_APPROVAL_APPROVED_BY_CARRIER_PRIVILEGE;
+        }
+        return WifiManager.STATUS_SUGGESTION_APPROVAL_PENDING;
     }
 
     private boolean hasSecureSuggestionFromSameCarrierAvailable(

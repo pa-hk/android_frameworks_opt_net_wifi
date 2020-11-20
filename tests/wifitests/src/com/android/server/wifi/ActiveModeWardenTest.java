@@ -133,6 +133,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
     @Mock WifiPermissionsUtil mWifiPermissionsUtil;
     @Mock SoftApCapability mSoftApCapability;
     @Mock ActiveModeWarden.ModeChangeCallback mModeChangeCallback;
+    @Mock WifiMetrics mWifiMetrics;
 
     ActiveModeManager.Listener<ConcreteClientModeManager> mClientListener;
     ActiveModeManager.Listener<SoftApManager> mSoftApListener;
@@ -162,6 +163,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
 
         when(mWifiInjector.getScanRequestProxy()).thenReturn(mScanRequestProxy);
         when(mClientModeManager.getRole()).thenReturn(ROLE_CLIENT_PRIMARY);
+        when(mClientModeManager.getInterfaceName()).thenReturn(WIFI_IFACE_NAME);
         when(mContext.getResources()).thenReturn(mResources);
         when(mSoftApManager.getRole()).thenReturn(ROLE_SOFTAP_TETHERED);
 
@@ -203,6 +205,8 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         mActiveModeWarden.start();
         mLooper.dispatchAll();
 
+        verify(mWifiMetrics).noteWifiEnabledDuringBoot(false);
+
         verify(mWifiNative).registerStatusListener(mStatusListenerCaptor.capture());
         verify(mWifiNative).initialize();
         mWifiNativeStatusListener = mStatusListenerCaptor.getValue();
@@ -240,7 +244,8 @@ public class ActiveModeWardenTest extends WifiBaseTest {
                 mContext,
                 mSettingsStore,
                 mFacade,
-                mWifiPermissionsUtil);
+                mWifiPermissionsUtil,
+                mWifiMetrics);
         // SelfRecovery is created in WifiInjector after ActiveModeWarden, so getSelfRecovery()
         // returns null when constructing ActiveModeWarden.
         when(mWifiInjector.getSelfRecovery()).thenReturn(mSelfRecovery);
@@ -1190,6 +1195,8 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         mActiveModeWarden = createActiveModeWarden();
         mActiveModeWarden.start();
         mLooper.dispatchAll();
+
+        verify(mWifiMetrics).noteWifiEnabledDuringBoot(true);
 
         assertInEnabledState();
 
@@ -2172,6 +2179,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         assertInDisabledState();
         verify(mClientModeManager).stop();
         verify(mClientModeManager, atLeastOnce()).getRole();
+        verify(mClientModeManager).clearWifiConnectedNetworkScorer();
         verify(mModeChangeCallback).onActiveModeManagerRemoved(mClientModeManager);
 
         mActiveModeWarden.recoveryRestartWifi(SelfRecovery.REASON_LAST_RESORT_WATCHDOG);
@@ -2431,6 +2439,13 @@ public class ActiveModeWardenTest extends WifiBaseTest {
                 .makeClientModeManager(any(), eq(TEST_WORKSOURCE), eq(role), anyBoolean());
         additionalClientListener.value.onStarted(additionalClientModeManager);
         mLooper.dispatchAll();
+        // Ensure the hardware is correctly configured for STA + STA
+        if (role == ROLE_CLIENT_LOCAL_ONLY || role == ROLE_CLIENT_SECONDARY_LONG_LIVED) {
+            verify(mWifiNative).setMultiStaUseCase(WifiNative.DUAL_STA_NON_TRANSIENT_UNBIASED);
+        } else if (role == ROLE_CLIENT_SECONDARY_TRANSIENT) {
+            verify(mWifiNative).setMultiStaUseCase(WifiNative.DUAL_STA_TRANSIENT_PREFER_PRIMARY);
+        }
+        verify(mWifiNative).setMultiStaPrimaryConnection(WIFI_IFACE_NAME);
         // Returns the new local only client mode manager.
         ArgumentCaptor<ClientModeManager> requestedClientModeManager =
                 ArgumentCaptor.forClass(ClientModeManager.class);
@@ -2997,5 +3012,20 @@ public class ActiveModeWardenTest extends WifiBaseTest {
 
         mActiveModeWarden.setWifiConnectedNetworkScorer(iBinder, iScorer);
         verify(mClientModeManager, times(2)).setWifiConnectedNetworkScorer(iBinder, iScorer);
+    }
+
+    @Test
+    public void propagateConnectedWifiScorerToPrimaryClientModeManager_enterScanOnlyState()
+            throws Exception {
+        IBinder iBinder = mock(IBinder.class);
+        IWifiConnectedNetworkScorer iScorer = mock(IWifiConnectedNetworkScorer.class);
+        mActiveModeWarden.setWifiConnectedNetworkScorer(iBinder, iScorer);
+        enterClientModeActiveState();
+        assertInEnabledState();
+        verify(mClientModeManager).setWifiConnectedNetworkScorer(iBinder, iScorer);
+
+        enterScanOnlyModeActiveState(true);
+
+        verify(mClientModeManager).clearWifiConnectedNetworkScorer();
     }
 }

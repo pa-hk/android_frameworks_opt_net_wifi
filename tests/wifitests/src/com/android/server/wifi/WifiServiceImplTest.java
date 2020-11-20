@@ -5997,7 +5997,7 @@ public class WifiServiceImplTest extends WifiBaseTest {
      */
     @Test
     public void getWifiActivityEnergyInfoAsyncFeatureUnsupported() throws Exception {
-        when(mClientModeManager.syncGetSupportedFeatures()).thenReturn(0L);
+        when(mClientModeManager.getSupportedFeatures()).thenReturn(0L);
         mLooper.startAutoDispatch();
         mWifiServiceImpl.getWifiActivityEnergyInfoAsync(mOnWifiActivityEnergyInfoListener);
         mLooper.stopAutoDispatch();
@@ -6010,7 +6010,7 @@ public class WifiServiceImplTest extends WifiBaseTest {
      */
     @Test
     public void getWifiActivityEnergyInfoAsyncSuccess() throws Exception {
-        when(mClientModeManager.syncGetSupportedFeatures()).thenReturn(Long.MAX_VALUE);
+        when(mClientModeManager.getSupportedFeatures()).thenReturn(Long.MAX_VALUE);
         setupReportActivityInfo();
         mLooper.startAutoDispatch();
         mWifiServiceImpl.getWifiActivityEnergyInfoAsync(mOnWifiActivityEnergyInfoListener);
@@ -6194,7 +6194,7 @@ public class WifiServiceImplTest extends WifiBaseTest {
             long supportedFeaturesFromClientModeManager, boolean rttDisabled) {
         when(mPackageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_RTT)).thenReturn(
                 !rttDisabled);
-        when(mClientModeManager.syncGetSupportedFeatures())
+        when(mClientModeManager.getSupportedFeatures())
                 .thenReturn(supportedFeaturesFromClientModeManager);
         mLooper.startAutoDispatch();
         long supportedFeatures = mWifiServiceImpl.getSupportedFeatures();
@@ -6252,7 +6252,7 @@ public class WifiServiceImplTest extends WifiBaseTest {
         when(mResources.getBoolean(
                 R.bool.config_wifi_p2p_mac_randomization_supported))
                 .thenReturn(p2pMacRandomizationEnabled);
-        when(mClientModeManager.syncGetSupportedFeatures())
+        when(mClientModeManager.getSupportedFeatures())
                 .thenReturn(supportedFeaturesFromClientModeManager);
         mLooper.startAutoDispatch();
         long supportedFeatures = mWifiServiceImpl.getSupportedFeatures();
@@ -6302,7 +6302,7 @@ public class WifiServiceImplTest extends WifiBaseTest {
     @Test
     public void syncGetSupportedFeaturesForStaApConcurrency() {
         long supportedFeaturesFromClientModeManager = WifiManager.WIFI_FEATURE_OWE;
-        when(mClientModeManager.syncGetSupportedFeatures())
+        when(mClientModeManager.getSupportedFeatures())
                 .thenReturn(supportedFeaturesFromClientModeManager);
 
         when(mActiveModeWarden.isStaApConcurrencySupported())
@@ -6329,7 +6329,7 @@ public class WifiServiceImplTest extends WifiBaseTest {
         assumeTrue(SdkLevel.isAtLeastS());
 
         long supportedFeaturesFromClientModeManager = WifiManager.WIFI_FEATURE_OWE;
-        when(mClientModeManager.syncGetSupportedFeatures())
+        when(mClientModeManager.getSupportedFeatures())
                 .thenReturn(supportedFeaturesFromClientModeManager);
 
         when(mActiveModeWarden.isStaStaConcurrencySupported())
@@ -6478,5 +6478,18 @@ public class WifiServiceImplTest extends WifiBaseTest {
         mWifiServiceImpl.dump(new FileDescriptor(), new PrintWriter(new StringWriter()), null);
         mLooper.stopAutoDispatchAndIgnoreExceptions();
         verify(mWakeupController).dump(any(), any(), any());
+    }
+
+    @Test
+    public void testGetNetworkSuggestionUserApprovalStatus() {
+        when(mWifiNetworkSuggestionsManager
+                .getNetworkSuggestionUserApprovalStatus(anyInt(), anyString()))
+                .thenReturn(WifiManager.STATUS_SUGGESTION_APPROVAL_APPROVED_BY_USER);
+        mLooper.startAutoDispatch();
+        assertEquals(WifiManager.STATUS_SUGGESTION_APPROVAL_APPROVED_BY_USER,
+                mWifiServiceImpl.getNetworkSuggestionUserApprovalStatus(TEST_PACKAGE_NAME));
+        mLooper.stopAutoDispatchAndIgnoreExceptions();
+        verify(mWifiNetworkSuggestionsManager)
+                .getNetworkSuggestionUserApprovalStatus(anyInt(), eq(TEST_PACKAGE_NAME));
     }
 }

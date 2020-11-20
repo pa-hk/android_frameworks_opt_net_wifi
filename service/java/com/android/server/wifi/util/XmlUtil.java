@@ -357,6 +357,7 @@ public class XmlUtil {
         public static final String XML_TAG_IS_TRUSTED = "Trusted";
         public static final String XML_TAG_IS_OEM_PAID = "OemPaid";
         public static final String XML_TAG_IS_OEM_PRIVATE = "OemPrivate";
+        public static final String XML_TAG_IS_CARRIER_MERGED = "CarrierMerged";
         private static final String XML_TAG_IS_MOST_RECENTLY_CONNECTED = "IsMostRecentlyConnected";
         public static final String XML_TAG_SHARE_THIS_AP = "ShareThisAp";
 
@@ -497,6 +498,8 @@ public class XmlUtil {
             XmlUtil.writeNextValue(out, XML_TAG_IS_TRUSTED, configuration.trusted);
             XmlUtil.writeNextValue(out, XML_TAG_IS_OEM_PAID, configuration.oemPaid);
             XmlUtil.writeNextValue(out, XML_TAG_IS_OEM_PRIVATE, configuration.oemPrivate);
+            XmlUtil.writeNextValue(out, XML_TAG_IS_CARRIER_MERGED,
+                    configuration.carrierMerged);
             XmlUtil.writeNextValue(out, XML_TAG_BSSID, configuration.BSSID);
             XmlUtil.writeNextValue(out, XML_TAG_STATUS, configuration.status);
             XmlUtil.writeNextValue(out, XML_TAG_FQDN, configuration.FQDN);
@@ -756,6 +759,8 @@ public class XmlUtil {
                         case XML_TAG_IS_MOST_RECENTLY_CONNECTED:
                             configuration.isMostRecentlyConnected = (boolean) value;
                             break;
+                        case XML_TAG_IS_CARRIER_MERGED:
+                            configuration.carrierMerged = (boolean) value;
                         default:
                             Log.w(TAG, "Ignoring unknown value name found: " + valueName[0]);
                             break;
