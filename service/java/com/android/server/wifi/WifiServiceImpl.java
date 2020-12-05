@@ -2724,6 +2724,48 @@ public class WifiServiceImpl extends BaseWifiService {
     }
 
     /**
+     * See
+     * {@link android.net.wifi.WifiManager#startTemporarilyDisablingAllNonCarrierMergedWifi(int)}
+     * @param subscriptionId the subscription ID of the carrier whose merged wifi networks won't be
+     *                       disabled.
+     */
+    @Override
+    public void startTemporarilyDisablingAllNonCarrierMergedWifi(int subscriptionId) {
+        if (!SdkLevel.isAtLeastS()) {
+            throw new UnsupportedOperationException();
+        }
+        enforceNetworkSettingsPermission();
+
+        mLog.info("startTemporarilyDisablingAllNonCarrierMergedWifi=% uid=%").c(subscriptionId)
+                .c(Binder.getCallingUid()).flush();
+        mWifiThreadRunner.post(() -> {
+            mWifiConfigManager
+                    .startTemporarilyDisablingAllNonCarrierMergedWifi(subscriptionId);
+            // always disconnect here and rely on auto-join to find the appropriate carrier network
+            // to join. Even if we are currently connected to the carrier-merged wifi, it's still
+            // better to disconnect here because it's possible that carrier wifi offload is
+            // disabled.
+            mActiveModeWarden.getPrimaryClientModeManager().disconnect();
+        });
+    }
+
+    /**
+     * See {@link android.net.wifi.WifiManager#stopTemporarilyDisablingAllNonCarrierMergedWifi()}
+     */
+    @Override
+    public void stopTemporarilyDisablingAllNonCarrierMergedWifi() {
+        if (!SdkLevel.isAtLeastS()) {
+            throw new UnsupportedOperationException();
+        }
+        enforceNetworkSettingsPermission();
+
+        mLog.info("stopTemporarilyDisablingAllNonCarrierMergedWifi uid=%")
+                .c(Binder.getCallingUid()).flush();
+        mWifiThreadRunner.post(() ->
+                mWifiConfigManager.stopTemporarilyDisablingAllNonCarrierMergedWifi());
+    }
+
+    /**
      * See {@link android.net.wifi.WifiManager#allowAutojoinGlobal(boolean)}
      * @param choice the OEM's choice to allow auto-join
      */
@@ -3738,7 +3780,7 @@ public class WifiServiceImpl extends BaseWifiService {
                                 mWifiConfigManager.addOrUpdateNetwork(configuration, callingUid)
                                         .getNetworkId();
                         if (networkId == WifiConfiguration.INVALID_NETWORK_ID) {
-                            Log.e(TAG, "Restore network failed: " + configuration.getKey());
+                            Log.e(TAG, "Restore network failed: " + configuration.getProfileKey());
                             continue;
                         }
                         // Enable all networks restored.

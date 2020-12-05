@@ -24,6 +24,9 @@ import android.net.wifi.WifiDppConfig;
 public interface ClientModeManager extends ActiveModeManager, ClientMode {
     int syncGetWifiState();
 
+    @Override
+    ClientRole getRole();
+
     // QC value-adds
     void setTrafficPoller(WifiTrafficPoller trafficPoller);
     String getCapabilities(String capaType);

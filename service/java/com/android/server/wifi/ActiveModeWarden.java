@@ -73,6 +73,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.Executor;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -86,10 +87,12 @@ public class ActiveModeWarden {
     public static final WorkSource INTERNAL_REQUESTOR_WS = new WorkSource(Process.WIFI_UID);
 
     // Holder for active mode managers
-    private final ArraySet<ConcreteClientModeManager> mClientModeManagers = new ArraySet<>();
-    private final ArraySet<SoftApManager> mSoftApManagers = new ArraySet<>();
+    private final Set<ConcreteClientModeManager> mClientModeManagers = new ArraySet<>();
+    private final Set<SoftApManager> mSoftApManagers = new ArraySet<>();
 
-    private final ArraySet<ModeChangeCallback> mCallbacks = new ArraySet<>();
+    private final Set<ModeChangeCallback> mCallbacks = new ArraySet<>();
+    private final Set<PrimaryClientModeManagerChangedCallback> mPrimaryChangedCallbacks =
+            new ArraySet<>();
     // DefaultModeManager used to service API calls when there are no active client mode managers.
     private final DefaultClientModeManager mDefaultClientModeManager;
     private final WifiInjector mWifiInjector;
@@ -114,6 +117,9 @@ public class ActiveModeWarden {
     private boolean mVerboseLoggingEnabled = false;
     /** Cache to store the external scorer for primary and secondary (MBB) client mode manager. */
     @Nullable private Pair<IBinder, IWifiConnectedNetworkScorer> mClientModeManagerScorer;
+
+    @Nullable
+    private ConcreteClientModeManager mLastPrimaryClientModeManager = null;
 
     /**
      * Called from WifiServiceImpl to register a callback for notifications from SoftApManager
@@ -154,6 +160,19 @@ public class ActiveModeWarden {
          * @param activeModeManager Instance of {@link ActiveModeManager}.
          */
         void onActiveModeManagerRoleChanged(@NonNull ActiveModeManager activeModeManager);
+    }
+
+    /** Called when the primary ClientModeManager changes. */
+    public interface PrimaryClientModeManagerChangedCallback {
+        /**
+         * @param prevPrimaryClientModeManager the previous primary ClientModeManager, or null if
+         *                                     there was no previous primary (e.g. Wifi was off).
+         * @param newPrimaryClientModeManager the new primary ClientModeManager, or null if there is
+         *                                    no longer a primary (e.g. Wifi was turned off).
+         */
+        void onChange(
+                @Nullable ConcreteClientModeManager prevPrimaryClientModeManager,
+                @Nullable ConcreteClientModeManager newPrimaryClientModeManager);
     }
 
     /**
@@ -248,6 +267,18 @@ public class ActiveModeWarden {
                 });
             }
         });
+
+        registerPrimaryClientModeManagerChangedCallback(
+                (prevPrimaryClientModeManager, newPrimaryClientModeManager) -> {
+                    if (prevPrimaryClientModeManager != null) {
+                        prevPrimaryClientModeManager.clearWifiConnectedNetworkScorer();
+                    }
+                    if (newPrimaryClientModeManager != null && mClientModeManagerScorer != null) {
+                        newPrimaryClientModeManager.setWifiConnectedNetworkScorer(
+                                mClientModeManagerScorer.first,
+                                mClientModeManagerScorer.second);
+                    }
+                });
     }
 
     private void invokeOnAddedCallbacks(@NonNull ActiveModeManager activeModeManager) {
@@ -274,6 +305,18 @@ public class ActiveModeWarden {
         }
         for (ModeChangeCallback callback : mCallbacks) {
             callback.onActiveModeManagerRoleChanged(activeModeManager);
+        }
+    }
+
+    private void invokeOnPrimaryClientModeManagerChangedCallbacks(
+            @Nullable ConcreteClientModeManager prevPrimaryClientModeManager,
+            @Nullable ConcreteClientModeManager newPrimaryClientModeManager) {
+        if (mVerboseLoggingEnabled) {
+            Log.v(TAG, "Primary ClientModeManager changed from " + prevPrimaryClientModeManager
+                    + " to " + newPrimaryClientModeManager);
+        }
+        for (PrimaryClientModeManagerChangedCallback callback : mPrimaryChangedCallbacks) {
+            callback.onChange(prevPrimaryClientModeManager, newPrimaryClientModeManager);
         }
     }
 
@@ -319,14 +362,19 @@ public class ActiveModeWarden {
         mCallbacks.remove(Objects.requireNonNull(callback));
     }
 
-    private void updateWifiConnectedNetworkScorer(ConcreteClientModeManager manager) {
-        ClientRole newRole = manager.getRole();
-        if (newRole == ROLE_CLIENT_PRIMARY && mClientModeManagerScorer != null) {
-            manager.setWifiConnectedNetworkScorer(
-                    mClientModeManagerScorer.first, mClientModeManagerScorer.second);
-        } else {
-            manager.clearWifiConnectedNetworkScorer();
-        }
+    /** Register for primary ClientModeManager changed callbacks. */
+    public void registerPrimaryClientModeManagerChangedCallback(
+            @NonNull PrimaryClientModeManagerChangedCallback callback) {
+        mPrimaryChangedCallbacks.add(Objects.requireNonNull(callback));
+        // If there is already a primary CMM when registering, send a callback with the info.
+        ConcreteClientModeManager cm = getPrimaryClientModeManagerNullable();
+        if (cm != null) callback.onChange(null, cm);
+    }
+
+    /** Unregister for primary ClientModeManager changed callbacks. */
+    public void unregisterPrimaryClientModeManagerChangedCallback(
+            @NonNull PrimaryClientModeManagerChangedCallback callback) {
+        mPrimaryChangedCallbacks.remove(Objects.requireNonNull(callback));
     }
 
     /**
@@ -587,6 +635,17 @@ public class ActiveModeWarden {
     }
 
     /**
+     * Returns primary client mode manager if any, else returns null
+     * This mode manager can be the default route on the device & will handle all external API
+     * calls.
+     * @return Instance of {@link ConcreteClientModeManager} or null.
+     */
+    @Nullable
+    private ConcreteClientModeManager getPrimaryClientModeManagerNullable() {
+        return getClientModeManagerInRole(ROLE_CLIENT_PRIMARY);
+    }
+
+    /**
      * Returns primary client mode manager if any, else returns an instance of
      * {@link ClientModeManager}.
      * This mode manager can be the default route on the device & will handle all external API
@@ -595,7 +654,7 @@ public class ActiveModeWarden {
      */
     @NonNull
     public ClientModeManager getPrimaryClientModeManager() {
-        ClientModeManager cm = getClientModeManagerInRole(ROLE_CLIENT_PRIMARY);
+        ClientModeManager cm = getPrimaryClientModeManagerNullable();
         if (cm != null) return cm;
         // If there is no primary client manager, return the default one.
         return mDefaultClientModeManager;
@@ -693,7 +752,7 @@ public class ActiveModeWarden {
     }
 
     @Nullable
-    private ClientModeManager getClientModeManagerInRole(ClientRole role) {
+    private ConcreteClientModeManager getClientModeManagerInRole(ClientRole role) {
         for (ConcreteClientModeManager manager : mClientModeManagers) {
             if (manager.getRole() == role) return manager;
         }
@@ -986,49 +1045,74 @@ public class ActiveModeWarden {
                     getPrimaryClientModeManager().getInterfaceName());
         }
 
-        private void updateOnStartedOrRoleChanged(ConcreteClientModeManager clientModeManager) {
+        private void onStartedOrRoleChanged(ConcreteClientModeManager clientModeManager) {
             updateClientScanMode();
             updateBatteryStats();
             configureHwForMultiStaIfNecessary(clientModeManager);
-            updateWifiConnectedNetworkScorer(clientModeManager);
+        }
+
+        private void onPrimaryChangedDueToStartedOrRoleChanged(
+                ConcreteClientModeManager clientModeManager) {
+            if (clientModeManager.getRole() != ROLE_CLIENT_PRIMARY
+                    && clientModeManager == mLastPrimaryClientModeManager) {
+                // CMM was primary, but is no longer primary
+                invokeOnPrimaryClientModeManagerChangedCallbacks(clientModeManager, null);
+                mLastPrimaryClientModeManager = null;
+            } else if (clientModeManager.getRole() == ROLE_CLIENT_PRIMARY
+                    && clientModeManager != mLastPrimaryClientModeManager) {
+                // CMM is primary, but wasn't primary before
+                invokeOnPrimaryClientModeManagerChangedCallbacks(
+                        mLastPrimaryClientModeManager, clientModeManager);
+                mLastPrimaryClientModeManager = clientModeManager;
+            }
         }
 
         @Override
-        public void onStarted(ConcreteClientModeManager clientModeManager) {
-            updateOnStartedOrRoleChanged(clientModeManager);
+        public void onStarted(@NonNull ConcreteClientModeManager clientModeManager) {
+            onStartedOrRoleChanged(clientModeManager);
             if (mExternalRequestListener != null) {
                 mExternalRequestListener.onAnswer(clientModeManager);
             }
             invokeOnAddedCallbacks(clientModeManager);
+            // invoke "added" callbacks before primary changed
+            onPrimaryChangedDueToStartedOrRoleChanged(clientModeManager);
         }
 
         @Override
-        public void onRoleChanged(ConcreteClientModeManager clientModeManager) {
-            updateOnStartedOrRoleChanged(clientModeManager);
+        public void onRoleChanged(@NonNull ConcreteClientModeManager clientModeManager) {
+            onStartedOrRoleChanged(clientModeManager);
             invokeOnRoleChangedCallbacks(clientModeManager);
+            onPrimaryChangedDueToStartedOrRoleChanged(clientModeManager);
         }
 
-        @Override
-        public void onStopped(ConcreteClientModeManager clientModeManager) {
+        private void onStoppedOrStartFailure(ConcreteClientModeManager clientModeManager) {
             mClientModeManagers.remove(clientModeManager);
             mGraveyard.inter(clientModeManager);
             updateClientScanMode();
             updateBatteryStats();
-            mWifiController.sendMessage(WifiController.CMD_STA_STOPPED);
+            if (clientModeManager == mLastPrimaryClientModeManager) {
+                // CMM was primary, but was stopped
+                invokeOnPrimaryClientModeManagerChangedCallbacks(
+                        mLastPrimaryClientModeManager, null);
+                mLastPrimaryClientModeManager = null;
+            }
+            // invoke "removed" callbacks after primary changed
             invokeOnRemovedCallbacks(clientModeManager);
         }
 
         @Override
-        public void onStartFailure(ConcreteClientModeManager clientModeManager) {
-            mClientModeManagers.remove(clientModeManager);
-            mGraveyard.inter(clientModeManager);
-            updateClientScanMode();
-            updateBatteryStats();
-            mWifiController.sendMessage(WifiController.CMD_STA_START_FAILURE);
+        public void onStopped(@NonNull ConcreteClientModeManager clientModeManager) {
+            onStoppedOrStartFailure(clientModeManager);
+            mWifiController.sendMessage(WifiController.CMD_STA_STOPPED);
+        }
+
+        @Override
+        public void onStartFailure(@NonNull ConcreteClientModeManager clientModeManager) {
+            Log.e(TAG, "ClientModeManager start failed!" + clientModeManager);
             // onStartFailure can be called when switching between roles. So, remove
             // update listeners.
-            Log.e(TAG, "ClientModeManager start failed!" + clientModeManager);
-            invokeOnRemovedCallbacks(clientModeManager);
+            onStoppedOrStartFailure(clientModeManager);
+            mWifiController.sendMessage(WifiController.CMD_STA_START_FAILURE);
         }
     }
 

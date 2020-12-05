@@ -125,6 +125,7 @@ import com.android.server.wifi.ClientMode.LinkProbeCallback;
 import com.android.server.wifi.hotspot2.NetworkDetail;
 import com.android.server.wifi.hotspot2.PasspointManager;
 import com.android.server.wifi.hotspot2.PasspointProvisioningTestUtil;
+import com.android.server.wifi.hotspot2.WnmData;
 import com.android.server.wifi.proto.nano.WifiMetricsProto;
 import com.android.server.wifi.proto.nano.WifiMetricsProto.StaEvent;
 import com.android.server.wifi.proto.nano.WifiMetricsProto.WifiIsUnusableEvent;
@@ -200,6 +201,9 @@ public class ClientModeImplTest extends WifiBaseTest {
 
     private static final int DATA_SUBID = 1;
     private static final int CARRIER_ID_1 = 100;
+
+    private static final long TEST_BSSID = 0x112233445566L;
+    private static final int TEST_DELAY_IN_SECONDS = 300;
 
     private long mBinderToken;
     private MockitoSession mSession;
@@ -886,7 +890,7 @@ public class ClientModeImplTest extends WifiBaseTest {
         verify(mWifiStateTracker).updateState(eq(WifiStateTracker.CONNECTED));
         assertEquals("L3ConnectedState", getCurrentState().getName());
         verify(mWifiMetrics).incrementNumOfCarrierWifiConnectionSuccess();
-        verify(mWifiLockManager).updateWifiClientConnected(true);
+        verify(mWifiLockManager).updateWifiClientConnected(mClientModeManager, true);
         verify(mWifiNative).getConnectionCapabilities(any());
         verify(mThroughputPredictor).predictMaxTxThroughput(any());
         verify(mWifiMetrics).setConnectionMaxSupportedLinkSpeedMbps(WIFI_IFACE_NAME, 90, 80);
@@ -1871,7 +1875,8 @@ public class ClientModeImplTest extends WifiBaseTest {
                 .thenReturn(WifiHealthMonitor.REASON_SHORT_CONNECTION_NONLOCAL);
         InOrder inOrderWifiLockManager = inOrder(mWifiLockManager);
         connect();
-        inOrderWifiLockManager.verify(mWifiLockManager).updateWifiClientConnected(true);
+        inOrderWifiLockManager.verify(mWifiLockManager)
+                .updateWifiClientConnected(mClientModeManager, true);
 
         DisconnectEventInfo disconnectEventInfo =
                 new DisconnectEventInfo(mConnectedNetwork.SSID, sBSSID, 0, false);
@@ -1885,7 +1890,8 @@ public class ClientModeImplTest extends WifiBaseTest {
         verify(mWifiStateTracker).updateState(eq(WifiStateTracker.DISCONNECTED));
         verify(mWifiNetworkSuggestionsManager).handleDisconnect(any(), any());
         assertEquals("DisconnectedState", getCurrentState().getName());
-        inOrderWifiLockManager.verify(mWifiLockManager).updateWifiClientConnected(false);
+        inOrderWifiLockManager.verify(mWifiLockManager)
+                .updateWifiClientConnected(mClientModeManager, false);
         verify(mWifiScoreCard).detectAbnormalDisconnection();
         verify(mWifiDiagnostics).takeBugReport(anyString(), anyString());
         verify(mWifiNative).disableNetwork(WIFI_IFACE_NAME);
@@ -4971,7 +4977,8 @@ public class ClientModeImplTest extends WifiBaseTest {
                 .thenReturn(WifiHealthMonitor.REASON_SHORT_CONNECTION_NONLOCAL);
         InOrder inOrderWifiLockManager = inOrder(mWifiLockManager);
         connect();
-        inOrderWifiLockManager.verify(mWifiLockManager).updateWifiClientConnected(true);
+        inOrderWifiLockManager.verify(mWifiLockManager)
+                .updateWifiClientConnected(mClientModeManager, true);
 
         // got 4WAY_HANDSHAKE_TIMEOUT
         DisconnectEventInfo disconnectEventInfo =
@@ -5230,10 +5237,7 @@ public class ClientModeImplTest extends WifiBaseTest {
         when(mWifiNative.roamToNetwork(any(), any())).thenReturn(true);
 
         // Trigger roam to a BSSID.
-        ScanResult scanResult = new ScanResult();
-        scanResult.SSID = WifiInfo.sanitizeSsid(mConnectedNetwork.SSID);
-        scanResult.BSSID = sBSSID1;
-        mCmi.startRoamToNetwork(FRAMEWORK_NETWORK_ID, scanResult);
+        mCmi.startRoamToNetwork(FRAMEWORK_NETWORK_ID, sBSSID1);
         mLooper.dispatchAll();
 
 
@@ -5384,5 +5388,20 @@ public class ClientModeImplTest extends WifiBaseTest {
 
         verify(mContext, times(2)).sendStickyBroadcastAsUser(
                 argThat(new NetworkStateChangedIntentMatcher(CONNECTED)), any());
+    }
+
+    /**
+     * Verify that the Deauth-Imminent WNM-Notification is handled by relaying to the Passpoint
+     * Manager.
+     */
+    @Test
+    public void testHandlePasspointDeauthImminentWnmNotification() throws Exception {
+        setupEapSimConnection();
+        WnmData wnmData = WnmData.createDeauthImminentEvent(TEST_BSSID, "", false,
+                TEST_DELAY_IN_SECONDS);
+        mCmi.sendMessage(WifiMonitor.HS20_DEAUTH_IMMINENT_EVENT, 0, 0, wnmData);
+        mLooper.dispatchAll();
+        verify(mPasspointManager).handleDeauthImminentEvent(eq(wnmData),
+                any(WifiConfiguration.class));
     }
 }

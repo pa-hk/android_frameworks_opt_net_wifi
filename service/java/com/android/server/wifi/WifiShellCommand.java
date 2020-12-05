@@ -51,7 +51,6 @@ import android.net.wifi.WifiManager;
 import android.net.wifi.WifiNetworkSpecifier;
 import android.net.wifi.WifiNetworkSuggestion;
 import android.net.wifi.WifiScanner;
-import android.os.BasicShellCommandHandler;
 import android.os.Binder;
 import android.os.Process;
 import android.os.RemoteException;
@@ -60,6 +59,8 @@ import android.text.TextUtils;
 import android.util.Pair;
 
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.modules.utils.BasicShellCommandHandler;
+import com.android.modules.utils.build.SdkLevel;
 import com.android.server.wifi.ClientMode.LinkProbeCallback;
 import com.android.server.wifi.util.ApConfigUtil;
 import com.android.server.wifi.util.ArrayUtils;
@@ -601,24 +602,36 @@ public class WifiShellCommand extends BasicShellCommandHandler {
                     mWifiService.enableVerboseLogging(enabled ? 1 : 0);
                     return 0;
                 }
+                case "start-temporarily-disabling-all-non-carrier-merged-wifi": {
+                    int subId = Integer.parseInt(getNextArgRequired());
+                    mWifiService.startTemporarilyDisablingAllNonCarrierMergedWifi(subId);
+                    return 0;
+                }
+                case "stop-temporarily-disabling-all-non-carrier-merged-wifi": {
+                    mWifiService.stopTemporarilyDisablingAllNonCarrierMergedWifi();
+                    return 0;
+                }
                 case "add-suggestion": {
                     WifiNetworkSuggestion suggestion = buildSuggestion(pw);
                     mWifiService.addNetworkSuggestions(
                             Arrays.asList(suggestion), SHELL_PACKAGE_NAME, null);
                     // untrusted/oem-paid networks need a corresponding NetworkRequest.
-                    if (suggestion.isUntrusted() || suggestion.isOemPaid()
-                            || suggestion.isOemPrivate()) {
+                    if (suggestion.isUntrusted()
+                            || (SdkLevel.isAtLeastS()
+                            && (suggestion.isOemPaid() || suggestion.isOemPrivate()))) {
                         NetworkRequest.Builder networkRequestBuilder =
                                 new NetworkRequest.Builder()
                                         .addTransportType(TRANSPORT_WIFI);
                         if (suggestion.isUntrusted()) {
                             networkRequestBuilder.removeCapability(NET_CAPABILITY_TRUSTED);
                         }
-                        if (suggestion.isOemPaid()) {
-                            networkRequestBuilder.addCapability(NET_CAPABILITY_OEM_PAID);
-                        }
-                        if (suggestion.isOemPrivate()) {
-                            networkRequestBuilder.addCapability(NET_CAPABILITY_OEM_PRIVATE);
+                        if (SdkLevel.isAtLeastS()) {
+                            if (suggestion.isOemPaid()) {
+                                networkRequestBuilder.addCapability(NET_CAPABILITY_OEM_PAID);
+                            }
+                            if (suggestion.isOemPrivate()) {
+                                networkRequestBuilder.addCapability(NET_CAPABILITY_OEM_PRIVATE);
+                            }
                         }
                         NetworkRequest networkRequest = networkRequestBuilder.build();
                         ConnectivityManager.NetworkCallback networkCallback =
@@ -645,8 +658,9 @@ public class WifiShellCommand extends BasicShellCommandHandler {
                     mWifiService.removeNetworkSuggestions(
                             Arrays.asList(suggestion), SHELL_PACKAGE_NAME);
                     // untrusted/oem-paid networks need a corresponding NetworkRequest.
-                    if (suggestion.isUntrusted() || suggestion.isOemPaid()
-                            || suggestion.isOemPrivate()) {
+                    if (suggestion.isUntrusted()
+                            || (SdkLevel.isAtLeastS()
+                            && (suggestion.isOemPaid() || suggestion.isOemPrivate()))) {
                         Pair<NetworkRequest, ConnectivityManager.NetworkCallback> nrAndNc =
                                 sActiveRequests.remove(suggestion.getSsid());
                         if (nrAndNc == null) {
@@ -897,9 +911,13 @@ public class WifiShellCommand extends BasicShellCommandHandler {
             if (option.equals("-u")) {
                 suggestionBuilder.setUntrusted(true);
             } else if (option.equals("-o")) {
-                suggestionBuilder.setOemPaid(true);
+                if (SdkLevel.isAtLeastS()) {
+                    suggestionBuilder.setOemPaid(true);
+                }
             } else if (option.equals("-p")) {
-                suggestionBuilder.setOemPrivate(true);
+                if (SdkLevel.isAtLeastS()) {
+                    suggestionBuilder.setOemPrivate(true);
+                }
             } else if (option.equals("-m")) {
                 suggestionBuilder.setIsMetered(true);
             } else if (option.equals("-s")) {
@@ -1164,6 +1182,12 @@ public class WifiShellCommand extends BasicShellCommandHandler {
         pw.println("    Current wifi status");
         pw.println("  set-verbose-logging enabled|disabled ");
         pw.println("    Set the verbose logging enabled or disabled");
+        pw.println("  start-temporarily-disabling-all-non-carrier-merged-wifi subId");
+        pw.println("    temporarily disable all wifi networks except merged carrier networks with"
+                + " the given subId");
+        pw.println("  stop-temporarily-disabling-all-non-carrier-merged-wifi");
+        pw.println("    Undo the effects of "
+                + "start-temporarily-disabling-all-non-carrier-merged-wifi");
         pw.println("  add-suggestion <ssid> open|owe|wpa2|wpa3 [<passphrase>] [-u] [-o] [-p] [-m] "
                 + " [-s] [-d] [-b <bssid>] [-e]");
         pw.println("    Add a network suggestion with provided params");

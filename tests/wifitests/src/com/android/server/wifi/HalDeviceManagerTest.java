@@ -16,6 +16,10 @@
 
 package com.android.server.wifi;
 
+import static com.android.server.wifi.HalDeviceManager.HDM_CREATE_IFACE_AP;
+import static com.android.server.wifi.HalDeviceManager.HDM_CREATE_IFACE_NAN;
+import static com.android.server.wifi.HalDeviceManager.HDM_CREATE_IFACE_P2P;
+import static com.android.server.wifi.HalDeviceManager.HDM_CREATE_IFACE_STA;
 import static com.android.server.wifi.HalDeviceManager.START_HAL_RETRY_TIMES;
 
 import static junit.framework.Assert.assertEquals;
@@ -346,7 +350,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
         IWifiIface staIface = validateInterfaceSequence(chipMock,
                 false, // chipModeValid
                 -1000, // chipModeId (only used if chipModeValid is true)
-                IfaceType.STA, // ifaceTypeToCreate
+                HDM_CREATE_IFACE_STA, // ifaceTypeToCreate
                 "wlan0", // ifaceName
                 TestChipV1.STA_CHIP_MODE_ID, // finalChipMode
                 null, // tearDownList
@@ -359,7 +363,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
         IWifiIface nanIface = validateInterfaceSequence(chipMock,
                 true, // chipModeValid
                 TestChipV1.STA_CHIP_MODE_ID, // chipModeId
-                IfaceType.NAN, // ifaceTypeToCreate
+                HDM_CREATE_IFACE_NAN, // ifaceTypeToCreate
                 "wlan0", // ifaceName
                 TestChipV1.STA_CHIP_MODE_ID, // finalChipMode
                 null, // tearDownList
@@ -510,7 +514,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
         validateInterfaceSequence(chipMock,
                 false, // chipModeValid
                 -1000, // chipModeId (only used if chipModeValid is true)
-                IfaceType.STA,
+                HDM_CREATE_IFACE_STA,
                 "wlan0",
                 TestChipV1.STA_CHIP_MODE_ID,
                 null, // tearDownList
@@ -556,7 +560,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
         validateInterfaceSequence(chipMock,
                 false, // chipModeValid
                 -1000, // chipModeId (only used if chipModeValid is true)
-                IfaceType.STA,
+                HDM_CREATE_IFACE_STA,
                 "wlan0",
                 TestChipV1.STA_CHIP_MODE_ID,
                 null, // tearDownList
@@ -581,7 +585,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
         validateInterfaceSequence(chipMock,
                 true, // chipModeValid
                 TestChipV1.STA_CHIP_MODE_ID, // chipModeId (only used if chipModeValid is true)
-                IfaceType.AP,
+                HDM_CREATE_IFACE_AP,
                 "wlan0",
                 TestChipV1.AP_CHIP_MODE_ID,
                 null, // tearDownList
@@ -597,7 +601,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
         validateInterfaceSequence(chipMock,
                 true, // chipModeValid
                 TestChipV1.AP_CHIP_MODE_ID, // chipModeId (only used if chipModeValid is true)
-                IfaceType.STA,
+                HDM_CREATE_IFACE_STA,
                 "wlan0",
                 TestChipV1.STA_CHIP_MODE_ID,
                 null, // tearDownList
@@ -634,7 +638,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
         validateInterfaceSequence(chipMock,
                 false, // chipModeValid
                 -1000, // chipModeId (only used if chipModeValid is true)
-                IfaceType.STA,
+                HDM_CREATE_IFACE_STA,
                 "wlan0",
                 TestChipV2.CHIP_MODE_ID,
                 null, // tearDownList
@@ -653,7 +657,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
         validateInterfaceSequence(chipMock,
                 true, // chipModeValid
                 TestChipV2.CHIP_MODE_ID, // chipModeId (only used if chipModeValid is true)
-                IfaceType.AP,
+                HDM_CREATE_IFACE_AP,
                 "wlan0",
                 TestChipV2.CHIP_MODE_ID,
                 null, // tearDownList
@@ -686,7 +690,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
         IWifiIface staIface = validateInterfaceSequence(chipMock,
                 false, // chipModeValid
                 -1000, // chipModeId (only used if chipModeValid is true)
-                IfaceType.STA,
+                HDM_CREATE_IFACE_STA,
                 "wlan0",
                 TestChipV1.STA_CHIP_MODE_ID,
                 null, // tearDownList
@@ -712,7 +716,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
         apIface = (IWifiApIface) validateInterfaceSequence(chipMock,
                 true, // chipModeValid
                 TestChipV1.STA_CHIP_MODE_ID, // chipModeId (only used if chipModeValid is true)
-                IfaceType.AP,
+                HDM_CREATE_IFACE_AP,
                 "wlan0",
                 TestChipV1.AP_CHIP_MODE_ID,
                 null, // tearDownList
@@ -735,7 +739,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
      */
     @Test
     public void testCreateStaInterfaceNoInitModeTestChipV1() throws Exception {
-        runCreateSingleXxxInterfaceNoInitMode(new TestChipV1(), IfaceType.STA, "wlan0",
+        runCreateSingleXxxInterfaceNoInitMode(new TestChipV1(), HDM_CREATE_IFACE_STA, "wlan0",
                 TestChipV1.STA_CHIP_MODE_ID);
     }
 
@@ -744,7 +748,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
      */
     @Test
     public void testCreateApInterfaceNoInitModeTestChipV1() throws Exception {
-        runCreateSingleXxxInterfaceNoInitMode(new TestChipV1(), IfaceType.AP, "wlan0",
+        runCreateSingleXxxInterfaceNoInitMode(new TestChipV1(), HDM_CREATE_IFACE_AP, "wlan0",
                 TestChipV1.AP_CHIP_MODE_ID);
     }
 
@@ -753,7 +757,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
      */
     @Test
     public void testCreateP2pInterfaceNoInitModeTestChipV1() throws Exception {
-        runCreateSingleXxxInterfaceNoInitMode(new TestChipV1(), IfaceType.P2P, "p2p0",
+        runCreateSingleXxxInterfaceNoInitMode(new TestChipV1(), HDM_CREATE_IFACE_P2P, "p2p0",
                 TestChipV1.STA_CHIP_MODE_ID);
     }
 
@@ -762,7 +766,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
      */
     @Test
     public void testCreateNanInterfaceNoInitModeTestChipV1() throws Exception {
-        runCreateSingleXxxInterfaceNoInitMode(new TestChipV1(), IfaceType.NAN, "wlan0",
+        runCreateSingleXxxInterfaceNoInitMode(new TestChipV1(), HDM_CREATE_IFACE_NAN, "wlan0",
                 TestChipV1.STA_CHIP_MODE_ID);
     }
 
@@ -773,7 +777,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
      */
     @Test
     public void testCreateApInterfaceNoInitModeTestChipV2() throws Exception {
-        runCreateSingleXxxInterfaceNoInitMode(new TestChipV2(), IfaceType.AP, "wlan0",
+        runCreateSingleXxxInterfaceNoInitMode(new TestChipV2(), HDM_CREATE_IFACE_AP, "wlan0",
                 TestChipV2.CHIP_MODE_ID);
     }
 
@@ -782,7 +786,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
      */
     @Test
     public void testCreateP2pInterfaceNoInitModeTestChipV2() throws Exception {
-        runCreateSingleXxxInterfaceNoInitMode(new TestChipV2(), IfaceType.P2P, "p2p0",
+        runCreateSingleXxxInterfaceNoInitMode(new TestChipV2(), HDM_CREATE_IFACE_P2P, "p2p0",
                 TestChipV2.CHIP_MODE_ID);
     }
 
@@ -791,7 +795,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
      */
     @Test
     public void testCreateNanInterfaceNoInitModeTestChipV2() throws Exception {
-        runCreateSingleXxxInterfaceNoInitMode(new TestChipV2(), IfaceType.NAN, "wlan0",
+        runCreateSingleXxxInterfaceNoInitMode(new TestChipV2(), HDM_CREATE_IFACE_NAN, "wlan0",
                 TestChipV2.CHIP_MODE_ID);
     }
 
@@ -801,7 +805,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
      */
     @Test
     public void testCreateApInterfaceNoInitModeTestChipV3() throws Exception {
-        runCreateSingleXxxInterfaceNoInitMode(new TestChipV3(), IfaceType.AP, "wlan0",
+        runCreateSingleXxxInterfaceNoInitMode(new TestChipV3(), HDM_CREATE_IFACE_AP, "wlan0",
                 TestChipV3.CHIP_MODE_ID);
     }
 
@@ -810,7 +814,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
      */
     @Test
     public void testCreateP2pInterfaceNoInitModeTestChipV3() throws Exception {
-        runCreateSingleXxxInterfaceNoInitMode(new TestChipV3(), IfaceType.P2P, "p2p0",
+        runCreateSingleXxxInterfaceNoInitMode(new TestChipV3(), HDM_CREATE_IFACE_P2P, "p2p0",
                 TestChipV3.CHIP_MODE_ID);
     }
 
@@ -819,7 +823,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
      */
     @Test
     public void testCreateNanInterfaceNoInitModeTestChipV3() throws Exception {
-        runCreateSingleXxxInterfaceNoInitMode(new TestChipV3(), IfaceType.NAN, "wlan0",
+        runCreateSingleXxxInterfaceNoInitMode(new TestChipV3(), HDM_CREATE_IFACE_NAN, "wlan0",
                 TestChipV3.CHIP_MODE_ID);
     }
 
@@ -830,7 +834,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
      */
     @Test
     public void testCreateStaInterfaceNoInitModeTestChipV4() throws Exception {
-        runCreateSingleXxxInterfaceNoInitMode(new TestChipV4(), IfaceType.STA, "wlan0",
+        runCreateSingleXxxInterfaceNoInitMode(new TestChipV4(), HDM_CREATE_IFACE_STA, "wlan0",
                 TestChipV4.CHIP_MODE_ID);
     }
 
@@ -839,7 +843,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
      */
     @Test
     public void testCreateApInterfaceNoInitModeTestChipV4() throws Exception {
-        runCreateSingleXxxInterfaceNoInitMode(new TestChipV4(), IfaceType.AP, "wlan0",
+        runCreateSingleXxxInterfaceNoInitMode(new TestChipV4(), HDM_CREATE_IFACE_AP, "wlan0",
                 TestChipV4.CHIP_MODE_ID);
     }
 
@@ -848,7 +852,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
      */
     @Test
     public void testCreateP2pInterfaceNoInitModeTestChipV4() throws Exception {
-        runCreateSingleXxxInterfaceNoInitMode(new TestChipV4(), IfaceType.P2P, "p2p0",
+        runCreateSingleXxxInterfaceNoInitMode(new TestChipV4(), HDM_CREATE_IFACE_P2P, "p2p0",
                 TestChipV4.CHIP_MODE_ID);
     }
 
@@ -857,7 +861,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
      */
     @Test
     public void testCreateNanInterfaceNoInitModeTestChipV4() throws Exception {
-        runCreateSingleXxxInterfaceNoInitMode(new TestChipV4(), IfaceType.NAN, "wlan0",
+        runCreateSingleXxxInterfaceNoInitMode(new TestChipV4(), HDM_CREATE_IFACE_NAN, "wlan0",
                 TestChipV4.CHIP_MODE_ID);
     }
 
@@ -886,7 +890,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
         IWifiApIface iface = (IWifiApIface) validateInterfaceSequence(chipMock,
                 true, // chipModeValid
                 TestChipV1.STA_CHIP_MODE_ID, // chipModeId
-                IfaceType.AP, // ifaceTypeToCreate
+                HDM_CREATE_IFACE_AP, // ifaceTypeToCreate
                 name, // ifaceName
                 TestChipV1.AP_CHIP_MODE_ID, // finalChipMode
                 null, // tearDownList
@@ -986,7 +990,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
         IWifiApIface iface = (IWifiApIface) validateInterfaceSequence(chipMock,
                 true, // chipModeValid
                 TestChipV1.AP_CHIP_MODE_ID, // chipModeId
-                IfaceType.AP, // ifaceTypeToCreate
+                HDM_CREATE_IFACE_AP, // ifaceTypeToCreate
                 name, // ifaceName
                 TestChipV1.AP_CHIP_MODE_ID, // finalChipMode
                 null, // tearDownList
@@ -1047,7 +1051,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
         IWifiIface staIface1 = validateInterfaceSequence(chipMock,
                 false, // chipModeValid
                 -1000, // chipModeId (only used if chipModeValid is true)
-                IfaceType.STA, // ifaceTypeToCreate
+                HDM_CREATE_IFACE_STA, // ifaceTypeToCreate
                 "wlan0", // ifaceName
                 TestChipV1.STA_CHIP_MODE_ID, // finalChipMode
                 null, // tearDownList
@@ -1193,7 +1197,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
         IWifiIface staIface = validateInterfaceSequence(chipMock,
                 false, // chipModeValid
                 -1000, // chipModeId (only used if chipModeValid is true)
-                IfaceType.STA, // ifaceTypeToCreate
+                HDM_CREATE_IFACE_STA, // ifaceTypeToCreate
                 "wlan0", // ifaceName
                 TestChipV1.STA_CHIP_MODE_ID, // finalChipMode
                 null, // tearDownList
@@ -1277,7 +1281,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
         IWifiIface staIface = validateInterfaceSequence(chipMock,
                 false, // chipModeValid
                 -1000, // chipModeId (only used if chipModeValid is true)
-                IfaceType.STA, // ifaceTypeToCreate
+                HDM_CREATE_IFACE_STA, // ifaceTypeToCreate
                 "wlan0", // ifaceName
                 TestChipV2.CHIP_MODE_ID, // finalChipMode
                 null, // tearDownList
@@ -1292,7 +1296,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
         IWifiIface p2pIface = validateInterfaceSequence(chipMock,
                 true, // chipModeValid
                 TestChipV2.CHIP_MODE_ID, // chipModeId
-                IfaceType.P2P, // ifaceTypeToCreate
+                HDM_CREATE_IFACE_P2P, // ifaceTypeToCreate
                 "p2p0", // ifaceName
                 TestChipV2.CHIP_MODE_ID, // finalChipMode
                 null, // tearDownList
@@ -1305,7 +1309,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
         IWifiIface nanIface = validateInterfaceSequence(chipMock,
                 true, // chipModeValid
                 TestChipV2.CHIP_MODE_ID, // chipModeId
-                IfaceType.NAN, // ifaceTypeToCreate
+                HDM_CREATE_IFACE_NAN, // ifaceTypeToCreate
                 "wlan0", // ifaceName
                 TestChipV2.CHIP_MODE_ID, // finalChipMode
                 null, // tearDownList
@@ -1320,7 +1324,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
         IWifiIface apIface = validateInterfaceSequence(chipMock,
                 true, // chipModeValid
                 TestChipV2.CHIP_MODE_ID, // chipModeId
-                IfaceType.AP, // ifaceTypeToCreate
+                HDM_CREATE_IFACE_AP, // ifaceTypeToCreate
                 "wlan1", // ifaceName
                 TestChipV2.CHIP_MODE_ID, // finalChipMode
                 null, // tearDownList
@@ -1349,7 +1353,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
         staIface2 = validateInterfaceSequence(chipMock,
                 true, // chipModeValid
                 TestChipV2.CHIP_MODE_ID, // chipModeId
-                IfaceType.STA, // ifaceTypeToCreate
+                HDM_CREATE_IFACE_STA, // ifaceTypeToCreate
                 "wlan1", // ifaceName
                 TestChipV2.CHIP_MODE_ID, // finalChipMode
                 null, // tearDownList
@@ -1366,7 +1370,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
         apIface = validateInterfaceSequence(chipMock,
                 true, // chipModeValid
                 TestChipV2.CHIP_MODE_ID, // chipModeId
-                IfaceType.AP, // ifaceTypeToCreate
+                HDM_CREATE_IFACE_AP, // ifaceTypeToCreate
                 "wlan1", // ifaceName
                 TestChipV2.CHIP_MODE_ID, // finalChipMode
                 null, // tearDownList
@@ -1389,7 +1393,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
         nanIface = validateInterfaceSequence(chipMock,
                 true, // chipModeValid
                 TestChipV2.CHIP_MODE_ID, // chipModeId
-                IfaceType.NAN, // ifaceTypeToCreate
+                HDM_CREATE_IFACE_NAN, // ifaceTypeToCreate
                 "wlan0", // ifaceName
                 TestChipV2.CHIP_MODE_ID, // finalChipMode
                 null, // tearDownList
@@ -1572,7 +1576,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
         IWifiIface staIface = validateInterfaceSequence(chipMock,
                 false, // chipModeValid
                 -1000, // chipModeId (only used if chipModeValid is true)
-                IfaceType.STA, // ifaceTypeToCreate
+                HDM_CREATE_IFACE_STA, // ifaceTypeToCreate
                 "wlan0", // ifaceName
                 TestChipV2.CHIP_MODE_ID, // finalChipMode
                 null, // tearDownList
@@ -1587,7 +1591,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
         IWifiIface apIface = validateInterfaceSequence(chipMock,
                 true, // chipModeValid
                 TestChipV2.CHIP_MODE_ID, // chipModeId
-                IfaceType.AP, // ifaceTypeToCreate
+                HDM_CREATE_IFACE_AP, // ifaceTypeToCreate
                 "wlan0", // ifaceName
                 TestChipV2.CHIP_MODE_ID, // finalChipMode
                 null, // tearDownList
@@ -1670,7 +1674,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
         IWifiIface staIface = validateInterfaceSequence(chipMock,
                 false, // chipModeValid
                 -1000, // chipModeId (only used if chipModeValid is true)
-                IfaceType.STA, // ifaceTypeToCreate
+                HDM_CREATE_IFACE_STA, // ifaceTypeToCreate
                 "wlan0", // ifaceName
                 TestChipV3.CHIP_MODE_ID, // finalChipMode
                 null, // tearDownList
@@ -1685,7 +1689,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
         IWifiIface p2pIface = validateInterfaceSequence(chipMock,
                 true, // chipModeValid
                 TestChipV3.CHIP_MODE_ID, // chipModeId
-                IfaceType.P2P, // ifaceTypeToCreate
+                HDM_CREATE_IFACE_P2P, // ifaceTypeToCreate
                 "p2p0", // ifaceName
                 TestChipV3.CHIP_MODE_ID, // finalChipMode
                 null, // tearDownList
@@ -1698,7 +1702,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
         IWifiIface nanIface = validateInterfaceSequence(chipMock,
                 true, // chipModeValid
                 TestChipV3.CHIP_MODE_ID, // chipModeId
-                IfaceType.NAN, // ifaceTypeToCreate
+                HDM_CREATE_IFACE_NAN, // ifaceTypeToCreate
                 "wlan0", // ifaceName
                 TestChipV3.CHIP_MODE_ID, // finalChipMode
                 null, // tearDownList
@@ -1712,7 +1716,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
         IWifiIface apIface = validateInterfaceSequence(chipMock,
                 true, // chipModeValid
                 TestChipV3.CHIP_MODE_ID, // chipModeId
-                IfaceType.AP, // ifaceTypeToCreate
+                HDM_CREATE_IFACE_AP, // ifaceTypeToCreate
                 "wlan1", // ifaceName
                 TestChipV3.CHIP_MODE_ID, // finalChipMode
                 null, // tearDownList
@@ -1747,7 +1751,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
         staIface2 = validateInterfaceSequence(chipMock,
                 true, // chipModeValid
                 TestChipV3.CHIP_MODE_ID, // chipModeId
-                IfaceType.STA, // ifaceTypeToCreate
+                HDM_CREATE_IFACE_STA, // ifaceTypeToCreate
                 "wlan1", // ifaceName
                 TestChipV3.CHIP_MODE_ID, // finalChipMode
                 null, // tearDownList
@@ -1764,7 +1768,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
         nanIface = validateInterfaceSequence(chipMock,
                 true, // chipModeValid
                 TestChipV3.CHIP_MODE_ID, // chipModeId
-                IfaceType.NAN, // ifaceTypeToCreate
+                HDM_CREATE_IFACE_NAN, // ifaceTypeToCreate
                 "wlan0", // ifaceName
                 TestChipV3.CHIP_MODE_ID, // finalChipMode
                 null, // tearDownList
@@ -1873,7 +1877,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
         IWifiIface staIface = validateInterfaceSequence(chipMock,
                 false, // chipModeValid
                 -1000, // chipModeId (only used if chipModeValid is true)
-                IfaceType.STA, // ifaceTypeToCreate
+                HDM_CREATE_IFACE_STA, // ifaceTypeToCreate
                 "wlan0", // ifaceName
                 TestChipV3.CHIP_MODE_ID, // finalChipMode
                 null, // tearDownList
@@ -1888,7 +1892,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
         IWifiIface apIface = validateInterfaceSequence(chipMock,
                 true, // chipModeValid
                 TestChipV3.CHIP_MODE_ID, // chipModeId (only used if chipModeValid is true)
-                IfaceType.AP, // ifaceTypeToCreate
+                HDM_CREATE_IFACE_AP, // ifaceTypeToCreate
                 "wlan0", // ifaceName
                 TestChipV3.CHIP_MODE_ID, // finalChipMode
                 null, // tearDownList
@@ -1970,7 +1974,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
         IWifiIface staIface = validateInterfaceSequence(chipMock,
                 false, // chipModeValid
                 -1000, // chipModeId (only used if chipModeValid is true)
-                IfaceType.STA, // ifaceTypeToCreate
+                HDM_CREATE_IFACE_STA, // ifaceTypeToCreate
                 "wlan0", // ifaceName
                 TestChipV4.CHIP_MODE_ID, // finalChipMode
                 null, // tearDownList
@@ -1985,7 +1989,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
         IWifiIface p2pIface = validateInterfaceSequence(chipMock,
                 true, // chipModeValid
                 TestChipV4.CHIP_MODE_ID, // chipModeId
-                IfaceType.P2P, // ifaceTypeToCreate
+                HDM_CREATE_IFACE_P2P, // ifaceTypeToCreate
                 "p2p0", // ifaceName
                 TestChipV4.CHIP_MODE_ID, // finalChipMode
                 null, // tearDownList
@@ -1998,7 +2002,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
         IWifiIface nanIface = validateInterfaceSequence(chipMock,
                 true, // chipModeValid
                 TestChipV4.CHIP_MODE_ID, // chipModeId
-                IfaceType.NAN, // ifaceTypeToCreate
+                HDM_CREATE_IFACE_NAN, // ifaceTypeToCreate
                 "wlan0", // ifaceName
                 TestChipV4.CHIP_MODE_ID, // finalChipMode
                 null, // tearDownList
@@ -2012,7 +2016,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
         IWifiIface apIface = validateInterfaceSequence(chipMock,
                 true, // chipModeValid
                 TestChipV4.CHIP_MODE_ID, // chipModeId
-                IfaceType.AP, // ifaceTypeToCreate
+                HDM_CREATE_IFACE_AP, // ifaceTypeToCreate
                 "wlan1", // ifaceName
                 TestChipV4.CHIP_MODE_ID, // finalChipMode
                 null, // tearDownList
@@ -2050,7 +2054,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
         nanIface = validateInterfaceSequence(chipMock,
                 true, // chipModeValid
                 TestChipV4.CHIP_MODE_ID, // chipModeId
-                IfaceType.NAN, // ifaceTypeToCreate
+                HDM_CREATE_IFACE_NAN, // ifaceTypeToCreate
                 "wlan0", // ifaceName
                 TestChipV4.CHIP_MODE_ID, // finalChipMode
                 null, // tearDownList
@@ -2104,7 +2108,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
         IWifiIface nanIface = validateInterfaceSequence(chipMock,
                 true, // chipModeValid
                 TestChipV3.CHIP_MODE_ID, // chipModeId
-                IfaceType.NAN, // ifaceTypeToCreate
+                HDM_CREATE_IFACE_NAN, // ifaceTypeToCreate
                 "wlan0", // ifaceName
                 TestChipV3.CHIP_MODE_ID, // finalChipMode
                 null, // tearDownList
@@ -2117,7 +2121,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
         IWifiIface apIface = validateInterfaceSequence(chipMock,
                 true, // chipModeValid
                 TestChipV3.CHIP_MODE_ID, // chipModeId
-                IfaceType.AP, // ifaceTypeToCreate
+                HDM_CREATE_IFACE_AP, // ifaceTypeToCreate
                 "wlan1", // ifaceName
                 TestChipV3.CHIP_MODE_ID, // finalChipMode
                 null, // tearDownList
@@ -2224,7 +2228,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
         IWifiIface staIface = validateInterfaceSequence(chipMock,
                 false, // chipModeValid
                 -1000, // chipModeId (only used if chipModeValid is true)
-                IfaceType.STA, // ifaceTypeToCreate
+                HDM_CREATE_IFACE_STA, // ifaceTypeToCreate
                 "wlan0", // ifaceName
                 TestChipV4.CHIP_MODE_ID, // finalChipMode
                 null, // tearDownList
@@ -2239,7 +2243,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
         IWifiIface apIface = validateInterfaceSequence(chipMock,
                 true, // chipModeValid
                 TestChipV4.CHIP_MODE_ID, // chipModeId (only used if chipModeValid is true)
-                IfaceType.AP, // ifaceTypeToCreate
+                HDM_CREATE_IFACE_AP, // ifaceTypeToCreate
                 "wlan0", // ifaceName
                 TestChipV4.CHIP_MODE_ID, // finalChipMode
                 null, // tearDownList
@@ -2292,7 +2296,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
             staIface = validateInterfaceSequence(chipMock,
                     false, // chipModeValid
                     -1000, // chipModeId (only used if chipModeValid is true)
-                    IfaceType.STA, // ifaceTypeToCreate
+                    HDM_CREATE_IFACE_STA, // ifaceTypeToCreate
                     "wlan0", // ifaceName
                     finalChipModeId, // finalChipMode
                     requiredChipCapabilities, // requiredChipCapabilities
@@ -2316,7 +2320,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
             apIface = validateInterfaceSequence(chipMock,
                     true, // chipModeValid
                     chipModeId, // chipModeId (only used if chipModeValid is true)
-                    IfaceType.AP, // ifaceTypeToCreate
+                    HDM_CREATE_IFACE_AP, // ifaceTypeToCreate
                     "wlan0", // ifaceName
                     finalChipModeId, // finalChipMode
                     requiredChipCapabilities, // requiredChipCapabilities
@@ -2471,16 +2475,16 @@ public class HalDeviceManagerTest extends WifiBaseTest {
 
         // verify: callback triggered
         switch (ifaceTypeToCreate) {
-            case IfaceType.STA:
+            case HDM_CREATE_IFACE_STA:
                 mInOrder.verify(chipMock.chip).removeStaIface(ifaceName);
                 break;
-            case IfaceType.AP:
+            case HDM_CREATE_IFACE_AP:
                 mInOrder.verify(chipMock.chip).removeApIface(ifaceName);
                 break;
-            case IfaceType.P2P:
+            case HDM_CREATE_IFACE_P2P:
                 mInOrder.verify(chipMock.chip).removeP2pIface(ifaceName);
                 break;
-            case IfaceType.NAN:
+            case HDM_CREATE_IFACE_NAN:
                 mInOrder.verify(chipMock.chip).removeNanIface(ifaceName);
                 break;
         }
@@ -2526,7 +2530,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
         IWifiIface staIface = validateInterfaceSequence(chipMock,
                 false, // chipModeValid
                 -1000, // chipModeId (only used if chipModeValid is true)
-                IfaceType.STA, // ifaceTypeToCreate
+                HDM_CREATE_IFACE_STA, // ifaceTypeToCreate
                 "wlan0", // ifaceName
                 onlyChipMode, // finalChipMode
                 null, // tearDownList
@@ -2539,7 +2543,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
         IWifiIface nanIface = validateInterfaceSequence(chipMock,
                 true, // chipModeValid
                 onlyChipMode, // chipModeId
-                IfaceType.NAN, // ifaceTypeToCreate
+                HDM_CREATE_IFACE_NAN, // ifaceTypeToCreate
                 "wlan0", // ifaceName
                 onlyChipMode, // finalChipMode
                 null, // tearDownList
@@ -2551,7 +2555,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
         IWifiIface p2pIface = validateInterfaceSequence(chipMock,
                 true, // chipModeValid
                 onlyChipMode, // chipModeId
-                IfaceType.P2P, // ifaceTypeToCreate
+                HDM_CREATE_IFACE_P2P, // ifaceTypeToCreate
                 "p2p0", // ifaceName
                 onlyChipMode, // finalChipMode
                 new IWifiIface[]{nanIface}, // tearDownList
@@ -2569,7 +2573,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
         nanIface = validateInterfaceSequence(chipMock,
                 true, // chipModeValid
                 onlyChipMode, // chipModeId
-                IfaceType.NAN, // ifaceTypeToCreate
+                HDM_CREATE_IFACE_NAN, // ifaceTypeToCreate
                 "wlan0", // ifaceName
                 onlyChipMode, // finalChipMode
                 new IWifiIface[]{p2pIface}, // tearDownList
@@ -2603,7 +2607,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
         // configure: interface to be created
         // act: request the interface
         switch (ifaceTypeToCreate) {
-            case IfaceType.STA:
+            case HDM_CREATE_IFACE_STA:
                 iface = mock(IWifiStaIface.class);
                 doAnswer(new GetNameAnswer(ifaceName)).when(iface).getName(
                         any(IWifiIface.getNameCallback.class));
@@ -2615,7 +2619,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
                 mDut.createStaIface(requiredChipCapabilities,
                         destroyedListener, mHandler, requestorWs);
                 break;
-            case IfaceType.AP:
+            case HDM_CREATE_IFACE_AP:
                 iface = mock(IWifiApIface.class);
                 doAnswer(new GetNameAnswer(ifaceName)).when(iface).getName(
                         any(IWifiIface.getNameCallback.class));
@@ -2627,7 +2631,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
                 mDut.createApIface(requiredChipCapabilities,
                         destroyedListener, mHandler, requestorWs);
                 break;
-            case IfaceType.P2P:
+            case HDM_CREATE_IFACE_P2P:
                 iface = mock(IWifiP2pIface.class);
                 doAnswer(new GetNameAnswer(ifaceName)).when(iface).getName(
                         any(IWifiIface.getNameCallback.class));
@@ -2639,7 +2643,7 @@ public class HalDeviceManagerTest extends WifiBaseTest {
                 mDut.createP2pIface(requiredChipCapabilities,
                         destroyedListener, mHandler, requestorWs);
                 break;
-            case IfaceType.NAN:
+            case HDM_CREATE_IFACE_NAN:
                 iface = mock(IWifiNanIface.class);
                 doAnswer(new GetNameAnswer(ifaceName)).when(iface).getName(
                         any(IWifiIface.getNameCallback.class));
@@ -2681,19 +2685,19 @@ public class HalDeviceManagerTest extends WifiBaseTest {
 
         // validate: create interface
         switch (ifaceTypeToCreate) {
-            case IfaceType.STA:
+            case HDM_CREATE_IFACE_STA:
                 mInOrder.verify(chipMock.chip).createStaIface(
                         any(IWifiChip.createStaIfaceCallback.class));
                 break;
-            case IfaceType.AP:
+            case HDM_CREATE_IFACE_AP:
                 mInOrder.verify(chipMock.chip).createApIface(
                         any(IWifiChip.createApIfaceCallback.class));
                 break;
-            case IfaceType.P2P:
+            case HDM_CREATE_IFACE_P2P:
                 mInOrder.verify(chipMock.chip).createP2pIface(
                         any(IWifiChip.createP2pIfaceCallback.class));
                 break;
-            case IfaceType.NAN:
+            case HDM_CREATE_IFACE_NAN:
                 mInOrder.verify(chipMock.chip).createNanIface(
                         any(IWifiChip.createNanIfaceCallback.class));
                 break;

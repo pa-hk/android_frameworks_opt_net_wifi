@@ -33,7 +33,6 @@ import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.NetworkRequest;
 import android.net.wifi.IWifiConnectedNetworkScorer;
-import android.net.wifi.ScanResult;
 import android.net.wifi.WifiAnnotations;
 import android.net.wifi.WifiConfiguration;
 import android.net.wifi.WifiDppConfig;
@@ -968,8 +967,8 @@ public class ConcreteClientModeManager implements ClientModeManager {
     }
 
     @Override
-    public void startRoamToNetwork(int networkId, ScanResult scanResult) {
-        getClientMode().startRoamToNetwork(networkId, scanResult);
+    public void startRoamToNetwork(int networkId, String bssid) {
+        getClientMode().startRoamToNetwork(networkId, bssid);
     }
 
     @Override
@@ -1103,12 +1102,12 @@ public class ConcreteClientModeManager implements ClientModeManager {
 
     @Override
     public boolean isConnecting() {
-        return mClientModeImpl.isConnecting();
+        return getClientMode().isConnecting();
     }
 
     @Override
     public boolean isRoaming() {
-        return mClientModeImpl.isRoaming();
+        return getClientMode().isRoaming();
     }
 
     @Override
