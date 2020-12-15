@@ -384,13 +384,7 @@ public class SoftApManager implements ActiveModeManager {
         if (mac == null) {
             // If no BSSID is explicitly requested, (re-)configure the factory MAC address. Some
             // drivers may not support setting the MAC at all, so fail soft in this case.
-            mac = mWifiNative.getApFactoryMacAddress(mApInterfaceName);
-            if (mac == null) {
-                Log.e(getTag(), "failed to get factory MAC address");
-                return ERROR_GENERIC;
-            }
-
-            if (!mWifiNative.setApMacAddress(mApInterfaceName, mac)) {
+            if (!mWifiNative.resetApMacToFactoryMacAddress(mApInterfaceName)) {
                 Log.w(getTag(), "failed to reset to factory MAC address; "
                         + "continuing with current MAC");
             }
@@ -445,11 +439,6 @@ public class SoftApManager implements ActiveModeManager {
      */
     private int startSoftAp() {
         SoftApConfiguration config = mApConfig.getSoftApConfiguration();
-        if (config == null || config.getSsid() == null) {
-            Log.e(getTag(), "Unable to start soft AP without valid configuration");
-            return ERROR_GENERIC;
-        }
-
         Log.d(getTag(), "band " + config.getBand() + " iface "
                 + mApInterfaceName + " country " + mCountryCode);
 
@@ -697,9 +686,9 @@ public class SoftApManager implements ActiveModeManager {
 
         private boolean setupInterfacesForDualSoftApMode(WorkSource requestorWs) {
             mdualApInterfaces[0] = mWifiNative.setupInterfaceForSoftApMode(
-                    mWifiNativeDualIfaceCallback, requestorWs);
+                    mWifiNativeDualIfaceCallback, requestorWs,false);
             mdualApInterfaces[1] = mWifiNative.setupInterfaceForSoftApMode(
-                    mWifiNativeDualIfaceCallback, requestorWs);
+                    mWifiNativeDualIfaceCallback, requestorWs,false);
 
             String bridgeIfacename = mWifiNative.setupInterfaceForBridgeMode(
                     mWifiNativeInterfaceCallback);
@@ -844,8 +833,19 @@ public class SoftApManager implements ActiveModeManager {
                         }
 
                         mRequestorWs = (WorkSource) message.obj;
+                        if (config == null || config.getSsid() == null) {
+                            Log.e(getTag(), "Unable to start soft AP without valid configuration");
+                            updateApState(WifiManager.WIFI_AP_STATE_FAILED,
+                                    WifiManager.WIFI_AP_STATE_DISABLED,
+                                    WifiManager.SAP_START_FAILURE_GENERAL);
+                            mWifiMetrics.incrementSoftApStartResult(
+                                    false, WifiManager.SAP_START_FAILURE_GENERAL);
+                            mModeListener.onStartFailure(SoftApManager.this);
+                            break;
+                        }
                         mApInterfaceName = mWifiNative.setupInterfaceForSoftApMode(
-                                mWifiNativeInterfaceCallback, mRequestorWs);
+                                mWifiNativeInterfaceCallback, mRequestorWs,
+                                mApConfig.getSoftApConfiguration().getBands().length > 1);
                         if (TextUtils.isEmpty(mApInterfaceName)) {
                             Log.e(getTag(), "setup failure when creating ap interface.");
                             updateApState(WifiManager.WIFI_AP_STATE_FAILED,

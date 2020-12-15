@@ -87,6 +87,7 @@ import com.android.wifi.resources.R;
 import org.junit.Before;
 import org.junit.Test;
 import org.mockito.ArgumentCaptor;
+import org.mockito.ArgumentMatcher;
 import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
@@ -250,6 +251,8 @@ public class WifiNetworkSuggestionsManagerTest extends WifiBaseTest {
         when(mWifiCarrierInfoManager.isSubIdMatchingCarrierId(anyInt(), anyInt())).thenReturn(true);
         when(mWifiCarrierInfoManager.getBestMatchSubscriptionId(any())).thenReturn(
                 SubscriptionManager.INVALID_SUBSCRIPTION_ID);
+        when(mWifiCarrierInfoManager.isSimPresent(SubscriptionManager.INVALID_SUBSCRIPTION_ID))
+                .thenReturn(false);
 
         when(mWifiKeyStore.updateNetworkKeys(any(), any())).thenReturn(true);
 
@@ -285,8 +288,8 @@ public class WifiNetworkSuggestionsManagerTest extends WifiBaseTest {
     public void testAddNetworkSuggestionsSuccess() {
         PasspointConfiguration passpointConfiguration =
                 createTestConfigWithUserCredential(TEST_FQDN, TEST_FRIENDLY_NAME);
-        WifiConfiguration placeholderConfig = createPlaceholderConfigForPasspoint(TEST_FQDN);
-        placeholderConfig.FQDN = TEST_FQDN;
+        WifiConfiguration placeholderConfig = createPlaceholderConfigForPasspoint(TEST_FQDN,
+                passpointConfiguration.getUniqueId());
         WifiNetworkSuggestion networkSuggestion1 = new WifiNetworkSuggestion(
                 WifiConfigurationTestUtil.createOpenNetwork(), null, false, false, true, true,
                 DEFAULT_PRIORITY_GROUP);
@@ -339,7 +342,8 @@ public class WifiNetworkSuggestionsManagerTest extends WifiBaseTest {
     public void testRemoveNetworkSuggestionsSuccess() {
         PasspointConfiguration passpointConfiguration =
                 createTestConfigWithUserCredential(TEST_FQDN, TEST_FRIENDLY_NAME);
-        WifiConfiguration placeholderConfig = createPlaceholderConfigForPasspoint(TEST_FQDN);
+        WifiConfiguration placeholderConfig = createPlaceholderConfigForPasspoint(TEST_FQDN,
+                passpointConfiguration.getUniqueId());
         placeholderConfig.setPasspointUniqueId(passpointConfiguration.getUniqueId());
         WifiNetworkSuggestion networkSuggestion1 = new WifiNetworkSuggestion(
                 WifiConfigurationTestUtil.createOpenNetwork(), null, false, false, true, true,
@@ -527,7 +531,8 @@ public class WifiNetworkSuggestionsManagerTest extends WifiBaseTest {
     public void testRemoveAllNetworkSuggestionsSuccess() {
         PasspointConfiguration passpointConfiguration =
                 createTestConfigWithUserCredential(TEST_FQDN, TEST_FRIENDLY_NAME);
-        WifiConfiguration placeholderConfig = createPlaceholderConfigForPasspoint(TEST_FQDN);
+        WifiConfiguration placeholderConfig = createPlaceholderConfigForPasspoint(TEST_FQDN,
+                passpointConfiguration.getUniqueId());
         WifiNetworkSuggestion networkSuggestion1 = new WifiNetworkSuggestion(
                 WifiConfigurationTestUtil.createOpenNetwork(), null, false, false, true, true,
                 DEFAULT_PRIORITY_GROUP);
@@ -608,7 +613,8 @@ public class WifiNetworkSuggestionsManagerTest extends WifiBaseTest {
     public void testAddNetworkSuggestionsSuccessOnInPlaceModificationWhenNotInWcm() {
         PasspointConfiguration passpointConfiguration =
                 createTestConfigWithUserCredential(TEST_FQDN, TEST_FRIENDLY_NAME);
-        WifiConfiguration placeholderConfig = createPlaceholderConfigForPasspoint(TEST_FQDN);
+        WifiConfiguration placeholderConfig = createPlaceholderConfigForPasspoint(TEST_FQDN,
+                passpointConfiguration.getUniqueId());
         WifiConfiguration openNetwork = WifiConfigurationTestUtil.createOpenNetwork();
         WifiNetworkSuggestion networkSuggestion1 = new WifiNetworkSuggestion(
                 openNetwork, null, false, false, true, true,
@@ -1355,7 +1361,7 @@ public class WifiNetworkSuggestionsManagerTest extends WifiBaseTest {
                 new WifiConfiguration(networkSuggestion.wifiConfiguration);
         connectNetwork.fromWifiNetworkSuggestion = true;
         connectNetwork.ephemeral = true;
-        connectNetwork.creatorName = TEST_APP_NAME_1;
+        connectNetwork.creatorName = TEST_PACKAGE_1;
         connectNetwork.creatorUid = TEST_UID_1;
         mWifiNetworkSuggestionsManager.handleConnectionAttemptEnded(
                 WifiMetrics.ConnectionEvent.FAILURE_AUTHENTICATION_FAILURE,
@@ -1400,7 +1406,7 @@ public class WifiNetworkSuggestionsManagerTest extends WifiBaseTest {
                 new WifiConfiguration(networkSuggestion.wifiConfiguration);
         connectNetwork.fromWifiNetworkSuggestion = true;
         connectNetwork.ephemeral = true;
-        connectNetwork.creatorName = TEST_APP_NAME_1;
+        connectNetwork.creatorName = TEST_PACKAGE_1;
         connectNetwork.creatorUid = TEST_UID_1;
         // Simulate connecting to the network.
         mWifiNetworkSuggestionsManager.handleConnectionAttemptEnded(
@@ -1428,15 +1434,17 @@ public class WifiNetworkSuggestionsManagerTest extends WifiBaseTest {
      */
     @Test
     public void testOnNetworkConnectionSuccessWithMultipleMatch() {
-        WifiConfiguration wifiConfiguration = WifiConfigurationTestUtil.createOpenNetwork();
+        WifiConfiguration config = WifiConfigurationTestUtil.createOpenNetwork();
         WifiNetworkSuggestion networkSuggestion1 = new WifiNetworkSuggestion(
-                wifiConfiguration, null, true, false, true, true, DEFAULT_PRIORITY_GROUP);
+                new WifiConfiguration(config), null, true, false, true, true,
+                DEFAULT_PRIORITY_GROUP);
         List<WifiNetworkSuggestion> networkSuggestionList1 =
                 new ArrayList<WifiNetworkSuggestion>() {{
                     add(networkSuggestion1);
                 }};
         WifiNetworkSuggestion networkSuggestion2 = new WifiNetworkSuggestion(
-                wifiConfiguration, null, true, false, true, true, DEFAULT_PRIORITY_GROUP);
+                new WifiConfiguration(config), null, true, false, true, true,
+                DEFAULT_PRIORITY_GROUP);
         List<WifiNetworkSuggestion> networkSuggestionList2 =
                 new ArrayList<WifiNetworkSuggestion>() {{
                     add(networkSuggestion2);
@@ -1488,16 +1496,18 @@ public class WifiNetworkSuggestionsManagerTest extends WifiBaseTest {
      */
     @Test
     public void testOnNetworkConnectionSuccessWithBssidMultipleMatch() {
-        WifiConfiguration wifiConfiguration = WifiConfigurationTestUtil.createOpenNetwork();
-        wifiConfiguration.BSSID = TEST_BSSID;
+        WifiConfiguration config = WifiConfigurationTestUtil.createOpenNetwork();
+        config.BSSID = TEST_BSSID;
         WifiNetworkSuggestion networkSuggestion1 = new WifiNetworkSuggestion(
-                wifiConfiguration, null, true, false, true, true, DEFAULT_PRIORITY_GROUP);
+                new WifiConfiguration(config), null, true, false, true, true,
+                DEFAULT_PRIORITY_GROUP);
         List<WifiNetworkSuggestion> networkSuggestionList1 =
                 new ArrayList<WifiNetworkSuggestion>() {{
                     add(networkSuggestion1);
                 }};
         WifiNetworkSuggestion networkSuggestion2 = new WifiNetworkSuggestion(
-                wifiConfiguration, null, true, false, true, true, DEFAULT_PRIORITY_GROUP);
+                new WifiConfiguration(config), null, true, false, true, true,
+                DEFAULT_PRIORITY_GROUP);
         List<WifiNetworkSuggestion> networkSuggestionList2 =
                 new ArrayList<WifiNetworkSuggestion>() {{
                     add(networkSuggestion2);
@@ -1511,8 +1521,7 @@ public class WifiNetworkSuggestionsManagerTest extends WifiBaseTest {
                         TEST_PACKAGE_2, TEST_FEATURE));
         mWifiNetworkSuggestionsManager.setHasUserApprovedForApp(true, TEST_PACKAGE_1);
         mWifiNetworkSuggestionsManager.setHasUserApprovedForApp(true, TEST_PACKAGE_2);
-        WifiConfiguration connectNetwork =
-                new WifiConfiguration(networkSuggestion1.wifiConfiguration);
+        WifiConfiguration connectNetwork = new WifiConfiguration(config);
         connectNetwork.fromWifiNetworkSuggestion = true;
         connectNetwork.ephemeral = true;
         connectNetwork.creatorName = TEST_PACKAGE_1;
@@ -1630,7 +1639,7 @@ public class WifiNetworkSuggestionsManagerTest extends WifiBaseTest {
                 new WifiConfiguration(networkSuggestion.wifiConfiguration);
         connectNetwork.fromWifiNetworkSuggestion = true;
         connectNetwork.ephemeral = true;
-        connectNetwork.creatorName = TEST_APP_NAME_1;
+        connectNetwork.creatorName = TEST_PACKAGE_1;
         connectNetwork.creatorUid = TEST_UID_1;
 
         // Simulate connecting to the network.
@@ -1671,7 +1680,7 @@ public class WifiNetworkSuggestionsManagerTest extends WifiBaseTest {
                 new WifiConfiguration(networkSuggestion.wifiConfiguration);
         connectNetwork.fromWifiNetworkSuggestion = true;
         connectNetwork.ephemeral = true;
-        connectNetwork.creatorName = TEST_APP_NAME_1;
+        connectNetwork.creatorName = TEST_PACKAGE_1;
         connectNetwork.creatorUid = TEST_UID_1;
 
         // Simulate connecting to the network.
@@ -1715,7 +1724,7 @@ public class WifiNetworkSuggestionsManagerTest extends WifiBaseTest {
                 new WifiConfiguration(networkSuggestion.wifiConfiguration);
         connectNetwork.fromWifiNetworkSuggestion = true;
         connectNetwork.ephemeral = true;
-        connectNetwork.creatorName = TEST_APP_NAME_1;
+        connectNetwork.creatorName = TEST_PACKAGE_1;
         connectNetwork.creatorUid = TEST_UID_1;
 
         // Simulate connecting to the network.
@@ -1814,7 +1823,8 @@ public class WifiNetworkSuggestionsManagerTest extends WifiBaseTest {
     public void testNetworkSuggestionsConfigStoreLoad() {
         PasspointConfiguration passpointConfiguration =
                 createTestConfigWithUserCredential(TEST_FQDN, TEST_FRIENDLY_NAME);
-        WifiConfiguration placeholderConfig = createPlaceholderConfigForPasspoint(TEST_FQDN);
+        WifiConfiguration placeholderConfig = createPlaceholderConfigForPasspoint(TEST_FQDN,
+                passpointConfiguration.getUniqueId());
         PerAppInfo appInfo = new PerAppInfo(TEST_UID_1, TEST_PACKAGE_1, TEST_FEATURE);
         appInfo.hasUserApproved = true;
         WifiNetworkSuggestion networkSuggestion = new WifiNetworkSuggestion(
@@ -1947,7 +1957,7 @@ public class WifiNetworkSuggestionsManagerTest extends WifiBaseTest {
                 new WifiConfiguration(networkSuggestion.wifiConfiguration);
         connectNetwork.fromWifiNetworkSuggestion = true;
         connectNetwork.ephemeral = true;
-        connectNetwork.creatorName = TEST_APP_NAME_1;
+        connectNetwork.creatorName = TEST_PACKAGE_1;
         connectNetwork.creatorUid = TEST_UID_1;
         mWifiNetworkSuggestionsManager.handleConnectionAttemptEnded(
                 WifiMetrics.ConnectionEvent.FAILURE_NONE, connectNetwork, TEST_BSSID);
@@ -1983,7 +1993,7 @@ public class WifiNetworkSuggestionsManagerTest extends WifiBaseTest {
                 new WifiConfiguration(networkSuggestion.wifiConfiguration);
         connectNetwork.fromWifiNetworkSuggestion = true;
         connectNetwork.ephemeral = true;
-        connectNetwork.creatorName = TEST_APP_NAME_1;
+        connectNetwork.creatorName = TEST_PACKAGE_1;
         connectNetwork.creatorUid = TEST_UID_1;
         mWifiNetworkSuggestionsManager.handleConnectionAttemptEnded(
                 WifiMetrics.ConnectionEvent.FAILURE_NONE, connectNetwork, TEST_BSSID);
@@ -2004,15 +2014,17 @@ public class WifiNetworkSuggestionsManagerTest extends WifiBaseTest {
      */
     @Test
     public void testRemoveAppMatchingConnectionSuccessWithMultipleMatch() {
-        WifiConfiguration wifiConfiguration = WifiConfigurationTestUtil.createOpenNetwork();
+        WifiConfiguration config = WifiConfigurationTestUtil.createOpenNetwork();
         WifiNetworkSuggestion networkSuggestion1 = new WifiNetworkSuggestion(
-                wifiConfiguration, null, true, false, true, true, DEFAULT_PRIORITY_GROUP);
+                new WifiConfiguration(config), null, true, false, true, true,
+                DEFAULT_PRIORITY_GROUP);
         List<WifiNetworkSuggestion> networkSuggestionList1 =
                 new ArrayList<WifiNetworkSuggestion>() {{
                     add(networkSuggestion1);
                 }};
         WifiNetworkSuggestion networkSuggestion2 = new WifiNetworkSuggestion(
-                wifiConfiguration, null, true, false, true, true, DEFAULT_PRIORITY_GROUP);
+                new WifiConfiguration(config), null, true, false, true, true,
+                DEFAULT_PRIORITY_GROUP);
         List<WifiNetworkSuggestion> networkSuggestionList2 =
                 new ArrayList<WifiNetworkSuggestion>() {{
                     add(networkSuggestion2);
@@ -2028,11 +2040,10 @@ public class WifiNetworkSuggestionsManagerTest extends WifiBaseTest {
         mWifiNetworkSuggestionsManager.setHasUserApprovedForApp(true, TEST_PACKAGE_2);
 
         // Simulate connecting to the network.
-        WifiConfiguration connectNetwork =
-                new WifiConfiguration(wifiConfiguration);
+        WifiConfiguration connectNetwork = new WifiConfiguration(config);
         connectNetwork.fromWifiNetworkSuggestion = true;
         connectNetwork.ephemeral = true;
-        connectNetwork.creatorName = TEST_APP_NAME_1;
+        connectNetwork.creatorName = TEST_PACKAGE_1;
         connectNetwork.creatorUid = TEST_UID_1;
         mWifiNetworkSuggestionsManager.handleConnectionAttemptEnded(
                 WifiMetrics.ConnectionEvent.FAILURE_NONE, connectNetwork, TEST_BSSID);
@@ -2096,7 +2107,7 @@ public class WifiNetworkSuggestionsManagerTest extends WifiBaseTest {
                 new WifiConfiguration(networkSuggestion.wifiConfiguration);
         connectNetwork.fromWifiNetworkSuggestion = true;
         connectNetwork.ephemeral = true;
-        connectNetwork.creatorName = TEST_APP_NAME_1;
+        connectNetwork.creatorName = TEST_PACKAGE_1;
         connectNetwork.creatorUid = TEST_UID_1;
         // Simulate failing connection to the network.
         mWifiNetworkSuggestionsManager.handleConnectionAttemptEnded(
@@ -3034,7 +3045,9 @@ public class WifiNetworkSuggestionsManagerTest extends WifiBaseTest {
     public void testOnPasspointNetworkConnectionSuccessWithOneMatch() {
         PasspointConfiguration passpointConfiguration =
                 createTestConfigWithUserCredential(TEST_FQDN, TEST_FRIENDLY_NAME);
-        WifiConfiguration placeholderConfig = createPlaceholderConfigForPasspoint(TEST_FQDN);
+        WifiConfiguration placeholderConfig = createPlaceholderConfigForPasspoint(TEST_FQDN,
+                passpointConfiguration.getUniqueId());
+        placeholderConfig.setPasspointUniqueId(passpointConfiguration.getUniqueId());
         WifiNetworkSuggestion networkSuggestion = new WifiNetworkSuggestion(
                 placeholderConfig, passpointConfiguration, true, false, true, true,
                 DEFAULT_PRIORITY_GROUP);
@@ -3056,7 +3069,7 @@ public class WifiNetworkSuggestionsManagerTest extends WifiBaseTest {
         connectNetwork.providerFriendlyName = TEST_FRIENDLY_NAME;
         connectNetwork.fromWifiNetworkSuggestion = true;
         connectNetwork.ephemeral = true;
-        connectNetwork.creatorName = TEST_APP_NAME_1;
+        connectNetwork.creatorName = TEST_PACKAGE_1;
         connectNetwork.creatorUid = TEST_UID_1;
         connectNetwork.setPasspointUniqueId(passpointConfiguration.getUniqueId());
 
@@ -3205,7 +3218,8 @@ public class WifiNetworkSuggestionsManagerTest extends WifiBaseTest {
     public void testGetPasspointSuggestionFromFqdnWithUserApproval() {
         PasspointConfiguration passpointConfiguration =
                 createTestConfigWithUserCredential(TEST_FQDN, TEST_FRIENDLY_NAME);
-        WifiConfiguration placeholderConfig = createPlaceholderConfigForPasspoint(TEST_FQDN);
+        WifiConfiguration placeholderConfig = createPlaceholderConfigForPasspoint(TEST_FQDN,
+                passpointConfiguration.getUniqueId());
         placeholderConfig.FQDN = TEST_FQDN;
         WifiNetworkSuggestion networkSuggestion = new WifiNetworkSuggestion(placeholderConfig,
                 passpointConfiguration, true, false, true, true, DEFAULT_PRIORITY_GROUP);
@@ -3229,7 +3243,8 @@ public class WifiNetworkSuggestionsManagerTest extends WifiBaseTest {
     public void testGetPasspointSuggestionFromFqdnWithoutUserApproval() {
         PasspointConfiguration passpointConfiguration =
                 createTestConfigWithUserCredential(TEST_FQDN, TEST_FRIENDLY_NAME);
-        WifiConfiguration placeholderConfig = createPlaceholderConfigForPasspoint(TEST_FQDN);
+        WifiConfiguration placeholderConfig = createPlaceholderConfigForPasspoint(TEST_FQDN,
+                passpointConfiguration.getUniqueId());
         placeholderConfig.FQDN = TEST_FQDN;
         WifiNetworkSuggestion networkSuggestion = new WifiNetworkSuggestion(placeholderConfig,
                 passpointConfiguration, true, false, true, true, DEFAULT_PRIORITY_GROUP);
@@ -3250,7 +3265,8 @@ public class WifiNetworkSuggestionsManagerTest extends WifiBaseTest {
         when(mNetworkScoreManager.getActiveScorerPackage()).thenReturn(TEST_PACKAGE_1);
         PasspointConfiguration passpointConfiguration =
                 createTestConfigWithUserCredential(TEST_FQDN, TEST_FRIENDLY_NAME);
-        WifiConfiguration placeholderConfig = createPlaceholderConfigForPasspoint(TEST_FQDN);
+        WifiConfiguration placeholderConfig = createPlaceholderConfigForPasspoint(TEST_FQDN,
+                passpointConfiguration.getUniqueId());
         placeholderConfig.FQDN = TEST_FQDN;
         WifiNetworkSuggestion networkSuggestion = new WifiNetworkSuggestion(placeholderConfig,
                 passpointConfiguration, true, false, true, true, DEFAULT_PRIORITY_GROUP);
@@ -3276,7 +3292,8 @@ public class WifiNetworkSuggestionsManagerTest extends WifiBaseTest {
     public void testIsPasspointSuggestionSharedWithUserSetToTrue() {
         PasspointConfiguration passpointConfiguration =
                 createTestConfigWithUserCredential(TEST_FQDN, TEST_FRIENDLY_NAME);
-        WifiConfiguration placeholderConfig = createPlaceholderConfigForPasspoint(TEST_FQDN);
+        WifiConfiguration placeholderConfig = createPlaceholderConfigForPasspoint(TEST_FQDN,
+                passpointConfiguration.getUniqueId());
         placeholderConfig.FQDN = TEST_FQDN;
         WifiNetworkSuggestion networkSuggestion = new WifiNetworkSuggestion(placeholderConfig,
                 passpointConfiguration, true, false, true, true, DEFAULT_PRIORITY_GROUP);
@@ -3295,6 +3312,19 @@ public class WifiNetworkSuggestionsManagerTest extends WifiBaseTest {
         mWifiNetworkSuggestionsManager.setHasUserApprovedForApp(true, TEST_PACKAGE_1);
         assertTrue(mWifiNetworkSuggestionsManager
                 .isPasspointSuggestionSharedWithUser(placeholderConfig));
+
+        placeholderConfig.carrierId = TEST_CARRIER_ID;
+        placeholderConfig.subscriptionId = TEST_SUBID;
+        when(mWifiCarrierInfoManager.getBestMatchSubscriptionId(placeholderConfig))
+                .thenReturn(TEST_SUBID);
+        when(mWifiCarrierInfoManager.isSimPresent(TEST_SUBID)).thenReturn(false);
+        assertFalse(mWifiNetworkSuggestionsManager
+                .isPasspointSuggestionSharedWithUser(placeholderConfig));
+
+        when(mWifiCarrierInfoManager.isSimPresent(TEST_SUBID)).thenReturn(true);
+        assertTrue(mWifiNetworkSuggestionsManager
+                .isPasspointSuggestionSharedWithUser(placeholderConfig));
+
         placeholderConfig.meteredHint = true;
         when(mWifiCarrierInfoManager.isCarrierNetworkFromNonDefaultDataSim(placeholderConfig))
                 .thenReturn(true);
@@ -3309,7 +3339,8 @@ public class WifiNetworkSuggestionsManagerTest extends WifiBaseTest {
     public void testIsPasspointSuggestionSharedWithUserSetToFalse() {
         PasspointConfiguration passpointConfiguration =
                 createTestConfigWithUserCredential(TEST_FQDN, TEST_FRIENDLY_NAME);
-        WifiConfiguration placeholderConfig = createPlaceholderConfigForPasspoint(TEST_FQDN);
+        WifiConfiguration placeholderConfig = createPlaceholderConfigForPasspoint(TEST_FQDN,
+                passpointConfiguration.getUniqueId());
         placeholderConfig.FQDN = TEST_FQDN;
         WifiNetworkSuggestion networkSuggestion = new WifiNetworkSuggestion(placeholderConfig,
                 passpointConfiguration, true, false, false, true, DEFAULT_PRIORITY_GROUP);
@@ -3389,6 +3420,73 @@ public class WifiNetworkSuggestionsManagerTest extends WifiBaseTest {
                 .getWifiConfigForMatchedNetworkSuggestionsSharedWithUser(scanResults);
         assertEquals(1, wifiConfigurationList.size());
         assertEquals(networkSuggestion3.wifiConfiguration, wifiConfigurationList.get(0));
+    }
+
+    /**
+     * test getWifiConfigForMatchedNetworkSuggestionsSharedWithUser on carrier network.
+     *  - SIM is not present will not be return
+     */
+    @Test
+    public void testGetWifiConfigForMatchedCarrierNetworkSuggestionsSharedWithUser() {
+        when(mWifiPermissionsUtil.checkNetworkCarrierProvisioningPermission(TEST_UID_1))
+                .thenReturn(true);
+        WifiNetworkSuggestion networkSuggestion1 = new WifiNetworkSuggestion(
+                WifiConfigurationTestUtil.createPskNetwork(), null, false, false, true, true,
+                DEFAULT_PRIORITY_GROUP);
+        WifiNetworkSuggestion networkSuggestion2 = new WifiNetworkSuggestion(
+                WifiConfigurationTestUtil.createPskNetwork(), null, false, false, true, true,
+                DEFAULT_PRIORITY_GROUP);
+        networkSuggestion1.wifiConfiguration.carrierId = TEST_CARRIER_ID;
+        networkSuggestion2.wifiConfiguration.carrierId = TEST_CARRIER_ID;
+        WifiConfiguration configuration = networkSuggestion1.wifiConfiguration;
+
+        // Suggestion das SIM present, suggestion has SIM absent
+        when(mWifiCarrierInfoManager
+                .getBestMatchSubscriptionId(argThat(new WifiConfigMatcher(configuration))))
+                .thenReturn(TEST_SUBID);
+        when(mWifiCarrierInfoManager.isSimPresent(TEST_SUBID)).thenReturn(true);
+        List<ScanResult> scanResults = new ArrayList<>();
+        scanResults.add(
+                createScanDetailForNetwork(networkSuggestion1.wifiConfiguration).getScanResult());
+        scanResults.add(
+                createScanDetailForNetwork(networkSuggestion2.wifiConfiguration).getScanResult());
+
+        List<WifiNetworkSuggestion> networkSuggestionList =
+                new ArrayList<WifiNetworkSuggestion>() {{
+                    add(networkSuggestion1);
+                    add(networkSuggestion2);
+                }};
+
+        networkSuggestion1.wifiConfiguration.fromWifiNetworkSuggestion = true;
+        networkSuggestion2.wifiConfiguration.fromWifiNetworkSuggestion = true;
+        networkSuggestion1.wifiConfiguration.creatorName = TEST_PACKAGE_1;
+        networkSuggestion2.wifiConfiguration.creatorName = TEST_PACKAGE_1;
+        networkSuggestion1.wifiConfiguration.subscriptionId = TEST_SUBID;
+
+        assertEquals(WifiManager.STATUS_NETWORK_SUGGESTIONS_SUCCESS,
+                mWifiNetworkSuggestionsManager.add(networkSuggestionList, TEST_UID_1,
+                        TEST_PACKAGE_1, TEST_FEATURE));
+        setupGetConfiguredNetworksFromWcm(networkSuggestion1.wifiConfiguration,
+                networkSuggestion2.wifiConfiguration);
+        List<WifiConfiguration> wifiConfigurationList = mWifiNetworkSuggestionsManager
+                .getWifiConfigForMatchedNetworkSuggestionsSharedWithUser(scanResults);
+        assertEquals(1, wifiConfigurationList.size());
+        assertEquals(networkSuggestion1.wifiConfiguration, wifiConfigurationList.get(0));
+    }
+
+    class WifiConfigMatcher implements ArgumentMatcher<WifiConfiguration> {
+        private final WifiConfiguration mConfig;
+
+        WifiConfigMatcher(WifiConfiguration config) {
+            assertNotNull(config);
+            mConfig = config;
+        }
+
+        @Override
+        public boolean matches(WifiConfiguration otherConfig) {
+            if (otherConfig == null) return false;
+            return mConfig.SSID.equals(otherConfig.SSID);
+        }
     }
 
     private void assertSuggestionsEquals(Set<WifiNetworkSuggestion> expectedSuggestions,
@@ -3606,7 +3704,8 @@ public class WifiNetworkSuggestionsManagerTest extends WifiBaseTest {
     public void testSetAllowAutoJoinOnPasspointSuggestionNetwork() {
         PasspointConfiguration passpointConfiguration =
                 createTestConfigWithUserCredential(TEST_FQDN, TEST_FRIENDLY_NAME);
-        WifiConfiguration placeholderConfig = createPlaceholderConfigForPasspoint(TEST_FQDN);
+        WifiConfiguration placeholderConfig = createPlaceholderConfigForPasspoint(TEST_FQDN,
+                passpointConfiguration.getUniqueId());
         WifiNetworkSuggestion networkSuggestion = new WifiNetworkSuggestion(
                 placeholderConfig, passpointConfiguration, false, false, true, true,
                 DEFAULT_PRIORITY_GROUP);
@@ -3657,8 +3756,7 @@ public class WifiNetworkSuggestionsManagerTest extends WifiBaseTest {
      */
     @Test
     public void getMatchingScanResultsTestWithPasspointAndNonPasspointMatch() {
-        WifiConfiguration placeholderConfig = createPlaceholderConfigForPasspoint(TEST_FQDN);
-        placeholderConfig.FQDN = TEST_FQDN;
+        WifiConfiguration placeholderConfig = createPlaceholderConfigForPasspoint(TEST_FQDN, null);
         PasspointConfiguration mockPasspoint = mock(PasspointConfiguration.class);
         WifiNetworkSuggestion passpointSuggestion = new WifiNetworkSuggestion(
                 placeholderConfig, mockPasspoint, false, false, true, true, DEFAULT_PRIORITY_GROUP);
@@ -3800,7 +3898,8 @@ public class WifiNetworkSuggestionsManagerTest extends WifiBaseTest {
                 WifiEnterpriseConfig.Eap.SIM, WifiEnterpriseConfig.Phase2.NONE);
         PasspointConfiguration passpointConfiguration =
                 createTestConfigWithSimCredential(TEST_FQDN, TEST_IMSI, TEST_REALM);
-        WifiConfiguration placeholderConfig = createPlaceholderConfigForPasspoint(TEST_FQDN);
+        WifiConfiguration placeholderConfig = createPlaceholderConfigForPasspoint(TEST_FQDN,
+                passpointConfiguration.getUniqueId());
         placeholderConfig.setPasspointUniqueId(passpointConfiguration.getUniqueId());
         WifiNetworkSuggestion networkSuggestion = new WifiNetworkSuggestion(
                 eapSimConfig, null, true, false, true, true, DEFAULT_PRIORITY_GROUP);
@@ -3976,8 +4075,6 @@ public class WifiNetworkSuggestionsManagerTest extends WifiBaseTest {
                 mock(WifiNetworkSuggestionsManager.OnSuggestionUpdateListener.class);
         mWifiNetworkSuggestionsManager.addOnSuggestionUpdateListener(listener);
 
-        WifiConfiguration placeholderConfig = createPlaceholderConfigForPasspoint(TEST_FQDN);
-        placeholderConfig.FQDN = TEST_FQDN;
         WifiNetworkSuggestion networkSuggestion1 = new WifiNetworkSuggestion(
                 WifiConfigurationTestUtil.createOpenNetwork(), null, false, false, true, true,
                 DEFAULT_PRIORITY_GROUP);
@@ -4370,7 +4467,47 @@ public class WifiNetworkSuggestionsManagerTest extends WifiBaseTest {
         assertEquals(WifiManager.STATUS_NETWORK_SUGGESTIONS_SUCCESS,
                 mWifiNetworkSuggestionsManager.add(Arrays.asList(networkSuggestion), TEST_UID_1,
                         TEST_PACKAGE_1, TEST_FEATURE));
+    }
 
+    @Test
+    public void testSuggestionCarrierNetworkConnectionBroadcastAndDisconnectWithCarrierIdOnly() {
+        when(mWifiCarrierInfoManager.getBestMatchSubscriptionId(any())).thenReturn(TEST_SUBID);
+        when(mWifiPermissionsUtil.checkNetworkCarrierProvisioningPermission(TEST_UID_1))
+                .thenReturn(true);
+        WifiNetworkSuggestion networkSuggestion = new WifiNetworkSuggestion(
+                WifiConfigurationTestUtil.createPskNetwork(), null, true, false, true, true,
+                DEFAULT_PRIORITY_GROUP);
+        networkSuggestion.wifiConfiguration.carrierId = TEST_CARRIER_ID;
+        assertEquals(WifiManager.STATUS_NETWORK_SUGGESTIONS_SUCCESS,
+                mWifiNetworkSuggestionsManager.add(Arrays.asList(networkSuggestion), TEST_UID_1,
+                        TEST_PACKAGE_1, TEST_FEATURE));
+        assertTrue(mWifiNetworkSuggestionsManager.hasUserApprovedForApp(TEST_PACKAGE_1));
+
+        // Simulate connecting to the network.
+        WifiConfiguration connectNetwork =
+                new WifiConfiguration(networkSuggestion.wifiConfiguration);
+        connectNetwork.fromWifiNetworkSuggestion = true;
+        connectNetwork.ephemeral = true;
+        connectNetwork.creatorName = TEST_PACKAGE_1;
+        connectNetwork.creatorUid = TEST_UID_1;
+        connectNetwork.subscriptionId = TEST_SUBID;
+        mWifiNetworkSuggestionsManager.handleConnectionAttemptEnded(
+                WifiMetrics.ConnectionEvent.FAILURE_NONE, connectNetwork, TEST_BSSID);
+
+        verify(mWifiMetrics).incrementNetworkSuggestionApiNumConnectSuccess();
+
+        // Verify that the correct broadcast was sent out.
+        mInorder.verify(mWifiPermissionsUtil).enforceCanAccessScanResults(eq(TEST_PACKAGE_1),
+                eq(TEST_FEATURE), eq(TEST_UID_1), nullable(String.class));
+        validatePostConnectionBroadcastSent(TEST_PACKAGE_1, networkSuggestion);
+
+        assertEquals(WifiManager.STATUS_NETWORK_SUGGESTIONS_SUCCESS,
+                mWifiNetworkSuggestionsManager.remove(Arrays.asList(networkSuggestion), TEST_UID_1,
+                        TEST_PACKAGE_1));
+        verify(mWifiConfigManager).removeSuggestionConfiguredNetwork(anyString());
+
+        // Verify no more broadcast were sent out.
+        mInorder.verifyNoMoreInteractions();
     }
 
     /**
@@ -4425,9 +4562,11 @@ public class WifiNetworkSuggestionsManagerTest extends WifiBaseTest {
         return config;
     }
 
-    private WifiConfiguration createPlaceholderConfigForPasspoint(String fqdn) {
+    private WifiConfiguration createPlaceholderConfigForPasspoint(String fqdn,
+            String uniqueId) {
         WifiConfiguration config = new WifiConfiguration();
         config.FQDN = fqdn;
+        config.setPasspointUniqueId(uniqueId);
         return config;
     }
 }

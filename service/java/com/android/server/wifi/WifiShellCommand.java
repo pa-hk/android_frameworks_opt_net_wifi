@@ -786,6 +786,16 @@ public class WifiShellCommand extends BasicShellCommandHandler {
                     mWifiService.clearWifiConnectedNetworkScorer(); // clear any previous scorer
                     return 0;
                 }
+                case "set-emergency-callback-mode": {
+                    boolean enabled = getNextArgRequiredTrueOrFalse("enabled", "disabled");
+                    mActiveModeWarden.emergencyCallbackModeChanged(enabled);
+                    return 0;
+                }
+                case "set-emergency-call-state": {
+                    boolean enabled = getNextArgRequiredTrueOrFalse("enabled", "disabled");
+                    mActiveModeWarden.emergencyCallStateChanged(enabled);
+                    return 0;
+                }
                 default:
                     return handleDefaultCommands(cmd);
             }
@@ -927,7 +937,11 @@ public class WifiShellCommand extends BasicShellCommandHandler {
             } else if (option.equals("-b")) {
                 suggestionBuilder.setBssid(MacAddress.fromString(getNextArgRequired()));
             } else if (option.equals("-e")) {
-                suggestionBuilder.setIsEnhancedMacRandomizationEnabled(false);
+                if (SdkLevel.isAtLeastS()) {
+                    suggestionBuilder.setIsEnhancedMacRandomizationEnabled(false);
+                } else {
+                    pw.println("-e option is not supported before S");
+                }
             } else {
                 pw.println("Ignoring unknown option " + option);
             }
@@ -1316,12 +1330,20 @@ public class WifiShellCommand extends BasicShellCommandHandler {
         pw.println("    Note: Only 1 such app can be approved from the shell at a time");
         pw.println("  network-requests-has-user-approved <package name>");
         pw.println("    Queries whether network requests from the app is approved or not.");
-        pw.println("    Note: This only returns whether the app was set via the " +
-                "'network-requests-set-user-approved' shell command");
+        pw.println("    Note: This only returns whether the app was set via the "
+                + "'network-requests-set-user-approved' shell command");
         pw.println("  list-all-suggestions");
         pw.println("    Lists all suggested networks on this device");
         pw.println("  list-suggestions-from-app <package name>");
         pw.println("    Lists the suggested networks from the app");
+        pw.println("  set-emergency-callback-mode enabled|disabled");
+        pw.println("    Sets whether Emergency Callback Mode (ECBM) is enabled.");
+        pw.println("    Equivalent to receiving the "
+                + "TelephonyManager.ACTION_EMERGENCY_CALLBACK_MODE_CHANGED broadcast.");
+        pw.println("  set-emergency-call-state enabled|disabled");
+        pw.println("    Sets whether we are in the middle of an emergency call.");
+        pw.println("Equivalent to receiving the "
+                + "TelephonyManager.ACTION_EMERGENCY_CALL_STATE_CHANGED broadcast.");
     }
 
     @Override

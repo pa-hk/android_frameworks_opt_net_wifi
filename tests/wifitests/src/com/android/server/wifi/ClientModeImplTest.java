@@ -3007,6 +3007,26 @@ public class ClientModeImplTest extends WifiBaseTest {
     }
 
     /**
+     * Verify that WifiScoreCard and BssidBlocklistMonitor are notified properly when
+     * disconnection occurs in middle of connection states.
+     */
+    @Test
+    public void testDisconnectConnecting()
+            throws Exception {
+        initializeAndAddNetworkAndVerifySuccess();
+        mCmi.sendMessage(ClientModeImpl.CMD_START_CONNECT, 0, 0, sBSSID);
+        mCmi.sendMessage(WifiMonitor.NETWORK_DISCONNECTION_EVENT,
+                new DisconnectEventInfo(sSSID, sBSSID,
+                        ISupplicantStaIfaceCallback.ReasonCode.FOURWAY_HANDSHAKE_TIMEOUT,
+                        false));
+        mLooper.dispatchAll();
+        verify(mWifiScoreCard).noteConnectionFailure(any(), anyInt(), anyString(), anyInt());
+        verify(mWifiScoreCard).resetConnectionState();
+        verify(mBssidBlocklistMonitor, never()).handleBssidConnectionFailure(anyString(),
+                anyString(), anyInt(), anyInt());
+    }
+
+    /**
      * Verify that the recent failure association status is updated properly when
      * DENIED_POOR_CHANNEL_CONDITIONS occurs.
      */
@@ -3032,6 +3052,26 @@ public class ClientModeImplTest extends WifiBaseTest {
     public void testNetworkDisconnectionApBusyUpdatesRecentAssociationFailureStatus()
             throws Exception {
         connect();
+        // Disconnection with reason = DISASSOC_AP_BUSY
+        DisconnectEventInfo disconnectEventInfo =
+                new DisconnectEventInfo(sSSID, sBSSID, 5, false);
+        mCmi.sendMessage(WifiMonitor.NETWORK_DISCONNECTION_EVENT, disconnectEventInfo);
+        mLooper.dispatchAll();
+        verify(mWifiConfigManager).setRecentFailureAssociationStatus(anyInt(),
+                eq(WifiConfiguration.RECENT_FAILURE_DISCONNECTION_AP_BUSY));
+    }
+
+    /**
+     * Verify that the recent failure association status is updated properly when a disconnection
+     * with reason code DISASSOC_AP_BUSY occurs.
+     */
+    @Test
+    public void testMidConnectionDisconnectionApBusyUpdatesRecentAssociationFailureStatus()
+            throws Exception {
+        initializeAndAddNetworkAndVerifySuccess();
+        startConnectSuccess();
+        assertEquals("L2ConnectingState", getCurrentState().getName());
+
         // Disconnection with reason = DISASSOC_AP_BUSY
         DisconnectEventInfo disconnectEventInfo =
                 new DisconnectEventInfo(sSSID, sBSSID, 5, false);
@@ -4107,7 +4147,6 @@ public class ClientModeImplTest extends WifiBaseTest {
                 .registerHandler(eq(WIFI_IFACE_NAME), anyInt(), any());
         verify(mWifiMetrics).registerForWifiMonitorEvents(WIFI_IFACE_NAME);
         verify(mWifiLastResortWatchdog).registerForWifiMonitorEvents(WIFI_IFACE_NAME);
-        verify(mSupplicantStateTracker).registerForWifiMonitorEvents(WIFI_IFACE_NAME);
 
         mCmi.stop();
         mLooper.dispatchAll();
@@ -4116,7 +4155,6 @@ public class ClientModeImplTest extends WifiBaseTest {
                 .deregisterHandler(eq(WIFI_IFACE_NAME), anyInt(), any());
         verify(mWifiMetrics).deregisterForWifiMonitorEvents(WIFI_IFACE_NAME);
         verify(mWifiLastResortWatchdog).deregisterForWifiMonitorEvents(WIFI_IFACE_NAME);
-        verify(mSupplicantStateTracker).deregisterForWifiMonitorEvents(WIFI_IFACE_NAME);
     }
 
     @Test

@@ -262,6 +262,12 @@
     <!-- Indicates that AP mode MAC randomization is supported on this device -->
     <bool translatable="false" name="config_wifi_ap_mac_randomization_supported">true</bool>
 
+    <!-- Indicates that bridged AP mode is supported on this device -->
+    <bool translatable="false" name="config_wifiBridgedSoftApSupported">false</bool>
+
+    <!-- Indicates that STA + bridged AP concurrency mode is supported on this device -->
+    <bool translatable="false" name="config_wifiStaWithBridgedSoftApConcurrencySupported">false</bool>
+
     <!-- list of SSIDs to enable aggressive MAC randomization on -->
     <string-array translatable="false" name="config_wifi_aggressive_randomization_ssid_allowlist">
         <!-- SSIDs are expected in quoted format:
@@ -381,6 +387,7 @@
     <integer translatable="false" name="config_wifiBssidBlocklistMonitorAuthenticationFailureThreshold"> 3 </integer>
     <integer translatable="false" name="config_wifiBssidBlocklistMonitorDhcpFailureThreshold"> 2 </integer>
     <integer translatable="false" name="config_wifiBssidBlocklistMonitorAbnormalDisconnectThreshold"> 3 </integer>
+    <integer translatable="false" name="config_wifiBssidBlocklistMonitorNonlocalDisconnectConnectingThreshold"> 2 </integer>
 
     <!-- Base duration to block a BSSID after consecutive failures happen. (default = 5 mins)
     The blocklist duration is increased exponentially for a BSSID that consecutively gets added to the blocklist.
@@ -431,6 +438,10 @@
 
     <!-- Maximum number of SSIDs that can be PNO scanned concurrently-->
     <integer translatable="false" name="config_wifiMaxPnoSsidCount">16</integer>
+
+    <!-- When disconnected and PNO scan is enabled, wake up to do a single scan every
+    config_wifiPnoWatchdogIntervalMs in case PNO scan failed. (default = 20 minutes)-->
+    <integer translatable="false" name="config_wifiPnoWatchdogIntervalMs">1200000</integer>
 
     <!-- Suspend optimization. -->
     <bool translatable="false" name="config_wifiSuspendOptimizationsEnabled">true</bool>
@@ -513,4 +524,7 @@
     <!-- Enable concurrent restricted connectivity + internet connectivity
          Note: this is conditional on the device supporting dual concurrent STAs. -->
     <bool translatable="false" name="config_wifiMultiStaRestrictedConcurrencyEnabled">false</bool>
+    <!-- Enable the default coex channel avoidance algorithm and disable the functionality of
+         WifiManager#setCoexUnsafeChannels. -->
+    <bool translatable="false" name="config_wifiDefaultCoexAlgorithmEnabled">false</bool>
 </resources>
