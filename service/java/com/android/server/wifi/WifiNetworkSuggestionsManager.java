@@ -50,6 +50,7 @@ import android.os.IBinder;
 import android.os.Process;
 import android.os.RemoteException;
 import android.os.UserHandle;
+import android.telephony.SubscriptionManager;
 import android.telephony.TelephonyManager;
 import android.text.TextUtils;
 import android.util.Log;
@@ -58,6 +59,7 @@ import android.view.WindowManager;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.messages.nano.SystemMessageProto.SystemMessage;
+import com.android.modules.utils.build.SdkLevel;
 import com.android.server.wifi.util.ExternalCallbackTracker;
 import com.android.server.wifi.util.LruConnectionTracker;
 import com.android.server.wifi.util.WifiPermissionsUtil;
@@ -115,6 +117,8 @@ public class WifiNetworkSuggestionsManager {
     public static final int ACTION_USER_ALLOWED_APP = 1;
     public static final int ACTION_USER_DISALLOWED_APP = 2;
     public static final int ACTION_USER_DISMISS = 3;
+
+    public static final int DEFAULT_PRIORITY_GROUP = 0;
 
     @IntDef(prefix = { "ACTION_USER_" }, value = {
             ACTION_USER_ALLOWED_APP,
@@ -728,6 +732,7 @@ public class WifiNetworkSuggestionsManager {
         if (extendedWifiNetworkSuggestions == null) {
             extendedWifiNetworkSuggestions = new HashSet<>();
         }
+        extendedWifiNetworkSuggestions.remove(ewns);
         extendedWifiNetworkSuggestions.add(ewns);
         mPasspointInfo.put(ewns.wns.wifiConfiguration.FQDN, extendedWifiNetworkSuggestions);
     }
@@ -820,11 +825,12 @@ public class WifiNetworkSuggestionsManager {
                 newConfig, uid, packageName);
         if (!result.isSuccess()) {
             Log.e(TAG, "Failed to update config in WifiConfigManager");
-        } else {
-            if (mVerboseLoggingEnabled) {
-                Log.v(TAG, "Updated config in WifiConfigManager");
-            }
+            return;
         }
+        if (mVerboseLoggingEnabled) {
+            Log.v(TAG, "Updated config in WifiConfigManager");
+        }
+        mWifiConfigManager.allowAutojoin(result.getNetworkId(), newConfig.allowAutojoin);
     }
 
     /**
@@ -1004,36 +1010,105 @@ public class WifiNetworkSuggestionsManager {
                     return false;
                 }
             }
+            if (!isValidCarrierMergedNetworkSuggestion(wns)) {
+                Log.e(TAG, "Merged carrier network must be a metered, enterprise config with a "
+                        + "valid subscription Id");
+                return false;
+            }
+            if (!SdkLevel.isAtLeastS()) {
+                if (wns.wifiConfiguration.oemPaid) {
+                    Log.e(TAG, "OEM paid suggestions are only allowed from Android S.");
+                    return false;
+                }
+                if (wns.wifiConfiguration.oemPrivate) {
+                    Log.e(TAG, "OEM private suggestions are only allowed from Android S.");
+                    return false;
+                }
+                if (wns.wifiConfiguration.subscriptionId
+                        != SubscriptionManager.INVALID_SUBSCRIPTION_ID) {
+                    Log.e(TAG, "Setting Subscription Id is only allowed from Android S.");
+                    return false;
+                }
+                if (wns.priorityGroup != 0) {
+                    Log.e(TAG, "Setting Priority group is only allowed from Android S.");
+                    return false;
+                }
+                if (wns.wifiConfiguration.carrierMerged) {
+                    Log.e(TAG, "Setting carrier merged network is only allowed from Android S.");
+                }
+            }
+        }
+        return true;
+    }
+
+    private boolean isValidCarrierMergedNetworkSuggestion(WifiNetworkSuggestion wns) {
+        if (!wns.wifiConfiguration.carrierMerged) {
+            // Not carrier merged.
+            return true;
+        }
+        if (!wns.wifiConfiguration.isEnterprise() && wns.passpointConfiguration == null) {
+            // Carrier merged network must be a enterprise network.
+            return false;
+        }
+        if (!WifiConfiguration.isMetered(wns.wifiConfiguration, null)) {
+            // Carrier merged network must be metered.
+            return false;
+        }
+        if (wns.wifiConfiguration.subscriptionId == SubscriptionManager.INVALID_SUBSCRIPTION_ID) {
+            // Carrier merged network must have a valid subscription Id.
+            return false;
         }
         return true;
     }
 
     private boolean validateCarrierNetworkSuggestions(
             List<WifiNetworkSuggestion> networkSuggestions, int uid, String packageName) {
-        if (mWifiPermissionsUtil.checkNetworkCarrierProvisioningPermission(uid)
-                || mWifiCarrierInfoManager.getCarrierIdForPackageWithCarrierPrivileges(packageName)
-                != TelephonyManager.UNKNOWN_CARRIER_ID) {
-            return true;
-        }
-        // If an app doesn't have carrier privileges or carrier provisioning permission, suggests
-        // SIM-based network and sets CarrierId are illegal.
+        boolean isCrossCarrierProvisioner = mWifiPermissionsUtil
+                .checkNetworkCarrierProvisioningPermission(uid);
+        int provisionerCarrierId = mWifiCarrierInfoManager
+                .getCarrierIdForPackageWithCarrierPrivileges(packageName);
+
         for (WifiNetworkSuggestion suggestion : networkSuggestions) {
             WifiConfiguration wifiConfiguration = suggestion.wifiConfiguration;
             PasspointConfiguration passpointConfiguration = suggestion.passpointConfiguration;
-            if (passpointConfiguration == null) {
-                if (wifiConfiguration.carrierId != TelephonyManager.UNKNOWN_CARRIER_ID) {
-                    return false;
-                }
-                if (wifiConfiguration.enterpriseConfig != null
-                        && wifiConfiguration.enterpriseConfig.isAuthenticationSimBased()) {
-                    return false;
+            if (!isCrossCarrierProvisioner && provisionerCarrierId
+                    ==  TelephonyManager.UNKNOWN_CARRIER_ID) {
+                // If an app doesn't have carrier privileges or carrier provisioning permission,
+                // suggests SIM-based network, sets CarrierId and sets SubscriptionId are illegal.
+                if (passpointConfiguration == null) {
+                    if (wifiConfiguration.carrierId != TelephonyManager.UNKNOWN_CARRIER_ID) {
+                        return false;
+                    }
+                    if (wifiConfiguration.subscriptionId
+                            != SubscriptionManager.INVALID_SUBSCRIPTION_ID) {
+                        return false;
+                    }
+                    if (wifiConfiguration.enterpriseConfig != null
+                            && wifiConfiguration.enterpriseConfig.isAuthenticationSimBased()) {
+                        return false;
+                    }
+                } else {
+                    if (passpointConfiguration.getCarrierId()
+                            != TelephonyManager.UNKNOWN_CARRIER_ID) {
+                        return false;
+                    }
+                    if (passpointConfiguration.getSubscriptionId()
+                            != SubscriptionManager.INVALID_SUBSCRIPTION_ID) {
+                        return false;
+                    }
+                    if (passpointConfiguration.getCredential() != null
+                            && passpointConfiguration.getCredential().getSimCredential() != null) {
+                        return false;
+                    }
                 }
             } else {
-                if (passpointConfiguration.getCarrierId() != TelephonyManager.UNKNOWN_CARRIER_ID) {
-                    return false;
-                }
-                if (passpointConfiguration.getCredential() != null
-                        && passpointConfiguration.getCredential().getSimCredential() != null) {
+                int carrierId = isCrossCarrierProvisioner ? wifiConfiguration.carrierId
+                        : provisionerCarrierId;
+                int subId = passpointConfiguration == null ? wifiConfiguration.subscriptionId
+                        : passpointConfiguration.getSubscriptionId();
+                if (!mWifiCarrierInfoManager
+                        .isSubIdMatchingCarrierId(subId, carrierId)) {
+                    Log.e(TAG, "Subscription ID doesn't match the carrier.");
                     return false;
                 }
             }
@@ -1242,9 +1317,14 @@ public class WifiNetworkSuggestionsManager {
                     mWifiInjector.getPasspointManager()
                             .enableAutojoin(ewns.wns.passpointConfiguration.getUniqueId(),
                                     null, ewns.isAutojoinEnabled);
+                } else {
+                    // Update WifiConfigManager to sync auto-join.
+                    updateWifiConfigInWcmIfPresent(ewns.createInternalWifiConfiguration(),
+                            ewns.perAppInfo.uid, ewns.perAppInfo.packageName);
                 }
             }
         }
+        saveToStore();
     }
 
     /**
@@ -1811,7 +1891,7 @@ public class WifiNetworkSuggestionsManager {
                 || matchingExtNetworkSuggestions.isEmpty()) return;
 
         mWifiMetrics.incrementNetworkSuggestionApiNumConnectFailure();
-        // TODO (b/115504887, b/112196799): Blacklist the corresponding network suggestion if
+        // TODO (b/115504887, b/112196799): Blocklist the corresponding network suggestion if
         // the connection failed.
 
         // Find subset of network suggestions which suggested the connection failure network.
@@ -2116,6 +2196,28 @@ public class WifiNetworkSuggestionsManager {
             }
         }
         return false;
+    }
+
+    /**
+     * Check the suggestion user approval status.
+     */
+    public @WifiManager.SuggestionUserApprovalStatus int getNetworkSuggestionUserApprovalStatus(
+            int uid, String packageName) {
+        if (mAppOps.unsafeCheckOpNoThrow(OPSTR_CHANGE_WIFI_STATE, uid, packageName)
+                == AppOpsManager.MODE_IGNORED) {
+            return WifiManager.STATUS_SUGGESTION_APPROVAL_REJECTED_BY_USER;
+        }
+        if (!mActiveNetworkSuggestionsPerApp.containsKey(packageName)) {
+            return WifiManager.STATUS_SUGGESTION_APPROVAL_UNKNOWN;
+        }
+        PerAppInfo info = mActiveNetworkSuggestionsPerApp.get(packageName);
+        if (info.hasUserApproved) {
+            return WifiManager.STATUS_SUGGESTION_APPROVAL_APPROVED_BY_USER;
+        }
+        if (info.carrierId != TelephonyManager.UNKNOWN_CARRIER_ID) {
+            return WifiManager.STATUS_SUGGESTION_APPROVAL_APPROVED_BY_CARRIER_PRIVILEGE;
+        }
+        return WifiManager.STATUS_SUGGESTION_APPROVAL_PENDING;
     }
 
     private boolean hasSecureSuggestionFromSameCarrierAvailable(

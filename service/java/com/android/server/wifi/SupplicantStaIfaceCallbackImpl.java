@@ -21,6 +21,7 @@ import static com.android.server.wifi.hotspot2.anqp.Constants.ANQPElementType.AN
 import static com.android.server.wifi.hotspot2.anqp.Constants.ANQPElementType.ANQPNAIRealm;
 import static com.android.server.wifi.hotspot2.anqp.Constants.ANQPElementType.ANQPRoamingConsortium;
 import static com.android.server.wifi.hotspot2.anqp.Constants.ANQPElementType.ANQPVenueName;
+import static com.android.server.wifi.hotspot2.anqp.Constants.ANQPElementType.ANQPVenueUrl;
 import static com.android.server.wifi.hotspot2.anqp.Constants.ANQPElementType.HSConnCapability;
 import static com.android.server.wifi.hotspot2.anqp.Constants.ANQPElementType.HSFriendlyName;
 import static com.android.server.wifi.hotspot2.anqp.Constants.ANQPElementType.HSOSUProviders;
@@ -193,26 +194,35 @@ abstract class SupplicantStaIfaceCallbackImpl extends ISupplicantStaIfaceCallbac
         onStateChanged(newState, bssid, id, ssid, false);
     }
 
+    public void onAnqpQueryDone(byte[/* 6 */] bssid,
+            ISupplicantStaIfaceCallback.AnqpData data,
+            ISupplicantStaIfaceCallback.Hs20AnqpData hs20Data,
+            android.hardware.wifi.supplicant.V1_4.ISupplicantStaIfaceCallback.AnqpData dataV14) {
+        Map<Constants.ANQPElementType, ANQPElement> elementsMap = new HashMap<>();
+        addAnqpElementToMap(elementsMap, ANQPVenueName, data.venueName);
+        addAnqpElementToMap(elementsMap, ANQPRoamingConsortium, data.roamingConsortium);
+        addAnqpElementToMap(
+                elementsMap, ANQPIPAddrAvailability, data.ipAddrTypeAvailability);
+        addAnqpElementToMap(elementsMap, ANQPNAIRealm, data.naiRealm);
+        addAnqpElementToMap(elementsMap, ANQP3GPPNetwork, data.anqp3gppCellularNetwork);
+        addAnqpElementToMap(elementsMap, ANQPDomName, data.domainName);
+        if (dataV14 != null) {
+            addAnqpElementToMap(elementsMap, ANQPVenueUrl, dataV14.venueUrl);
+        }
+        addAnqpElementToMap(elementsMap, HSFriendlyName, hs20Data.operatorFriendlyName);
+        addAnqpElementToMap(elementsMap, HSWANMetrics, hs20Data.wanMetrics);
+        addAnqpElementToMap(elementsMap, HSConnCapability, hs20Data.connectionCapability);
+        addAnqpElementToMap(elementsMap, HSOSUProviders, hs20Data.osuProvidersList);
+        mWifiMonitor.broadcastAnqpDoneEvent(
+                mIfaceName, new AnqpEvent(NativeUtil.macAddressToLong(bssid), elementsMap));
+    }
     @Override
     public void onAnqpQueryDone(byte[/* 6 */] bssid,
                                 ISupplicantStaIfaceCallback.AnqpData data,
                                 ISupplicantStaIfaceCallback.Hs20AnqpData hs20Data) {
         synchronized (mLock) {
             mStaIfaceHal.logCallback("onAnqpQueryDone");
-            Map<Constants.ANQPElementType, ANQPElement> elementsMap = new HashMap<>();
-            addAnqpElementToMap(elementsMap, ANQPVenueName, data.venueName);
-            addAnqpElementToMap(elementsMap, ANQPRoamingConsortium, data.roamingConsortium);
-            addAnqpElementToMap(
-                    elementsMap, ANQPIPAddrAvailability, data.ipAddrTypeAvailability);
-            addAnqpElementToMap(elementsMap, ANQPNAIRealm, data.naiRealm);
-            addAnqpElementToMap(elementsMap, ANQP3GPPNetwork, data.anqp3gppCellularNetwork);
-            addAnqpElementToMap(elementsMap, ANQPDomName, data.domainName);
-            addAnqpElementToMap(elementsMap, HSFriendlyName, hs20Data.operatorFriendlyName);
-            addAnqpElementToMap(elementsMap, HSWANMetrics, hs20Data.wanMetrics);
-            addAnqpElementToMap(elementsMap, HSConnCapability, hs20Data.connectionCapability);
-            addAnqpElementToMap(elementsMap, HSOSUProviders, hs20Data.osuProvidersList);
-            mWifiMonitor.broadcastAnqpDoneEvent(
-                    mIfaceName, new AnqpEvent(NativeUtil.macAddressToLong(bssid), elementsMap));
+            onAnqpQueryDone(bssid, data, hs20Data, null /* v1.4 element */);
         }
     }
 
@@ -234,7 +244,8 @@ abstract class SupplicantStaIfaceCallbackImpl extends ISupplicantStaIfaceCallbac
             mStaIfaceHal.logCallback("onHs20SubscriptionRemediation");
             mWifiMonitor.broadcastWnmEvent(
                     mIfaceName,
-                    new WnmData(NativeUtil.macAddressToLong(bssid), url, osuMethod));
+                    WnmData.createRemediationEvent(NativeUtil.macAddressToLong(bssid), url,
+                            osuMethod));
         }
     }
 
@@ -245,7 +256,7 @@ abstract class SupplicantStaIfaceCallbackImpl extends ISupplicantStaIfaceCallbac
             mStaIfaceHal.logCallback("onHs20DeauthImminentNotice");
             mWifiMonitor.broadcastWnmEvent(
                     mIfaceName,
-                    new WnmData(NativeUtil.macAddressToLong(bssid), url,
+                    WnmData.createDeauthImminentEvent(NativeUtil.macAddressToLong(bssid), url,
                             reasonCode == WnmData.ESS, reAuthDelayInSec));
         }
     }
@@ -321,6 +332,7 @@ abstract class SupplicantStaIfaceCallbackImpl extends ISupplicantStaIfaceCallbac
                                 mIfaceName, statusCode, timedOut,
                                 mCurrentSsid,
                                 NativeUtil.macAddressFromByteArray(bssid));
+                mStateBeforeDisconnect = State.INACTIVE;
             }
         }
     }
@@ -331,6 +343,7 @@ abstract class SupplicantStaIfaceCallbackImpl extends ISupplicantStaIfaceCallbac
             mStaIfaceHal.logCallback("onAuthenticationTimeout");
             mWifiMonitor.broadcastAuthenticationFailureEvent(
                     mIfaceName, WifiManager.ERROR_AUTH_FAILURE_TIMEOUT, -1);
+            mStateBeforeDisconnect = State.INACTIVE;
         }
     }
 
@@ -348,13 +361,19 @@ abstract class SupplicantStaIfaceCallbackImpl extends ISupplicantStaIfaceCallbac
         }
     }
 
-    @Override
-    public void onEapFailure() {
+    public void onEapFailure(int errorCode) {
         synchronized (mLock) {
             mStaIfaceHal.logCallback("onEapFailure");
             mWifiMonitor.broadcastAuthenticationFailureEvent(
-                    mIfaceName, WifiManager.ERROR_AUTH_FAILURE_EAP_FAILURE, -1);
+                    mIfaceName, WifiManager.ERROR_AUTH_FAILURE_EAP_FAILURE, errorCode);
+            mStateBeforeDisconnect = State.INACTIVE;
         }
+    }
+
+
+    @Override
+    public void onEapFailure() {
+        onEapFailure(-1);
     }
 
     @Override

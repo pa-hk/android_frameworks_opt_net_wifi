@@ -16,6 +16,7 @@
 
 package com.android.server.wifi.aware;
 
+import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.content.BroadcastReceiver;
 import android.content.Context;
@@ -25,6 +26,7 @@ import android.hardware.wifi.V1_0.NanStatusType;
 import android.hardware.wifi.V1_2.NanDataPathChannelInfo;
 import android.location.LocationManager;
 import android.net.wifi.WifiManager;
+import android.net.wifi.aware.AwareResources;
 import android.net.wifi.aware.Characteristics;
 import android.net.wifi.aware.ConfigRequest;
 import android.net.wifi.aware.IWifiAwareDiscoverySessionCallback;
@@ -40,9 +42,11 @@ import android.os.Bundle;
 import android.os.Looper;
 import android.os.Message;
 import android.os.PowerManager;
+import android.os.Process;
 import android.os.RemoteException;
 import android.os.SystemClock;
 import android.os.UserHandle;
+import android.os.WorkSource;
 import android.text.TextUtils;
 import android.util.ArrayMap;
 import android.util.Log;
@@ -157,6 +161,7 @@ public class WifiAwareStateManager implements WifiAwareShellCommand.DelegatedShe
     private static final int NOTIFICATION_TYPE_ON_DATA_PATH_CONFIRM = 310;
     private static final int NOTIFICATION_TYPE_ON_DATA_PATH_END = 311;
     private static final int NOTIFICATION_TYPE_ON_DATA_PATH_SCHED_UPDATE = 312;
+    private static final int NOTIFICATION_TYPE_MATCH_EXPIRED = 313;
 
     private static final SparseArray<String> sSmToString = MessageUtils.findMessageNames(
             new Class[]{WifiAwareStateManager.class},
@@ -227,6 +232,7 @@ public class WifiAwareStateManager implements WifiAwareShellCommand.DelegatedShe
     private ConfigRequest mCurrentAwareConfiguration = null;
     private boolean mCurrentIdentityNotification = false;
     private boolean mCurrentRangingEnabled = false;
+    private boolean mIsInstantCommunicationModeEnabled = false;
 
     private static final byte[] ALL_ZERO_MAC = new byte[] {0, 0, 0, 0, 0, 0};
     private byte[] mCurrentDiscoveryInterfaceMac = ALL_ZERO_MAC;
@@ -322,8 +328,27 @@ public class WifiAwareStateManager implements WifiAwareShellCommand.DelegatedShe
                         j.put("maxSubscribeInterfaceAddresses",
                                 mCapabilities.maxSubscribeInterfaceAddresses);
                         j.put("supportedCipherSuites", mCapabilities.supportedCipherSuites);
+                        j.put("isInstantCommunicationModeSupported",
+                                mCapabilities.isInstantCommunicationModeSupported);
                     } catch (JSONException e) {
                         Log.e(TAG, "onCommand: get_capabilities e=" + e);
+                    }
+                }
+                pw_out.println(j.toString());
+                return 0;
+            }
+            case "get_aware_resources": {
+                JSONObject j = new JSONObject();
+                AwareResources resources = getAvailableAwareResources();
+                if (resources != null) {
+                    try {
+                        j.put("numOfAvailableNdps", resources.getNumOfAvailableDataPaths());
+                        j.put("numOfAvailablePublishSessions",
+                                resources.getNumOfAvailablePublishSessions());
+                        j.put("numOfAvailableSubscribeSessions",
+                                resources.getNumOfAvailableSubscribeSessions());
+                    } catch (JSONException e) {
+                        Log.e(TAG, "onCommand: get_aware_resources e=" + e);
                     }
                 }
                 pw_out.println(j.toString());
@@ -337,8 +362,10 @@ public class WifiAwareStateManager implements WifiAwareShellCommand.DelegatedShe
                 }
                 if (TextUtils.equals("true", flag)) {
                     mDataPathMgr.mAllowNdpResponderFromAnyOverride = true;
+                    return 0;
                 } else  if (TextUtils.equals("false", flag)) {
                     mDataPathMgr.mAllowNdpResponderFromAnyOverride = false;
+                    return 0;
                 } else {
                     pw_err.println(
                             "Unknown configuration flag for 'allow_ndp_any' - true|false expected"
@@ -469,6 +496,17 @@ public class WifiAwareStateManager implements WifiAwareShellCommand.DelegatedShe
     }
 
     /**
+     * Try to get capability if it is null.
+     */
+    public void tryToGetAwareCapability() {
+        if (mCapabilities != null) return;
+        // Internal request for fetching capabilities.
+        getAwareInterface(new WorkSource(Process.WIFI_UID));
+        queryCapabilities();
+        releaseAwareInterface();
+    }
+
+    /**
      * Get the client state for the specified ID (or null if none exists).
      */
     /* package */ WifiAwareClientState getClient(int clientId) {
@@ -480,6 +518,61 @@ public class WifiAwareStateManager implements WifiAwareShellCommand.DelegatedShe
      */
     public Capabilities getCapabilities() {
         return mCapabilities;
+    }
+
+    /**
+     * Get the available aware resources.
+     */
+    public AwareResources getAvailableAwareResources() {
+        if (mCapabilities == null) {
+            if (mDbg) {
+                Log.v(TAG, "Aware capability hasn't loaded, resources is unknown.");
+            }
+            return null;
+        }
+        AwareResources awareResources = new AwareResources();
+        Pair<Integer, Integer> numOfDiscoverySessions = getNumOfDiscoverySessions();
+        int numOfAvailableNdps = mCapabilities.maxNdpSessions - mDataPathMgr.getNumOfNdps();
+        int numOfAvailablePublishSessions =
+                mCapabilities.maxPublishes - numOfDiscoverySessions.first;
+        int numOfAvailableSubscribeSessions =
+                mCapabilities.maxSubscribes - numOfDiscoverySessions.second;
+        if (numOfAvailableNdps >= 0) {
+            awareResources.setNumOfAvailableDataPaths(
+                    mCapabilities.maxNdpSessions - mDataPathMgr.getNumOfNdps());
+        } else {
+            Log.w(TAG, "Available NDPs number is negative, wrong capability?");
+        }
+        if (numOfAvailablePublishSessions >= 0) {
+            awareResources.setNumOfAvailablePublishSessions(
+                    mCapabilities.maxPublishes - numOfDiscoverySessions.first);
+        } else {
+            Log.w(TAG, "Available publish session number is negative, wrong capability?");
+        }
+        if (numOfAvailableSubscribeSessions >= 0) {
+            awareResources.setNumOfAvailableSubscribeSessions(
+                    mCapabilities.maxSubscribes - numOfDiscoverySessions.second);
+        } else {
+            Log.w(TAG, "Available subscribe session number is negative, wrong capability?");
+        }
+        return awareResources;
+    }
+
+    private Pair<Integer, Integer> getNumOfDiscoverySessions() {
+        int numOfPub = 0;
+        int numOfSub = 0;
+        for (int i = 0; i < mClients.size(); i++) {
+            WifiAwareClientState clientState = mClients.valueAt(i);
+            for (int j = 0; j < clientState.getSessions().size(); j++) {
+                WifiAwareDiscoverySessionState session = clientState.getSessions().valueAt(j);
+                if (session.isPublishSession()) {
+                    numOfPub++;
+                } else {
+                    numOfSub++;
+                }
+            }
+        }
+        return Pair.create(numOfPub, numOfSub);
     }
 
     /**
@@ -552,9 +645,10 @@ public class WifiAwareStateManager implements WifiAwareShellCommand.DelegatedShe
      * Place a request to get the Wi-Fi Aware interface (before which no HAL command can be
      * executed).
      */
-    public void getAwareInterface() {
+    public void getAwareInterface(@NonNull WorkSource requestorWs) {
         Message msg = mSm.obtainMessage(MESSAGE_TYPE_COMMAND);
         msg.arg1 = COMMAND_TYPE_GET_AWARE;
+        msg.obj = requestorWs;
         mSm.sendMessage(msg);
     }
 
@@ -566,6 +660,40 @@ public class WifiAwareStateManager implements WifiAwareShellCommand.DelegatedShe
         Message msg = mSm.obtainMessage(MESSAGE_TYPE_COMMAND);
         msg.arg1 = COMMAND_TYPE_RELEASE_AWARE;
         mSm.sendMessage(msg);
+    }
+
+    /**
+     * Enable instant communication mode if supported.
+     * @param enabled true for enable, false for disable.
+     */
+    public void enableInstantCommunicationMode(boolean enabled) {
+        if (mCapabilities == null) {
+            if (mDbg) {
+                Log.v(TAG, "Aware capability is not loaded.");
+            }
+            return;
+        }
+
+        if (!mCapabilities.isInstantCommunicationModeSupported) {
+            if (mDbg) {
+                Log.v(TAG, "Device does not support instant communication mode.");
+            }
+            return;
+        }
+        boolean changed = mIsInstantCommunicationModeEnabled != enabled;
+        mIsInstantCommunicationModeEnabled = enabled;
+        if (!changed) {
+            return;
+        }
+        reconfigure();
+    }
+
+    /**
+     * Get if instant communication mode is currently enabled.
+     * @return true if enabled, false otherwise.
+     */
+    public boolean isInstantCommunicationModeEnabled() {
+        return mIsInstantCommunicationModeEnabled;
     }
 
     /**
@@ -709,10 +837,6 @@ public class WifiAwareStateManager implements WifiAwareShellCommand.DelegatedShe
         }
         if (mWifiManager.getWifiState() != WifiManager.WIFI_STATE_ENABLED) {
             if (mDbg) Log.d(TAG, "enableUsage(): while Wi-Fi is disabled - ignoring");
-            return;
-        }
-        if (!mWifiAwareNativeManager.isAwareNativeAvailable()) {
-            if (mDbg) Log.d(TAG, "enableUsage(): while Aware Native isn't Available - ignoring");
             return;
         }
         Message msg = mSm.obtainMessage(MESSAGE_TYPE_COMMAND);
@@ -1075,6 +1199,18 @@ public class WifiAwareStateManager implements WifiAwareShellCommand.DelegatedShe
     }
 
     /**
+     * Place a callback request on the state machine queue: a discovered session
+     * has expired - e.g. some discovered peer is no longer visible.
+     */
+    public void onMatchExpiredNotification(int pubSubId, int requestorInstanceId) {
+        Message msg = mSm.obtainMessage(MESSAGE_TYPE_NOTIFICATION);
+        msg.arg1 = NOTIFICATION_TYPE_MATCH_EXPIRED;
+        msg.arg2 = pubSubId;
+        msg.getData().putInt(MESSAGE_BUNDLE_KEY_REQ_INSTANCE_ID, requestorInstanceId);
+        mSm.sendMessage(msg);
+    }
+
+    /**
      * Place a callback request on the state machine queue: a session (publish
      * or subscribe) has terminated (per plan or due to an error).
      */
@@ -1396,6 +1532,13 @@ public class WifiAwareStateManager implements WifiAwareShellCommand.DelegatedShe
 
                     onMatchLocal(pubSubId, requestorInstanceId, peerMac, serviceSpecificInfo,
                             matchFilter, rangingIndication, rangeMm);
+                    break;
+                }
+                case NOTIFICATION_TYPE_MATCH_EXPIRED: {
+                    int pubSubId = msg.arg2;
+                    int requestorInstanceId = msg.getData()
+                            .getInt(MESSAGE_BUNDLE_KEY_REQ_INSTANCE_ID);
+                    onMatchExpiredLocal(pubSubId, requestorInstanceId);
                     break;
                 }
                 case NOTIFICATION_TYPE_SESSION_TERMINATED: {
@@ -1793,7 +1936,8 @@ public class WifiAwareStateManager implements WifiAwareShellCommand.DelegatedShe
                     waitForResponse = false;
                     break;
                 case COMMAND_TYPE_GET_AWARE:
-                    mWifiAwareNativeManager.tryToGetAware();
+                    WorkSource requestorWs = (WorkSource) msg.obj;
+                    mWifiAwareNativeManager.tryToGetAware(requestorWs);
                     waitForResponse = false;
                     break;
                 case COMMAND_TYPE_RELEASE_AWARE:
@@ -2238,19 +2382,22 @@ public class WifiAwareStateManager implements WifiAwareShellCommand.DelegatedShe
             client.onInterfaceAddressChange(mCurrentDiscoveryInterfaceMac);
             mClients.append(clientId, client);
             mAwareMetrics.recordAttachSession(uid, notifyIdentityChange, mClients);
+            if (!mWifiAwareNativeManager.replaceRequestorWs(createMergedRequestorWs())) {
+                Log.w(TAG, "Failed to replace requestorWs");
+            }
             return false;
         }
         boolean notificationRequired =
                 doesAnyClientNeedIdentityChangeNotifications() || notifyIdentityChange;
 
         if (mCurrentAwareConfiguration == null) {
-            mWifiAwareNativeManager.tryToGetAware();
+            mWifiAwareNativeManager.tryToGetAware(new WorkSource(uid, callingPackage));
         }
 
         boolean success = mWifiAwareNativeApi.enableAndConfigure(transactionId, merged,
                 notificationRequired, mCurrentAwareConfiguration == null,
                 mPowerManager.isInteractive(), mPowerManager.isDeviceIdleMode(),
-                mCurrentRangingEnabled);
+                mCurrentRangingEnabled, mIsInstantCommunicationModeEnabled);
         if (!success) {
             try {
                 callback.onConnectFail(NanStatusType.INTERNAL_FAILURE);
@@ -2289,6 +2436,10 @@ public class WifiAwareStateManager implements WifiAwareShellCommand.DelegatedShe
             return mWifiAwareNativeApi.disable(transactionId);
         }
 
+        if (!mWifiAwareNativeManager.replaceRequestorWs(createMergedRequestorWs())) {
+            Log.w(TAG, "Failed to replace requestorWs");
+        }
+
         ConfigRequest merged = mergeConfigRequests(null);
         if (merged == null) {
             Log.wtf(TAG, "disconnectLocal: got an incompatible merge on remaining configs!?");
@@ -2304,7 +2455,7 @@ public class WifiAwareStateManager implements WifiAwareShellCommand.DelegatedShe
 
         return mWifiAwareNativeApi.enableAndConfigure(transactionId, merged, notificationReqs,
                 false, mPowerManager.isInteractive(), mPowerManager.isDeviceIdleMode(),
-                rangingEnabled);
+                rangingEnabled, mIsInstantCommunicationModeEnabled);
     }
 
     private boolean reconfigureLocal(short transactionId) {
@@ -2320,7 +2471,8 @@ public class WifiAwareStateManager implements WifiAwareShellCommand.DelegatedShe
 
         return mWifiAwareNativeApi.enableAndConfigure(transactionId, mCurrentAwareConfiguration,
                 notificationReqs, false, mPowerManager.isInteractive(),
-                mPowerManager.isDeviceIdleMode(), rangingEnabled);
+                mPowerManager.isDeviceIdleMode(), rangingEnabled,
+                mIsInstantCommunicationModeEnabled);
     }
 
     private void terminateSessionLocal(int clientId, int sessionId) {
@@ -2485,12 +2637,6 @@ public class WifiAwareStateManager implements WifiAwareShellCommand.DelegatedShe
 
     private void enableUsageLocal() {
         if (mDbg) Log.v(TAG, "enableUsageLocal: mUsageEnabled=" + mUsageEnabled);
-
-        if (mCapabilities == null) {
-            getAwareInterface();
-            queryCapabilities();
-            releaseAwareInterface();
-        }
 
         if (mUsageEnabled) {
             return;
@@ -3060,6 +3206,22 @@ public class WifiAwareStateManager implements WifiAwareShellCommand.DelegatedShe
                 rangingIndication, rangeMm);
     }
 
+    private void onMatchExpiredLocal(int pubSubId, int requestorInstanceId) {
+        if (VDBG) {
+            Log.v(TAG,
+                    "onMatchExpiredNotification: pubSubId=" + pubSubId
+                            + ", requestorInstanceId=" + requestorInstanceId);
+        }
+
+        Pair<WifiAwareClientState, WifiAwareDiscoverySessionState> data =
+                getClientSessionForPubSubId(pubSubId);
+        if (data == null) {
+            Log.e(TAG, "onMatch: no session found for pubSubId=" + pubSubId);
+            return;
+        }
+        data.second.onMatchExpired(requestorInstanceId);
+    }
+
     private void onSessionTerminatedLocal(int pubSubId, boolean isPublish, int reason) {
         if (mDbg) {
             Log.v(TAG, "onSessionTerminatedLocal: pubSubId=" + pubSubId + ", isPublish=" + isPublish
@@ -3241,6 +3403,18 @@ public class WifiAwareStateManager implements WifiAwareShellCommand.DelegatedShe
             }
         }
         return builder.build();
+    }
+
+    private WorkSource createMergedRequestorWs() {
+        if (mDbg) {
+            Log.v(TAG, "createMergedRequestorWs(): mClients=[" + mClients + "]");
+        }
+        WorkSource requestorWs = new WorkSource();
+        for (int i = 0; i < mClients.size(); ++i) {
+            WifiAwareClientState clientState = mClients.valueAt(i);
+            requestorWs.add(new WorkSource(clientState.getUid(), clientState.getCallingPackage()));
+        }
+        return requestorWs;
     }
 
     private boolean doesAnyClientNeedIdentityChangeNotifications() {

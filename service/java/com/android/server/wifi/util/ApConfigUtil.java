@@ -26,6 +26,7 @@ import android.net.wifi.SoftApConfiguration;
 import android.net.wifi.SoftApConfiguration.BandType;
 import android.net.wifi.WifiConfiguration;
 import android.net.wifi.WifiScanner;
+import android.text.TextUtils;
 import android.util.Log;
 import android.util.SparseArray;
 
@@ -36,6 +37,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Random;
+
 
 /**
  * Provide utility functions for updating soft AP related configuration.
@@ -65,7 +67,8 @@ public class ApConfigUtil {
         sBandToOperatingClass.append(SoftApConfiguration.BAND_2GHZ, new int[]{81, 82, 83, 84});
         sBandToOperatingClass.append(SoftApConfiguration.BAND_5GHZ, new int[]{115, 116, 117, 118,
                 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130});
-        sBandToOperatingClass.append(SoftApConfiguration.BAND_6GHZ, new int[]{131, 132, 133, 134});
+        sBandToOperatingClass.append(SoftApConfiguration.BAND_6GHZ, new int[]{131, 132, 133, 134,
+                135, 136});
     }
 
     /**
@@ -470,6 +473,11 @@ public class ApConfigUtil {
             features |= SoftApCapability.SOFTAP_FEATURE_WPA3_SAE;
         }
 
+        if (isMacCustomizationSupported(context)) {
+            Log.d(TAG, "Update Softap capability, add MAC customization support");
+            features |= SoftApCapability.SOFTAP_FEATURE_MAC_ADDRESS_CUSTOMIZATION;
+        }
+
         if (isWpa3OweSupported(context)) {
             Log.d(TAG, "Update Softap capability, add OWE feature support");
             features |= SoftApCapability.SOFTAP_FEATURE_WPA3_OWE;
@@ -530,6 +538,17 @@ public class ApConfigUtil {
     }
 
     /**
+     * Helper function to get MAC Address customization or not.
+     *
+     * @param context the caller context used to get value from resource file.
+     * @return true if supported, false otherwise.
+     */
+    public static boolean isMacCustomizationSupported(@NonNull Context context) {
+        return context.getResources().getBoolean(
+                R.bool.config_wifiSoftapMacAddressCustomizationSupported);
+    }
+
+    /**
      * Helper function for comparing two SoftApConfiguration.
      *
      * @param currentConfig the original configuration.
@@ -574,5 +593,63 @@ public class ApConfigUtil {
             return false;
         }
         return true;
+    }
+
+
+    /**
+     * Check if need to provide freq range for ACS.
+     *
+     * @param band in SoftApConfiguration.BandType
+     * @return true when freq ranges is needed, otherwise false.
+     */
+    public static boolean isSendFreqRangesNeeded(@BandType int band, Context context) {
+        // Fist we check if one of the selected bands has restrictions in the overlay file.
+        // Note,
+        //   - We store the config string here for future use, hence we need to check all bands.
+        //   - If there is no OEM restriction, we store the full band
+        boolean retVal = false;
+        String channelList = "";
+        if ((band & SoftApConfiguration.BAND_2GHZ) != 0) {
+            channelList =
+                context.getResources().getString(R.string.config_wifiSoftap2gChannelList);
+            if (!TextUtils.isEmpty(channelList)) {
+                retVal = true;
+            }
+        }
+
+        if ((band & SoftApConfiguration.BAND_5GHZ) != 0) {
+            channelList =
+                context.getResources().getString(R.string.config_wifiSoftap5gChannelList);
+            if (!TextUtils.isEmpty(channelList)) {
+                retVal = true;
+            }
+        }
+
+        if ((band & SoftApConfiguration.BAND_6GHZ) != 0) {
+            channelList =
+                context.getResources().getString(R.string.config_wifiSoftap6gChannelList);
+            if (!TextUtils.isEmpty(channelList)) {
+                retVal = true;
+            }
+        }
+
+        // If any of the selected band has restriction in the overlay file, we return true.
+        if (retVal) {
+            return true;
+        }
+
+        // Next, if only one of 5G or 6G is selected, then we need freqList to separate them
+        // Since there is no other way.
+        if (((band & SoftApConfiguration.BAND_5GHZ) != 0)
+                && ((band & SoftApConfiguration.BAND_6GHZ) == 0)) {
+            return true;
+        }
+        if (((band & SoftApConfiguration.BAND_5GHZ) == 0)
+                && ((band & SoftApConfiguration.BAND_6GHZ) != 0)) {
+            return true;
+        }
+
+        // In all other cases, we don't need to set the freqList
+        return false;
     }
 }

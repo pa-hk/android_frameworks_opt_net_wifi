@@ -30,6 +30,7 @@ import java.util.Arrays;
 public class WifiLinkLayerStats {
     public static final String V1_0 = "V1_0";
     public static final String V1_3 = "V1_3";
+    public static final String V1_5 = "V1_5";
 
     /** The version of hal StaLinkLayerStats **/
     public String version;
@@ -101,23 +102,23 @@ public class WifiLinkLayerStats {
     /**
      * Cumulative milliseconds when radio is awake due to nan scan
      */
-    public int on_time_nan_scan = -1;
+    public int on_time_nan_scan;
     /**
      * Cumulative milliseconds when radio is awake due to background scan
      */
-    public int on_time_background_scan = -1;
+    public int on_time_background_scan;
     /**
      * Cumulative milliseconds when radio is awake due to roam scan
      */
-    public int on_time_roam_scan = -1;
+    public int on_time_roam_scan;
     /**
      * Cumulative milliseconds when radio is awake due to pno scan
      */
-    public int on_time_pno_scan = -1;
+    public int on_time_pno_scan;
     /**
      * Cumulative milliseconds when radio is awake due to hotspot 2.0 scan amd GAS exchange
      */
-    public int on_time_hs20_scan = -1;
+    public int on_time_hs20_scan;
     /**
      * channel stats
      */
@@ -144,6 +145,19 @@ public class WifiLinkLayerStats {
      * TimeStamp - absolute milliseconds from boot when these stats were sampled.
      */
     public long timeStampInMs;
+
+    /**
+     * Duty cycle of the iface.
+     * if this iface is being served using time slicing on a radio with one or more ifaces
+     * (i.e MCC), then the duty cycle assigned to this iface in %.
+     * If not using time slicing (i.e SCC or DBS), set to 100.
+     */
+    public short timeSliceDutyCycleInPercent = -1;
+
+    /**
+     * numRadios - Number of radios.
+     */
+    public int numRadios;
 
     @Override
     public String toString() {
@@ -193,6 +207,7 @@ public class WifiLinkLayerStats {
                     .append(" ccaBusyTimeMs=").append(channelStatsEntry.ccaBusyTimeMs).append('\n');
         }
         sbuf.append(" ts=" + timeStampInMs);
+        sbuf.append(" numRadios=" + numRadios);
         return sbuf.toString();
     }
 

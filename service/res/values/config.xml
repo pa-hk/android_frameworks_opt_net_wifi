@@ -30,6 +30,9 @@
     <!-- boolean indicating whether the WiFi chipset has 6GHz band support -->
     <bool translatable="false" name ="config_wifi6ghzSupport">false</bool>
 
+    <!-- boolean indicating whether the WiFi chipset has 60GHz band support -->
+    <bool translatable="false" name ="config_wifi60ghzSupport">false</bool>
+
       <!-- Indicates that 11ax mode is supported on this device
            Note that if this flag is set to true, then 11ax is assumed to be supported.
            However, if it is left to the default value of false, the 11ax support will
@@ -194,6 +197,9 @@
     <!-- Boolean indicating that wifi only link configuratios that have exact same credentials (i.e PSK) -->
     <bool translatable="false" name="config_wifi_only_link_same_credential_configurations">true</bool>
 
+    <!-- Boolean indicating that softap passphrase need to enable ASCII encodable check -->
+    <bool translatable="false" name="config_wifiSoftapPassphraseAsciiEncodableCheck">true</bool>
+
     <!-- Wifi Hal supports force client disconnect for softap -->
     <bool translatable="false" name="config_wifiSofapClientForceDisconnectSupported">true</bool>
 
@@ -208,6 +214,9 @@
 
     <!-- Wifi driver supports WPA3 Simultaneous Authentication of Equals (WPA3-OWE) for softap -->
     <bool translatable="false" name="config_vendor_wifi_softap_owe_supported">false</bool>
+
+    <!-- Wifi driver supports Mac address customization for softap -->
+    <bool translatable="false" name="config_wifiSoftapMacAddressCustomizationSupported">true</bool>
 
     <!-- Wifi driver supports IEEE80211AC for softap -->
     <bool translatable="false" name="config_wifi_softap_ieee80211ac_supported">false</bool>
@@ -243,6 +252,10 @@
     <!-- Indicates that connected MAC randomization is supported on this device -->
     <bool translatable="false" name="config_wifi_connected_mac_randomization_supported">false</bool>
 
+    <!-- Indicates that enhanced MAC randomization is allowed on open networks that do not
+     use captive portals -->
+    <bool translatable="false" name="config_wifiAllowEnhancedMacRandomizationOnOpenSsids">false</bool>
+
     <!-- Indicates that p2p MAC randomization is supported on this device -->
     <bool translatable="false" name="config_wifi_p2p_mac_randomization_supported">false</bool>
 
@@ -265,6 +278,9 @@
         <item>\"SSID_2\"</item>
         -->
     </string-array>
+
+    <!-- Duration in minutes a recent failure should be displayed in the wifi picker UI. -->
+    <integer translatable="false" name="config_wifiRecentFailureReasonExpirationMinutes">30</integer>
 
     <!-- Indicates that wifi link probing is supported on this device -->
     <bool translatable="false" name="config_wifi_link_probing_supported">false</bool>
@@ -325,6 +341,14 @@
         <item>160</item>
     </integer-array>
 
+    <!-- Integer specifying minimum wait time in seconds for next PNO scan when a network is found
+    by PNO scan but gets rejected by Wifi Network Selector due to its low RSSI value-->
+    <integer translatable="false" name="config_wifiPnoScanLowRssiNetworkRetryStartDelaySec"> 20 </integer>
+
+    <!-- Integer specifying maximum wait time in seconds for next PNO scan when a network is found
+    by PNO scan but gets rejected by Wifi Network Selector due to its low RSSI value-->
+    <integer translatable="false" name="config_wifiPnoScanLowRssiNetworkRetryMaxDelaySec"> 80 </integer>
+
     <!-- Integer for minimum time between the last network selection and next high RSSI scan
          in seconds when device is connected and screen is on -->
     <integer translatable="false" name="config_wifiConnectedHighRssiScanMinimumWindowSizeSec"> 600 </integer>
@@ -336,6 +360,12 @@
     <integer-array translatable="false" name="config_wifiSingleSavedNetworkConnectedScanIntervalScheduleSec">
     </integer-array>
 
+    <!-- List of constants to indicate how many failures are needed to temporarily disable a network
+    from auto-connect -->
+    <integer translatable="false" name="config_wifiDisableReasonAssociationRejectionThreshold"> 5 </integer>
+    <integer translatable="false" name="config_wifiDisableReasonAuthenticationFailureThreshold"> 5 </integer>
+    <integer translatable="false" name="config_wifiDisableReasonDhcpFailureThreshold"> 2 </integer>
+
     <!-- List of constants that indicate the number of consecutive failures per type needed to block a BSSID.
     A blocked BSSID will not be considered in network selection and firmware roaming.-->
     <integer translatable="false" name="config_wifiBssidBlocklistMonitorApUnableToHandleNewStaThreshold"> 1 </integer>
@@ -345,7 +375,7 @@
     <integer translatable="false" name="config_wifiBssidBlocklistMonitorAssociationRejectionThreshold"> 3 </integer>
     <integer translatable="false" name="config_wifiBssidBlocklistMonitorAssociationTimeoutThreshold"> 3 </integer>
     <integer translatable="false" name="config_wifiBssidBlocklistMonitorAuthenticationFailureThreshold"> 3 </integer>
-    <integer translatable="false" name="config_wifiBssidBlocklistMonitorDhcpFailureThreshold"> 3 </integer>
+    <integer translatable="false" name="config_wifiBssidBlocklistMonitorDhcpFailureThreshold"> 2 </integer>
     <integer translatable="false" name="config_wifiBssidBlocklistMonitorAbnormalDisconnectThreshold"> 3 </integer>
 
     <!-- Base duration to block a BSSID after consecutive failures happen. (default = 5 mins)
@@ -353,6 +383,13 @@
     ie. 5/10/20/40/80/160/320/640 minutes - capped at 640 minutes because the default for
     config_wifiBssidBlocklistMonitorFailureStreakCap is set to 7-->
     <integer translatable="false" name="config_wifiBssidBlocklistMonitorBaseBlockDurationMs"> 300000 </integer>
+
+    <!-- Base duration to block a BSSID after the external connected scorer sets wifi as unusable.
+    The block duration is increased exponentially if the same BSSID is repeated marked as unusable.
+    ie. 0.5/1/2/4/8/16/32/64 minutes - capped at 64 minutes because the default for
+    config_wifiBssidBlocklistMonitorFailureStreakCap is set to 7. The block duration is reset to
+    the base value 3 hours after the latest connection to this BSSID. -->
+    <integer translatable="false" name="config_wifiBssidBlocklistMonitorConnectedScoreBaseBlockDurationMs"> 30000 </integer>
 
     <!-- The failure streak is the number of times a BSSID consecutively gets blocked without ever
     successfully connecting in between, and is used to calculate the exponentially growing blocklist time.
@@ -459,4 +496,17 @@
 
     <!-- Boolean to provide support to keep wifi5 symbol for 8SS supported device and 11ax AP -->
     <bool translatable="false" name="config_vendorWifi11axReadySupport">true</bool>
+
+    <!-- Enable adding minimum confirmation duration when sending network score to connectivity service. -->
+    <bool translatable="false" name="config_wifiMinConfirmationDurationSendNetworkScoreEnabled">false</bool>
+
+    <!-- Enable Make-Before-Break Wifi network switching.
+         Note: this is conditional on the device supporting dual concurrent STAs. -->
+    <bool translatable="false" name="config_wifiMultiStaNetworkSwitchingMakeBeforeBreakEnabled">false</bool>
+    <!-- Enable concurrent peer to peer + internet connectivity
+         Note: this is conditional on the device supporting dual concurrent STAs. -->
+    <bool translatable="false" name="config_wifiMultiStaLocalOnlyConcurrencyEnabled">false</bool>
+    <!-- Enable concurrent restricted connectivity + internet connectivity
+         Note: this is conditional on the device supporting dual concurrent STAs. -->
+    <bool translatable="false" name="config_wifiMultiStaRestrictedConcurrencyEnabled">false</bool>
 </resources>

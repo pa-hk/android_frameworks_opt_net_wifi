@@ -178,7 +178,7 @@ public class WifiP2pConnection {
         mReplyChannel.replyToMessage(msg, dstMsg);
     }
 
-    public  void replyToMessage(Message msg, int what, Object obj) {
+    public void replyToMessage(Message msg, int what, Object obj) {
         if (msg.replyTo == null) return;
         Message dstMsg = obtainMessageWithWhatAndArg2(msg, what);
         dstMsg.obj = obj;

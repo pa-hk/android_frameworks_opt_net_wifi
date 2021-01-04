@@ -91,6 +91,7 @@ public class WifiNetworkSelector {
     private final WifiConfigManager mWifiConfigManager;
     private final Clock mClock;
     private final LocalLog mLocalLog;
+    private boolean mVerboseLoggingEnabled = false;
     private final WifiMetrics mWifiMetrics;
     private long mLastNetworkSelectionTimeStamp = INVALID_TIME_STAMP;
     // Buffer of filtered scan results (Scan results considered by network selection) & associated
@@ -155,21 +156,22 @@ public class WifiNetworkSelector {
         /**
          * Evaluate all the networks from the scan results.
          *
-         * @param scanDetails             a list of scan details constructed from the scan results
-         * @param currentNetwork          configuration of the current connected network
-         *                                or null if disconnected
-         * @param currentBssid            BSSID of the current connected network or null if
-         *                                disconnected
-         * @param connected               a flag to indicate if ClientModeImpl is in connected
-         *                                state
-         * @param untrustedNetworkAllowed a flag to indicate if untrusted networks like
-         *                                ephemeral networks are allowed
-         * @param onConnectableListener   callback to record all of the connectable networks
+         * @param scanDetails              a list of scan details constructed from the scan results
+         * @param currentNetwork           configuration of the current connected network
+         *                                 or null if disconnected
+         * @param currentBssid             BSSID of the current connected network or null if
+         *                                 disconnected
+         * @param connected                a flag to indicate if ClientModeImpl is in connected
+         *                                 state
+         * @param untrustedNetworkAllowed  a flag to indicate if untrusted networks are allowed
+         * @param oemPaidNetworkAllowed    a flag to indicate if oem paid networks are allowed
+         * @param oemPrivateNetworkAllowed a flag to indicate if oem private networks are allowed
+         * @param onConnectableListener    callback to record all of the connectable networks
          */
         void nominateNetworks(List<ScanDetail> scanDetails,
                 WifiConfiguration currentNetwork, String currentBssid,
-                boolean connected, boolean untrustedNetworkAllowed,
-                OnConnectableListener onConnectableListener);
+                boolean connected, boolean untrustedNetworkAllowed, boolean oemPaidNetworkAllowed,
+                boolean oemPrivateNetworkAllowed, OnConnectableListener onConnectableListener);
 
         /**
          * Callback for recording connectable candidates
@@ -188,9 +190,17 @@ public class WifiNetworkSelector {
     private final List<NetworkNominator> mNominators = new ArrayList<>(3);
 
     // A helper to log debugging information in the local log buffer, which can
-    // be retrieved in bugreport.
+    // be retrieved in bugreport. It is also used to print the log in the console.
     private void localLog(String log) {
         mLocalLog.log(log);
+        if (mVerboseLoggingEnabled) Log.d(TAG, log);
+    }
+
+    /**
+     * Enable verbose logging in the console
+     */
+    public void enableVerboseLogging(boolean verbose) {
+        mVerboseLoggingEnabled = verbose;
     }
 
     /**
@@ -270,6 +280,12 @@ public class WifiNetworkSelector {
         if (network.osu) {
             localLog("Current connection is OSU");
             return true;
+        }
+
+        // OEM paid/private networks are only available to system apps, so this is never sufficient.
+        if (network.oemPaid || network.oemPrivate) {
+            localLog("Current network is oem paid/private");
+            return false;
         }
 
         // Network without internet access is not sufficient, unless expected
@@ -366,10 +382,10 @@ public class WifiNetworkSelector {
     }
 
     private List<ScanDetail> filterScanResults(List<ScanDetail> scanDetails,
-            Set<String> bssidBlacklist, boolean isConnected, String currentBssid) {
+            Set<String> bssidBlocklist, boolean isConnected, String currentBssid) {
         List<ScanDetail> validScanDetails = new ArrayList<>();
         StringBuffer noValidSsid = new StringBuffer();
-        StringBuffer blacklistedBssid = new StringBuffer();
+        StringBuffer blockedBssid = new StringBuffer();
         StringBuffer lowRssi = new StringBuffer();
         StringBuffer mboAssociationDisallowedBssid = new StringBuffer();
         boolean scanResultsHaveCurrentBssid = false;
@@ -392,8 +408,8 @@ public class WifiNetworkSelector {
 
             final String scanId = toScanId(scanResult);
 
-            if (bssidBlacklist.contains(scanResult.BSSID)) {
-                blacklistedBssid.append(scanId).append(" / ");
+            if (bssidBlocklist.contains(scanResult.BSSID)) {
+                blockedBssid.append(scanId).append(" / ");
                 numBssidFiltered++;
                 continue;
             }
@@ -446,8 +462,8 @@ public class WifiNetworkSelector {
             localLog("Networks filtered out due to invalid SSID: " + noValidSsid);
         }
 
-        if (blacklistedBssid.length() != 0) {
-            localLog("Networks filtered out due to blocklist: " + blacklistedBssid);
+        if (blockedBssid.length() != 0) {
+            localLog("Networks filtered out due to blocklist: " + blockedBssid);
         }
 
         if (lowRssi.length() != 0) {
@@ -460,6 +476,17 @@ public class WifiNetworkSelector {
         }
 
         return validScanDetails;
+    }
+
+    private ScanDetail findScanDetailForBssid(List<ScanDetail> scanDetails,
+            String currentBssid) {
+        for (ScanDetail scanDetail : scanDetails) {
+            ScanResult scanResult = scanDetail.getScanResult();
+            if (scanResult.BSSID.equals(currentBssid)) {
+                return scanDetail;
+            }
+        }
+        return null;
     }
 
     private boolean isEnhancedOpenSupported() {
@@ -478,7 +505,7 @@ public class WifiNetworkSelector {
      * The list is further filtered for only open unsaved networks.
      *
      * @return the list of ScanDetails for open unsaved networks that do not have invalid SSIDS,
-     * blacklisted BSSIDS, or low signal strength. This will return an empty list when there are
+     * blocked BSSIDS, or low signal strength. This will return an empty list when there are
      * no open unsaved networks, or when network selection has not been run.
      */
     public List<ScanDetail> getFilteredScanDetailsForOpenUnsavedNetworks() {
@@ -521,7 +548,7 @@ public class WifiNetworkSelector {
      * Iterate thru the list of configured networks (includes all saved network configurations +
      * any ephemeral network configurations created for passpoint networks, suggestions, carrier
      * networks, etc) and do the following:
-     * a) Try to re-enable any temporarily enabled networks (if the blacklist duration has expired).
+     * a) Try to re-enable any temporarily enabled networks (if the blocklist duration has expired).
      * b) Clear the {@link WifiConfiguration.NetworkSelectionStatus#getCandidate()} field for all
      * of them to identify networks that are present in the current scan result.
      * c) Log any disabled networks.
@@ -590,7 +617,10 @@ public class WifiNetworkSelector {
             if (tempConfig != null) {
                 WifiConfiguration.NetworkSelectionStatus tempStatus =
                         tempConfig.getNetworkSelectionStatus();
-                if (tempStatus.getCandidate() != null && tempStatus.isNetworkEnabled()) {
+                boolean noInternetButInternetIsExpected = !tempConfig.isNoInternetAccessExpected()
+                        && tempConfig.hasNoInternetAccess();
+                if (tempStatus.getCandidate() != null && tempStatus.isNetworkEnabled()
+                        && !noInternetButInternetIsExpected) {
                     scanResultCandidate = tempStatus.getCandidate();
                     candidate = tempConfig;
                 }
@@ -667,17 +697,20 @@ public class WifiNetworkSelector {
     /**
      * Returns the list of Candidates from networks in range.
      *
-     * @param scanDetails             List of ScanDetail for all the APs in range
-     * @param bssidBlacklist          Blacklisted BSSIDs
-     * @param wifiInfo                Currently connected network
-     * @param connected               True if the device is connected
-     * @param disconnected            True if the device is disconnected
-     * @param untrustedNetworkAllowed True if untrusted networks are allowed for connection
+     * @param scanDetails              List of ScanDetail for all the APs in range
+     * @param bssidBlocklist           Blocked BSSIDs
+     * @param wifiInfo                 Currently connected network
+     * @param connected                True if the device is connected
+     * @param disconnected             True if the device is disconnected
+     * @param untrustedNetworkAllowed  True if untrusted networks are allowed for connection
+     * @param oemPaidNetworkAllowed    True if oem paid networks are allowed for connection
+     * @param oemPrivateNetworkAllowed True if oem private networks are allowed for connection
      * @return list of valid Candidate(s)
      */
     public List<WifiCandidates.Candidate> getCandidatesFromScan(
-            List<ScanDetail> scanDetails, Set<String> bssidBlacklist, WifiInfo wifiInfo,
-            boolean connected, boolean disconnected, boolean untrustedNetworkAllowed) {
+            List<ScanDetail> scanDetails, Set<String> bssidBlocklist, WifiInfo wifiInfo,
+            boolean connected, boolean disconnected, boolean untrustedNetworkAllowed,
+            boolean oemPaidNetworkAllowed, boolean oemPrivateNetworkAllowed) {
         mFilteredNetworks.clear();
         mConnectableNetworks.clear();
         if (scanDetails.size() == 0) {
@@ -709,7 +742,7 @@ public class WifiNetworkSelector {
         }
 
         // Filter out unwanted networks.
-        mFilteredNetworks = filterScanResults(scanDetails, bssidBlacklist,
+        mFilteredNetworks = filterScanResults(scanDetails, bssidBlocklist,
                 connected && wifiInfo.getScore() >= WIFI_POOR_SCORE, currentBssid);
         if (mFilteredNetworks.size() == 0) {
             return null;
@@ -725,6 +758,8 @@ public class WifiNetworkSelector {
             WifiCandidates.Key key = new WifiCandidates.Key(
                     ScanResultMatchInfo.fromWifiConfiguration(currentNetwork),
                     bssid, currentNetwork.networkId);
+            ScanDetail scanDetail = findScanDetailForBssid(mFilteredNetworks, currentBssid);
+            int predictedTputMbps = (scanDetail == null) ? 0 : predictThroughput(scanDetail);
             wifiCandidates.add(key, currentNetwork,
                     NetworkNominator.NOMINATOR_ID_CURRENT,
                     wifiInfo.getRssi(),
@@ -732,13 +767,13 @@ public class WifiNetworkSelector {
                     calculateLastSelectionWeight(currentNetwork.networkId),
                     WifiConfiguration.isMetered(currentNetwork, wifiInfo),
                     isFromCarrierOrPrivilegedApp(currentNetwork),
-                    0 /* Mbps */);
+                    predictedTputMbps);
         }
         for (NetworkNominator registeredNominator : mNominators) {
             localLog("About to run " + registeredNominator.getName() + " :");
             registeredNominator.nominateNetworks(
                     new ArrayList<>(mFilteredNetworks), currentNetwork, currentBssid, connected,
-                    untrustedNetworkAllowed,
+                    untrustedNetworkAllowed, oemPaidNetworkAllowed, oemPrivateNetworkAllowed,
                     (scanDetail, config) -> {
                         WifiCandidates.Key key = wifiCandidates.keyFromScanDetailAndConfig(
                                 scanDetail, config);
@@ -776,7 +811,7 @@ public class WifiNetworkSelector {
      * @param candidates - Candidates to perferm network selection on.
      * @return WifiConfiguration - the selected network, or null.
      */
-    @NonNull
+    @Nullable
     public WifiConfiguration selectNetwork(List<WifiCandidates.Candidate> candidates) {
         if (candidates == null || candidates.size() == 0) {
             return null;

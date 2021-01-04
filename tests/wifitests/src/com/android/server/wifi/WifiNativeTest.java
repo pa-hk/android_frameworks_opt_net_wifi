@@ -40,6 +40,7 @@ import android.net.wifi.nl80211.RadioChainInfo;
 import android.net.wifi.nl80211.WifiNl80211Manager;
 import android.net.wifi.nl80211.WifiNl80211Manager.SendMgmtFrameCallback;
 import android.os.Handler;
+import android.os.WorkSource;
 
 import androidx.test.filters.SmallTest;
 
@@ -220,6 +221,7 @@ public class WifiNativeTest extends WifiBaseTest {
 
     private static final RadioChainInfo MOCK_NATIVE_RADIO_CHAIN_INFO_1 = new RadioChainInfo(1, -89);
     private static final RadioChainInfo MOCK_NATIVE_RADIO_CHAIN_INFO_2 = new RadioChainInfo(0, -78);
+    private static final WorkSource TEST_WORKSOURCE = new WorkSource();
 
     @Mock private WifiVendorHal mWifiVendorHal;
     @Mock private WifiNl80211Manager mWificondControl;
@@ -248,7 +250,7 @@ public class WifiNativeTest extends WifiBaseTest {
         when(mWifiVendorHal.startVendorHal()).thenReturn(true);
         when(mWifiVendorHal.startVendorHalSta()).thenReturn(true);
         when(mWifiVendorHal.startVendorHalAp()).thenReturn(true);
-        when(mWifiVendorHal.createStaIface(any())).thenReturn(WIFI_IFACE_NAME);
+        when(mWifiVendorHal.createStaIface(any(), any())).thenReturn(WIFI_IFACE_NAME);
 
         when(mWificondControl.setupInterfaceForClientMode(any(), any(), any(), any())).thenReturn(
                 true);
@@ -596,7 +598,7 @@ public class WifiNativeTest extends WifiBaseTest {
      */
     @Test
     public void testClientModeScanSuccess() {
-        mWifiNative.setupInterfaceForClientInConnectivityMode(null);
+        mWifiNative.setupInterfaceForClientInConnectivityMode(null, TEST_WORKSOURCE);
         verify(mWificondControl).setupInterfaceForClientMode(eq(WIFI_IFACE_NAME), any(),
                 mScanCallbackCaptor.capture(), any());
 
@@ -609,7 +611,7 @@ public class WifiNativeTest extends WifiBaseTest {
      */
     @Test
     public void testClientModeScanFailure() {
-        mWifiNative.setupInterfaceForClientInConnectivityMode(null);
+        mWifiNative.setupInterfaceForClientInConnectivityMode(null, TEST_WORKSOURCE);
         verify(mWificondControl).setupInterfaceForClientMode(eq(WIFI_IFACE_NAME), any(),
                 mScanCallbackCaptor.capture(), any());
 
@@ -622,7 +624,7 @@ public class WifiNativeTest extends WifiBaseTest {
      */
     @Test
     public void testClientModePnoScanSuccess() {
-        mWifiNative.setupInterfaceForClientInConnectivityMode(null);
+        mWifiNative.setupInterfaceForClientInConnectivityMode(null, TEST_WORKSOURCE);
         verify(mWificondControl).setupInterfaceForClientMode(eq(WIFI_IFACE_NAME), any(),
                 any(), mScanCallbackCaptor.capture());
 
@@ -636,7 +638,7 @@ public class WifiNativeTest extends WifiBaseTest {
      */
     @Test
     public void testClientModePnoScanFailure() {
-        mWifiNative.setupInterfaceForClientInConnectivityMode(null);
+        mWifiNative.setupInterfaceForClientInConnectivityMode(null, TEST_WORKSOURCE);
         verify(mWificondControl).setupInterfaceForClientMode(eq(WIFI_IFACE_NAME), any(),
                 any(), mScanCallbackCaptor.capture());
 
@@ -649,7 +651,7 @@ public class WifiNativeTest extends WifiBaseTest {
      */
     @Test
     public void testScanModeScanSuccess() {
-        mWifiNative.setupInterfaceForClientInScanMode(null);
+        mWifiNative.setupInterfaceForClientInScanMode(null, TEST_WORKSOURCE);
         verify(mWificondControl).setupInterfaceForClientMode(eq(WIFI_IFACE_NAME), any(),
                 mScanCallbackCaptor.capture(), any());
 
@@ -662,7 +664,7 @@ public class WifiNativeTest extends WifiBaseTest {
      */
     @Test
     public void testScanModeScanFailure() {
-        mWifiNative.setupInterfaceForClientInScanMode(null);
+        mWifiNative.setupInterfaceForClientInScanMode(null, TEST_WORKSOURCE);
         verify(mWificondControl).setupInterfaceForClientMode(eq(WIFI_IFACE_NAME), any(),
                 mScanCallbackCaptor.capture(), any());
 
@@ -675,7 +677,7 @@ public class WifiNativeTest extends WifiBaseTest {
      */
     @Test
     public void testScanModePnoScanSuccess() {
-        mWifiNative.setupInterfaceForClientInScanMode(null);
+        mWifiNative.setupInterfaceForClientInScanMode(null, TEST_WORKSOURCE);
         verify(mWificondControl).setupInterfaceForClientMode(eq(WIFI_IFACE_NAME), any(),
                 any(), mScanCallbackCaptor.capture());
 
@@ -689,7 +691,7 @@ public class WifiNativeTest extends WifiBaseTest {
      */
     @Test
     public void testScanModePnoScanFailure() {
-        mWifiNative.setupInterfaceForClientInScanMode(null);
+        mWifiNative.setupInterfaceForClientInScanMode(null, TEST_WORKSOURCE);
         verify(mWificondControl).setupInterfaceForClientMode(eq(WIFI_IFACE_NAME), any(),
                 any(), mScanCallbackCaptor.capture());
 
@@ -859,19 +861,37 @@ public class WifiNativeTest extends WifiBaseTest {
      * Verifies that setMacAddress() calls underlying WifiVendorHal.
      */
     @Test
-    public void testSetMacAddress() throws Exception {
-        mWifiNative.setMacAddress(WIFI_IFACE_NAME, TEST_MAC_ADDRESS);
+    public void testStaSetMacAddress() throws Exception {
+        mWifiNative.setStaMacAddress(WIFI_IFACE_NAME, TEST_MAC_ADDRESS);
         verify(mStaIfaceHal).disconnect(WIFI_IFACE_NAME);
-        verify(mWifiVendorHal).setMacAddress(WIFI_IFACE_NAME, TEST_MAC_ADDRESS);
+        verify(mWifiVendorHal).setStaMacAddress(WIFI_IFACE_NAME, TEST_MAC_ADDRESS);
+    }
+
+    /**
+     * Verifies that setMacAddress() calls underlying WifiVendorHal.
+     */
+    @Test
+    public void testApSetMacAddress() throws Exception {
+        mWifiNative.setApMacAddress(WIFI_IFACE_NAME, TEST_MAC_ADDRESS);
+        verify(mWifiVendorHal).setApMacAddress(WIFI_IFACE_NAME, TEST_MAC_ADDRESS);
     }
 
     /**
      * Verifies that isSetMacAddressSupported() calls underlying WifiVendorHal.
      */
     @Test
-    public void testIsSetMacAddressSupported() throws Exception {
-        mWifiNative.isSetMacAddressSupported(WIFI_IFACE_NAME);
-        verify(mWifiVendorHal).isSetMacAddressSupported(WIFI_IFACE_NAME);
+    public void testIsStaSetMacAddressSupported() throws Exception {
+        mWifiNative.isStaSetMacAddressSupported(WIFI_IFACE_NAME);
+        verify(mWifiVendorHal).isStaSetMacAddressSupported(WIFI_IFACE_NAME);
+    }
+
+    /**
+     * Verifies that isSetMacAddressSupported() calls underlying WifiVendorHal.
+     */
+    @Test
+    public void testIsApSetMacAddressSupported() throws Exception {
+        mWifiNative.isApSetMacAddressSupported(WIFI_IFACE_NAME);
+        verify(mWifiVendorHal).isApSetMacAddressSupported(WIFI_IFACE_NAME);
     }
 
     /**
@@ -924,10 +944,19 @@ public class WifiNativeTest extends WifiBaseTest {
     }
 
     @Test
-    public void testGetFactoryMacAddress() throws Exception {
-        when(mWifiVendorHal.getFactoryMacAddress(any())).thenReturn(MacAddress.BROADCAST_ADDRESS);
-        assertNotNull(mWifiNative.getFactoryMacAddress(WIFI_IFACE_NAME));
-        verify(mWifiVendorHal).getFactoryMacAddress(any());
+    public void testStaGetFactoryMacAddress() throws Exception {
+        when(mWifiVendorHal.getStaFactoryMacAddress(any()))
+                .thenReturn(MacAddress.BROADCAST_ADDRESS);
+        assertNotNull(mWifiNative.getStaFactoryMacAddress(WIFI_IFACE_NAME));
+        verify(mWifiVendorHal).getStaFactoryMacAddress(any());
+    }
+
+
+    @Test
+    public void testGetApFactoryMacAddress() throws Exception {
+        when(mWifiVendorHal.getApFactoryMacAddress(any())).thenReturn(MacAddress.BROADCAST_ADDRESS);
+        assertNotNull(mWifiNative.getApFactoryMacAddress(WIFI_IFACE_NAME));
+        verify(mWifiVendorHal).getApFactoryMacAddress(any());
     }
 
     /**
@@ -1035,5 +1064,14 @@ public class WifiNativeTest extends WifiBaseTest {
         mWifiNative.flushAllHlp(WIFI_IFACE_NAME);
 
         verify(mStaIfaceHal).flushAllHlp(eq(WIFI_IFACE_NAME));
+    }
+
+    @Test
+    public void testIsItPossibleToCreateIface() {
+        when(mWifiVendorHal.isItPossibleToCreateApIface(any())).thenReturn(true);
+        assertTrue(mWifiNative.isItPossibleToCreateApIface(new WorkSource()));
+
+        when(mWifiVendorHal.isItPossibleToCreateStaIface(any())).thenReturn(true);
+        assertTrue(mWifiNative.isItPossibleToCreateStaIface(new WorkSource()));
     }
 }

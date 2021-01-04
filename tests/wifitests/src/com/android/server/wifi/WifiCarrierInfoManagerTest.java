@@ -268,7 +268,7 @@ public class WifiCarrierInfoManagerTest extends WifiBaseTest {
         ArgumentCaptor<BroadcastReceiver> receiver =
                 ArgumentCaptor.forClass(BroadcastReceiver.class);
         verify(mContext).registerReceiver(receiver.capture(), any(IntentFilter.class));
-        receiver.getValue().onReceive(mContext, new Intent("dummyIntent"));
+        receiver.getValue().onReceive(mContext, new Intent("placeholderIntent"));
         verify(mCarrierConfigManager, never()).getConfig();
     }
 
@@ -1089,7 +1089,7 @@ public class WifiCarrierInfoManagerTest extends WifiBaseTest {
         when(mSubscriptionManager.getActiveSubscriptionInfoList())
                 .thenReturn(Collections.emptyList());
 
-        assertNull(mWifiCarrierInfoManager.getMatchingImsi(DEACTIVE_CARRIER_ID));
+        assertNull(mWifiCarrierInfoManager.getMatchingImsiBySubId(INVALID_SUBID));
     }
 
     /**
@@ -1102,7 +1102,7 @@ public class WifiCarrierInfoManagerTest extends WifiBaseTest {
         doReturn(true).when(spyTu).requiresImsiEncryption(DATA_SUBID);
         doReturn(false).when(spyTu).isImsiEncryptionInfoAvailable(DATA_SUBID);
 
-        assertNull(spyTu.getMatchingImsi(DATA_CARRIER_ID));
+        assertNull(spyTu.getMatchingImsiBySubId(DATA_SUBID));
     }
 
     /**
@@ -1112,7 +1112,7 @@ public class WifiCarrierInfoManagerTest extends WifiBaseTest {
     @Test
     public void getMatchingImsiCarrierIdWithValidCarrierId() {
         assertEquals(DATA_FULL_IMSI,
-                mWifiCarrierInfoManager.getMatchingImsi(DATA_CARRIER_ID));
+                mWifiCarrierInfoManager.getMatchingImsiBySubId(DATA_SUBID));
     }
 
     /**
@@ -1764,6 +1764,38 @@ public class WifiCarrierInfoManagerTest extends WifiBaseTest {
         mImsiDataSource.fromDeserialized(new HashMap<>());
         mWifiCarrierInfoManager.sendImsiProtectionExemptionNotificationIfRequired(DATA_CARRIER_ID);
         validateImsiProtectionNotification(CARRIER_NAME);
+    }
+
+    @Test
+    public void testImsiProtectionExemptionNotificationNotSentWhenCarrierNameIsInvalid() {
+        when(mCarrierConfigManager.getConfigForSubId(DATA_SUBID))
+                .thenReturn(generateTestCarrierConfig(false));
+        ArgumentCaptor<BroadcastReceiver> receiver =
+                ArgumentCaptor.forClass(BroadcastReceiver.class);
+        verify(mContext).registerReceiver(receiver.capture(), any(IntentFilter.class));
+
+        receiver.getValue().onReceive(mContext,
+                new Intent(CarrierConfigManager.ACTION_CARRIER_CONFIG_CHANGED));
+        assertFalse(mWifiCarrierInfoManager.requiresImsiEncryption(DATA_SUBID));
+        when(mDataTelephonyManager.getSimCarrierIdName()).thenReturn(null);
+        mWifiCarrierInfoManager.sendImsiProtectionExemptionNotificationIfRequired(DATA_CARRIER_ID);
+        verify(mNotificationManger, never()).notify(
+                eq(SystemMessage.NOTE_NETWORK_SUGGESTION_AVAILABLE),
+                eq(mNotification));
+
+    }
+
+    @Test
+    public void verifySubIdAndCarrierIdMatching() {
+        assertTrue(mWifiCarrierInfoManager.isSubIdMatchingCarrierId(
+                SubscriptionManager.INVALID_SUBSCRIPTION_ID, DATA_CARRIER_ID));
+        assertFalse(mWifiCarrierInfoManager.isSubIdMatchingCarrierId(
+                DATA_SUBID, TelephonyManager.UNKNOWN_CARRIER_ID));
+
+        assertTrue(mWifiCarrierInfoManager.isSubIdMatchingCarrierId(
+                DATA_SUBID, DATA_CARRIER_ID));
+        assertFalse(mWifiCarrierInfoManager.isSubIdMatchingCarrierId(
+                NON_DATA_SUBID, DATA_CARRIER_ID));
     }
 
     private void validateImsiProtectionNotification(String carrierName) {

@@ -26,10 +26,12 @@
     <string name="wifitrackerlib_wifi_disabled_network_failure" msgid="3046956554224277166">"IP конфигурациясының қатесі"</string>
     <string name="wifitrackerlib_wifi_disabled_generic" msgid="4278806060337007814">"Өшірулі"</string>
     <string name="wifitrackerlib_wifi_ap_unable_to_handle_new_sta" msgid="931922372010639716">"Кіру нүктесі уақытша бос емес."</string>
+    <!-- no translation found for wifitrackerlib_wifi_poor_channel_conditions (26484680900376236) -->
+    <skip />
     <string name="wifitrackerlib_wifi_disconnected" msgid="3320414360982942679">"Ажыратылды"</string>
     <string name="wifitrackerlib_wifi_remembered" msgid="2406091442008343041">"Сақталған"</string>
     <string name="wifitrackerlib_wifi_metered_label" msgid="8818508951778620385">"Өлшеулі"</string>
-    <string name="wifitrackerlib_wifi_unmetered_label" msgid="1902150402929678469">"Шектелмеген"</string>
+    <string name="wifitrackerlib_wifi_unmetered_label" msgid="1902150402929678469">"Трафик саналмайды"</string>
     <string name="wifitrackerlib_connected_via_app" msgid="7823921840931347560">"<xliff:g id="NAME">%1$s</xliff:g> арқылы жалғанған"</string>
     <string name="wifitrackerlib_available_via_app" msgid="8556844256194837469">"<xliff:g id="NAME">%1$s</xliff:g> арқылы қолжетімді"</string>
     <string name="wifitrackerlib_connected_via_network_scorer" msgid="6306655070903763086">"<xliff:g id="NAME">%1$s</xliff:g> арқылы автоматты байланыстырылды."</string>
@@ -37,6 +39,7 @@
     <string name="wifitrackerlib_wifi_limited_connection" msgid="4234326409980991740">"Шектеулі байланыс"</string>
     <string name="wifitrackerlib_private_dns_broken" msgid="6049401148262718707">"Жеке DNS серверіне кіру мүмкін емес."</string>
     <string name="wifitrackerlib_wifi_connected_no_internet" msgid="2329345148045635995">"Интернет жоқ."</string>
+    <string name="wifi_connected_low_quality" msgid="4478331645458058445">"Төмен сапа"</string>
     <string name="wifitrackerlib_wifi_security_none" msgid="2686062484642847280">"Жоқ"</string>
     <string name="wifitrackerlib_wifi_passpoint_expired" msgid="7974960573887452566">"Мерзімі өтіп кетті."</string>
     <string name="wifitrackerlib_tap_to_sign_up" msgid="3897017015910817402">"Тіркелу үшін түртіңіз."</string>
@@ -46,7 +49,7 @@
     <string name="wifitrackerlib_osu_completing_sign_up" msgid="4359503050543182480">"Тіркелу аяқталуда…"</string>
     <string name="wifitrackerlib_osu_sign_up_failed" msgid="3964140125523395898">"Тіркелу аяқталмады. Әрекетті қайталау үшін түртіңіз."</string>
     <string name="wifitrackerlib_osu_sign_up_complete" msgid="3279606633343124580">"Тіркелу аяқталды. Байланыс орнатылуда…"</string>
-    <string name="wifitrackerlib_imsi_protection_warning" msgid="5177588159471032092">"Бұл желіге бірегей идентификатор беріледі, оның көмегімен құрылғының орналасқан жері қадағаланады. "<annotation id="url">"Толығырақ"</annotation></string>
+    <string name="wifitrackerlib_imsi_protection_warning" msgid="7202210931586169466">"Бұл желіге SIM идентификаторы беріледі, оның көмегімен құрылғының орналасқан жері қадағаланады. "<annotation id="url">"Толығырақ"</annotation></string>
     <string name="wifitrackerlib_speed_label_very_slow" msgid="6606409259798814244">"Өте баяу"</string>
     <string name="wifitrackerlib_speed_label_slow" msgid="7327906382011957760">"Баяу"</string>
     <string name="wifitrackerlib_speed_label_okay" msgid="6656684124654881956">"Иә"</string>

@@ -26,6 +26,8 @@
     <string name="wifitrackerlib_wifi_disabled_network_failure" msgid="3046956554224277166">"Ezin izan da konfiguratu IP helbidea"</string>
     <string name="wifitrackerlib_wifi_disabled_generic" msgid="4278806060337007814">"Desgaituta"</string>
     <string name="wifitrackerlib_wifi_ap_unable_to_handle_new_sta" msgid="931922372010639716">"Sarbide-puntua beteta dago aldi baterako"</string>
+    <!-- no translation found for wifitrackerlib_wifi_poor_channel_conditions (26484680900376236) -->
+    <skip />
     <string name="wifitrackerlib_wifi_disconnected" msgid="3320414360982942679">"Deskonektatuta"</string>
     <string name="wifitrackerlib_wifi_remembered" msgid="2406091442008343041">"Gordeta"</string>
     <string name="wifitrackerlib_wifi_metered_label" msgid="8818508951778620385">"Sare neurtua"</string>
@@ -37,6 +39,7 @@
     <string name="wifitrackerlib_wifi_limited_connection" msgid="4234326409980991740">"Konexio mugatua"</string>
     <string name="wifitrackerlib_private_dns_broken" msgid="6049401148262718707">"Ezin da atzitu DNS zerbitzari pribatua"</string>
     <string name="wifitrackerlib_wifi_connected_no_internet" msgid="2329345148045635995">"Ez dago Interneteko konexiorik"</string>
+    <string name="wifi_connected_low_quality" msgid="4478331645458058445">"Kalitate txikia"</string>
     <string name="wifitrackerlib_wifi_security_none" msgid="2686062484642847280">"Bat ere ez"</string>
     <string name="wifitrackerlib_wifi_passpoint_expired" msgid="7974960573887452566">"Iraungita"</string>
     <string name="wifitrackerlib_tap_to_sign_up" msgid="3897017015910817402">"Sakatu erregistratzeko"</string>
@@ -46,7 +49,7 @@
     <string name="wifitrackerlib_osu_completing_sign_up" msgid="4359503050543182480">"Izena ematen…"</string>
     <string name="wifitrackerlib_osu_sign_up_failed" msgid="3964140125523395898">"Ezin izan da erregistratu. Berriro saiatzeko, ukitu hau."</string>
     <string name="wifitrackerlib_osu_sign_up_complete" msgid="3279606633343124580">"Erregistratu da. Konektatzen…"</string>
-    <string name="wifitrackerlib_imsi_protection_warning" msgid="5177588159471032092">"Gailuaren kokapenaren jarraipena egiteko balio duen ID esklusibo bat jasotzen du sare honek. "<annotation id="url">"Lortu informazio gehiago"</annotation></string>
+    <string name="wifitrackerlib_imsi_protection_warning" msgid="7202210931586169466">"Gailuaren kokapenaren jarraipena egiteko balio duen SIM ID bat jasotzen du sare honek. "<annotation id="url">"Lortu informazio gehiago"</annotation></string>
     <string name="wifitrackerlib_speed_label_very_slow" msgid="6606409259798814244">"Oso motela"</string>
     <string name="wifitrackerlib_speed_label_slow" msgid="7327906382011957760">"Motela"</string>
     <string name="wifitrackerlib_speed_label_okay" msgid="6656684124654881956">"Ados"</string>

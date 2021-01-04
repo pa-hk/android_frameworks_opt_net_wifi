@@ -26,6 +26,8 @@
     <string name="wifitrackerlib_wifi_disabled_network_failure" msgid="3046956554224277166">"IP конфигурација је отказала"</string>
     <string name="wifitrackerlib_wifi_disabled_generic" msgid="4278806060337007814">"Онемогућено"</string>
     <string name="wifitrackerlib_wifi_ap_unable_to_handle_new_sta" msgid="931922372010639716">"Приступна тачка је привремено заузета"</string>
+    <!-- no translation found for wifitrackerlib_wifi_poor_channel_conditions (26484680900376236) -->
+    <skip />
     <string name="wifitrackerlib_wifi_disconnected" msgid="3320414360982942679">"Веза је прекинута"</string>
     <string name="wifitrackerlib_wifi_remembered" msgid="2406091442008343041">"Сачувано"</string>
     <string name="wifitrackerlib_wifi_metered_label" msgid="8818508951778620385">"Са ограничењем"</string>
@@ -37,6 +39,7 @@
     <string name="wifitrackerlib_wifi_limited_connection" msgid="4234326409980991740">"Ограничена веза"</string>
     <string name="wifitrackerlib_private_dns_broken" msgid="6049401148262718707">"Приступ приватном DNS серверу није успео"</string>
     <string name="wifitrackerlib_wifi_connected_no_internet" msgid="2329345148045635995">"Нема интернета"</string>
+    <string name="wifi_connected_low_quality" msgid="4478331645458058445">"Лош квалитет"</string>
     <string name="wifitrackerlib_wifi_security_none" msgid="2686062484642847280">"Ништа"</string>
     <string name="wifitrackerlib_wifi_passpoint_expired" msgid="7974960573887452566">"Истекла"</string>
     <string name="wifitrackerlib_tap_to_sign_up" msgid="3897017015910817402">"Додирните да бисте се регистровали"</string>
@@ -46,7 +49,7 @@
     <string name="wifitrackerlib_osu_completing_sign_up" msgid="4359503050543182480">"Регистрација се довршава…"</string>
     <string name="wifitrackerlib_osu_sign_up_failed" msgid="3964140125523395898">"Довршавање регистрације није успело. Додирните да бисте пробали поново."</string>
     <string name="wifitrackerlib_osu_sign_up_complete" msgid="3279606633343124580">"Регистрација је довршена. Повезује се…"</string>
-    <string name="wifitrackerlib_imsi_protection_warning" msgid="5177588159471032092">"Ова мрежа захтева јединствени ИД који може да се користи за праћење локације уређаја. "<annotation id="url">"Сазнајте више"</annotation></string>
+    <string name="wifitrackerlib_imsi_protection_warning" msgid="7202210931586169466">"Ова мрежа добија ИД SIM картице који може да се користи за праћење локације уређаја. "<annotation id="url">"Сазнајте више"</annotation></string>
     <string name="wifitrackerlib_speed_label_very_slow" msgid="6606409259798814244">"Веома споро"</string>
     <string name="wifitrackerlib_speed_label_slow" msgid="7327906382011957760">"Споро"</string>
     <string name="wifitrackerlib_speed_label_okay" msgid="6656684124654881956">"У реду"</string>

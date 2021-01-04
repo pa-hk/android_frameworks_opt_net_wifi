@@ -26,6 +26,8 @@
     <string name="wifitrackerlib_wifi_disabled_network_failure" msgid="3046956554224277166">"IP കോൺഫിഗർ ചെയ്യാനായില്ല"</string>
     <string name="wifitrackerlib_wifi_disabled_generic" msgid="4278806060337007814">"പ്രവർത്തനരഹിതമാക്കി"</string>
     <string name="wifitrackerlib_wifi_ap_unable_to_handle_new_sta" msgid="931922372010639716">"ആക്‌സസ് പോയിന്റ് താൽക്കാലികമായി നിറഞ്ഞു"</string>
+    <!-- no translation found for wifitrackerlib_wifi_poor_channel_conditions (26484680900376236) -->
+    <skip />
     <string name="wifitrackerlib_wifi_disconnected" msgid="3320414360982942679">"വിച്ഛേദിച്ചു"</string>
     <string name="wifitrackerlib_wifi_remembered" msgid="2406091442008343041">"സംരക്ഷിച്ചു"</string>
     <string name="wifitrackerlib_wifi_metered_label" msgid="8818508951778620385">"മീറ്റർ ചെയ്‌തത്"</string>
@@ -37,6 +39,7 @@
     <string name="wifitrackerlib_wifi_limited_connection" msgid="4234326409980991740">"പരിമിത കണക്‌ഷൻ"</string>
     <string name="wifitrackerlib_private_dns_broken" msgid="6049401148262718707">"സ്വകാര്യ DNS സെർവർ ആക്‌സസ് ചെയ്യാനാവുന്നില്ല"</string>
     <string name="wifitrackerlib_wifi_connected_no_internet" msgid="2329345148045635995">"ഇന്റർനെറ്റ് ഇല്ല"</string>
+    <string name="wifi_connected_low_quality" msgid="4478331645458058445">"കുറഞ്ഞ നിലവാരം"</string>
     <string name="wifitrackerlib_wifi_security_none" msgid="2686062484642847280">"ഒന്നുമില്ല"</string>
     <string name="wifitrackerlib_wifi_passpoint_expired" msgid="7974960573887452566">"കാലഹരണപ്പെട്ടു"</string>
     <string name="wifitrackerlib_tap_to_sign_up" msgid="3897017015910817402">"സൈൻ അപ്പ് ചെയ്യാൻ ടാപ്പ് ചെയ്യുക"</string>
@@ -46,7 +49,7 @@
     <string name="wifitrackerlib_osu_completing_sign_up" msgid="4359503050543182480">"സൈൻ അപ്പ് പൂർത്തിയാക്കുന്നു…"</string>
     <string name="wifitrackerlib_osu_sign_up_failed" msgid="3964140125523395898">"സൈൻ അപ്പ് പൂർത്തിയാക്കാനായില്ല. വീണ്ടും ശ്രമിക്കാൻ ടാപ്പ് ചെയ്യുക."</string>
     <string name="wifitrackerlib_osu_sign_up_complete" msgid="3279606633343124580">"സൈൻ അപ്പ് പൂർത്തിയായി. കണക്റ്റ് ചെയ്യുന്നു…"</string>
-    <string name="wifitrackerlib_imsi_protection_warning" msgid="5177588159471032092">"ഉപകരണ ലൊക്കേഷൻ ട്രാക്ക് ചെയ്യാൻ ഉപയോഗിക്കാവുന്ന തനത് ഐഡി ഈ നെറ്റ്‌വർക്കിന് ലഭിക്കും. "<annotation id="url">"കൂടുതലറിയുക"</annotation></string>
+    <string name="wifitrackerlib_imsi_protection_warning" msgid="7202210931586169466">"ഉപകരണ ലൊക്കേഷൻ ട്രാക്ക് ചെയ്യാൻ ഉപയോഗിക്കാവുന്ന സിം ഐഡി ഈ നെറ്റ്‌വർക്കിന് ലഭിക്കും. "<annotation id="url">"കൂടുതലറിയുക"</annotation></string>
     <string name="wifitrackerlib_speed_label_very_slow" msgid="6606409259798814244">"വളരെ കുറഞ്ഞ വേഗത്തിൽ"</string>
     <string name="wifitrackerlib_speed_label_slow" msgid="7327906382011957760">"കുറഞ്ഞ വേഗത്തിൽ"</string>
     <string name="wifitrackerlib_speed_label_okay" msgid="6656684124654881956">"ശരി"</string>

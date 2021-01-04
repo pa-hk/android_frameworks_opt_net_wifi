@@ -16,22 +16,28 @@
 
 package com.android.server.wifi;
 
+import android.app.ActivityManager;
 import android.app.Notification;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
 import android.content.res.Resources;
 import android.graphics.drawable.Icon;
 import android.net.wifi.WifiConfiguration;
+import android.os.UserHandle;
 import android.provider.Settings;
 import android.service.notification.StatusBarNotification;
 import android.telephony.SubscriptionManager;
 import android.text.TextUtils;
+import android.util.Log;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.messages.nano.SystemMessageProto.SystemMessage;
+
+import java.util.List;
 
 /**
  * This class may be used to launch notifications when EAP failure occurs.
@@ -75,21 +81,26 @@ public class EapFailureNotifier {
         Resources res = getResourcesForSubId(mContext,
                 mWifiCarrierInfoManager.getBestMatchSubscriptionId(config));
         if (res == null) return;
-        int resourceId = res.getIdentifier(
-                ERROR_MESSAGE_OVERLAY_PREFIX + errorCode,
-                "string",
-                // getIdentifier seems to use the Java package name rather than the Android
-                // application package name. i.e. what you would have used if the resource name was
-                // statically known:
-                // import com.android.wifi.resources.R;
-                // ...
-                // R.string.wifi_eap_error_message_code_###
-                mContext.getWifiOverlayJavaPkgName());
+        int resourceId = res.getIdentifier(ERROR_MESSAGE_OVERLAY_PREFIX + errorCode,
+                "string", mContext.getWifiOverlayApkPkgName());
 
         if (resourceId == 0) return;
         String errorMessage = res.getString(resourceId, config.SSID);
         if (TextUtils.isEmpty(errorMessage)) return;
         showNotification(errorMessage, config.SSID);
+    }
+
+    private String getSettingsPackageName() {
+        Intent intent = new Intent(Settings.ACTION_WIFI_SETTINGS);
+        List<ResolveInfo> resolveInfos = mContext.getPackageManager().queryIntentActivitiesAsUser(
+                intent, PackageManager.MATCH_SYSTEM_ONLY | PackageManager.MATCH_DEFAULT_ONLY,
+                UserHandle.of(ActivityManager.getCurrentUser()));
+        if (resolveInfos == null || resolveInfos.isEmpty()) {
+            Log.e(TAG, "Failed to resolve wifi settings activity");
+            return null;
+        }
+        // Pick the first one if there are more than 1 since the list is ordered from best to worst.
+        return resolveInfos.get(0).activityInfo.packageName;
     }
 
     /**
@@ -98,7 +109,10 @@ public class EapFailureNotifier {
      * @param ssid Error Message which defined by carrier
      */
     private void showNotification(String errorMessage, String ssid) {
-        Intent intent = new Intent(Settings.ACTION_WIFI_SETTINGS);
+        String settingsPackage = getSettingsPackageName();
+        if (settingsPackage == null) return;
+        Intent intent = new Intent(Settings.ACTION_WIFI_SETTINGS)
+                .setPackage(settingsPackage);
         Notification.Builder builder = mFrameworkFacade.makeNotificationBuilder(mContext,
                 WifiService.NOTIFICATION_NETWORK_ALERTS)
                 .setAutoCancel(true)

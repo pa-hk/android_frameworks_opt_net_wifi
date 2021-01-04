@@ -40,7 +40,6 @@ import org.junit.Test;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 import org.xmlpull.v1.XmlPullParser;
-import org.xmlpull.v1.XmlPullParserException;
 import org.xmlpull.v1.XmlSerializer;
 
 import java.io.ByteArrayInputStream;
@@ -84,6 +83,9 @@ public class NetworkListStoreDataTest extends WifiBaseTest {
                     + "<boolean name=\"Shared\" value=\"%s\" />\n"
                     + "<boolean name=\"AutoJoinEnabled\" value=\"true\" />\n"
                     + "<boolean name=\"Trusted\" value=\"true\" />\n"
+                    + "<boolean name=\"OemPaid\" value=\"false\" />\n"
+                    + "<boolean name=\"OemPrivate\" value=\"false\" />\n"
+                    + "<boolean name=\"CarrierMerged\" value=\"false\" />\n"
                     + "<null name=\"BSSID\" />\n"
                     + "<int name=\"Status\" value=\"2\" />\n"
                     + "<null name=\"FQDN\" />\n"
@@ -103,15 +105,17 @@ public class NetworkListStoreDataTest extends WifiBaseTest {
                     + "<boolean name=\"IsLegacyPasspointConfig\" value=\"false\" />\n"
                     + "<long-array name=\"RoamingConsortiumOIs\" num=\"0\" />\n"
                     + "<string name=\"RandomizedMacAddress\">%s</string>\n"
-                    + "<int name=\"MacRandomizationSetting\" value=\"1\" />\n"
+                    + "<int name=\"MacRandomizationSetting\" value=\"3\" />\n"
                     + "<int name=\"CarrierId\" value=\"-1\" />\n"
                     + "<boolean name=\"IsMostRecentlyConnected\" value=\"false\" />\n"
+                    + "<int name=\"SubscriptionId\" value=\"-1\" />\n"
                     + "</WifiConfiguration>\n"
                     + "<NetworkStatus>\n"
                     + "<string name=\"SelectionStatus\">NETWORK_SELECTION_ENABLED</string>\n"
                     + "<string name=\"DisableReason\">NETWORK_SELECTION_ENABLE</string>\n"
                     + "<null name=\"ConnectChoice\" />\n"
                     + "<boolean name=\"HasEverConnected\" value=\"false\" />\n"
+                    + "<boolean name=\"CaptivePortalNeverDetected\" value=\"true\" />\n"
                     + "</NetworkStatus>\n"
                     + "<IpConfiguration>\n"
                     + "<string name=\"IpAssignment\">DHCP</string>\n"
@@ -139,6 +143,9 @@ public class NetworkListStoreDataTest extends WifiBaseTest {
                     + "<boolean name=\"Shared\" value=\"%s\" />\n"
                     + "<boolean name=\"AutoJoinEnabled\" value=\"true\" />\n"
                     + "<boolean name=\"Trusted\" value=\"true\" />\n"
+                    + "<boolean name=\"OemPaid\" value=\"false\" />\n"
+                    + "<boolean name=\"OemPrivate\" value=\"false\" />\n"
+                    + "<boolean name=\"CarrierMerged\" value=\"false\" />\n"
                     + "<null name=\"BSSID\" />\n"
                     + "<int name=\"Status\" value=\"2\" />\n"
                     + "<null name=\"FQDN\" />\n"
@@ -158,15 +165,17 @@ public class NetworkListStoreDataTest extends WifiBaseTest {
                     + "<boolean name=\"IsLegacyPasspointConfig\" value=\"false\" />\n"
                     + "<long-array name=\"RoamingConsortiumOIs\" num=\"0\" />\n"
                     + "<string name=\"RandomizedMacAddress\">%s</string>\n"
-                    + "<int name=\"MacRandomizationSetting\" value=\"1\" />\n"
+                    + "<int name=\"MacRandomizationSetting\" value=\"3\" />\n"
                     + "<int name=\"CarrierId\" value=\"-1\" />\n"
                     + "<boolean name=\"IsMostRecentlyConnected\" value=\"false\" />\n"
+                    + "<int name=\"SubscriptionId\" value=\"-1\" />\n"
                     + "</WifiConfiguration>\n"
                     + "<NetworkStatus>\n"
                     + "<string name=\"SelectionStatus\">NETWORK_SELECTION_ENABLED</string>\n"
                     + "<string name=\"DisableReason\">NETWORK_SELECTION_ENABLE</string>\n"
                     + "<null name=\"ConnectChoice\" />\n"
                     + "<boolean name=\"HasEverConnected\" value=\"false\" />\n"
+                    + "<boolean name=\"CaptivePortalNeverDetected\" value=\"true\" />\n"
                     + "</NetworkStatus>\n"
                     + "<IpConfiguration>\n"
                     + "<string name=\"IpAssignment\">DHCP</string>\n"
@@ -208,13 +217,16 @@ public class NetworkListStoreDataTest extends WifiBaseTest {
                     + "<byte-array name=\"AllowedKeyMgmt\" num=\"2\">0001</byte-array>\n"
                     + "<byte-array name=\"AllowedProtocols\" num=\"1\">02</byte-array>\n"
                     + "<byte-array name=\"AllowedAuthAlgos\" num=\"0\"></byte-array>\n"
-                    + "<byte-array name=\"AllowedGroupCiphers\" num=\"1\">28</byte-array>\n"
-                    + "<byte-array name=\"AllowedPairwiseCiphers\" num=\"1\">0c</byte-array>\n"
+                    + "<byte-array name=\"AllowedGroupCiphers\" num=\"1\">a8</byte-array>\n"
+                    + "<byte-array name=\"AllowedPairwiseCiphers\" num=\"1\">2c</byte-array>\n"
                     + "<byte-array name=\"AllowedGroupMgmtCiphers\" num=\"0\"></byte-array>\n"
                     + "<byte-array name=\"AllowedSuiteBCiphers\" num=\"0\"></byte-array>\n"
                     + "<boolean name=\"Shared\" value=\"%s\" />\n"
                     + "<boolean name=\"AutoJoinEnabled\" value=\"true\" />\n"
                     + "<boolean name=\"Trusted\" value=\"true\" />\n"
+                    + "<boolean name=\"OemPaid\" value=\"false\" />\n"
+                    + "<boolean name=\"OemPrivate\" value=\"false\" />\n"
+                    + "<boolean name=\"CarrierMerged\" value=\"false\" />\n"
                     + "<null name=\"BSSID\" />\n"
                     + "<int name=\"Status\" value=\"2\" />\n"
                     + "<null name=\"FQDN\" />\n"
@@ -234,15 +246,17 @@ public class NetworkListStoreDataTest extends WifiBaseTest {
                     + "<boolean name=\"IsLegacyPasspointConfig\" value=\"false\" />\n"
                     + "<long-array name=\"RoamingConsortiumOIs\" num=\"0\" />\n"
                     + "<string name=\"RandomizedMacAddress\">%s</string>\n"
-                    + "<int name=\"MacRandomizationSetting\" value=\"1\" />\n"
+                    + "<int name=\"MacRandomizationSetting\" value=\"3\" />\n"
                     + "<int name=\"CarrierId\" value=\"-1\" />\n"
                     + "<boolean name=\"IsMostRecentlyConnected\" value=\"false\" />\n"
+                    + "<int name=\"SubscriptionId\" value=\"-1\" />\n"
                     + "</WifiConfiguration>\n"
                     + "<NetworkStatus>\n"
                     + "<string name=\"SelectionStatus\">NETWORK_SELECTION_ENABLED</string>\n"
                     + "<string name=\"DisableReason\">NETWORK_SELECTION_ENABLE</string>\n"
                     + "<null name=\"ConnectChoice\" />\n"
                     + "<boolean name=\"HasEverConnected\" value=\"false\" />\n"
+                    + "<boolean name=\"CaptivePortalNeverDetected\" value=\"true\" />\n"
                     + "</NetworkStatus>\n"
                     + "<IpConfiguration>\n"
                     + "<string name=\"IpAssignment\">DHCP</string>\n"
@@ -296,7 +310,7 @@ public class NetworkListStoreDataTest extends WifiBaseTest {
                     + "<boolean name=\"IsLegacyPasspointConfig\" value=\"false\" />\n"
                     + "<long-array name=\"RoamingConsortiumOIs\" num=\"0\" />\n"
                     + "<string name=\"RandomizedMacAddress\">%s</string>\n"
-                    + "<int name=\"MacRandomizationSetting\" value=\"1\" />\n"
+                    + "<int name=\"MacRandomizationSetting\" value=\"3\" />\n"
                     + "<int name=\"CarrierId\" value=\"-1\" />\n"
                     + "<boolean name=\"IsMostRecentlyConnected\" value=\"false\" />\n"
                     + "</WifiConfiguration>\n"
@@ -305,6 +319,7 @@ public class NetworkListStoreDataTest extends WifiBaseTest {
                     + "<string name=\"DisableReason\">NETWORK_SELECTION_ENABLE</string>\n"
                     + "<null name=\"ConnectChoice\" />\n"
                     + "<boolean name=\"HasEverConnected\" value=\"false\" />\n"
+                    + "<boolean name=\"CaptivePortalNeverDetected\" value=\"true\" />\n"
                     + "</NetworkStatus>\n"
                     + "<IpConfiguration>\n"
                     + "<string name=\"IpAssignment\">UNASSIGNED</string>\n"
@@ -532,13 +547,14 @@ public class NetworkListStoreDataTest extends WifiBaseTest {
                         + "<null name=\"LastUpdateName\" />\n"
                         + "<int name=\"LastConnectUid\" value=\"0\" />\n"
                         + "<string name=\"RandomizedMacAddress\">%s</string>\n"
-                        + "<int name=\"MacRandomizationSetting\" value=\"1\" />\n"
+                        + "<int name=\"MacRandomizationSetting\" value=\"3\" />\n"
                         + "</WifiConfiguration>\n"
                         + "<NetworkStatus>\n"
                         + "<string name=\"SelectionStatus\">NETWORK_SELECTION_ENABLED</string>\n"
                         + "<string name=\"DisableReason\">NETWORK_SELECTION_ENABLE</string>\n"
                         + "<null name=\"ConnectChoice\" />\n"
                         + "<boolean name=\"HasEverConnected\" value=\"false\" />\n"
+                        + "<boolean name=\"CaptivePortalNeverDetected\" value=\"true\" />\n"
                         + "</NetworkStatus>\n"
                         + "<IpConfiguration>\n"
                         + "<string name=\"IpAssignment\">DHCP</string>\n"
@@ -563,12 +579,11 @@ public class NetworkListStoreDataTest extends WifiBaseTest {
     }
 
     /**
-     * Verify that a XmlPullParseException will be thrown when parsing a network configuration
+     * Verify that no exception will be thrown when parsing a network configuration
      * containing a mismatched config key.
      *
      * @throws Exception
      */
-    @Test(expected = XmlPullParserException.class)
     public void parseNetworkWithMismatchConfigKey() throws Exception {
         WifiConfiguration openNetwork = WifiConfigurationTestUtil.createOpenNetwork();
         byte[] xmlData = String.format(SINGLE_OPEN_NETWORK_DATA_XML_STRING_FORMAT,

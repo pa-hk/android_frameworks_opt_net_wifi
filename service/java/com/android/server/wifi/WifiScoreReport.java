@@ -18,6 +18,8 @@ package com.android.server.wifi;
 
 import static com.android.server.wifi.WifiDataStall.INVALID_THROUGHPUT;
 
+import android.annotation.Nullable;
+import android.content.Context;
 import android.net.Network;
 import android.net.NetworkAgent;
 import android.net.wifi.IScoreUpdateObserver;
@@ -27,6 +29,8 @@ import android.net.wifi.nl80211.WifiNl80211Manager;
 import android.os.IBinder;
 import android.os.RemoteException;
 import android.util.Log;
+
+import com.android.wifi.resources.R;
 
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
@@ -53,7 +57,6 @@ public class WifiScoreReport {
     private static final int WIFI_CONNECTED_NETWORK_SCORER_IDENTIFIER = 0;
     private static final int INVALID_SESSION_ID = -1;
     private static final long MIN_TIME_TO_WAIT_BEFORE_BLOCKLIST_BSSID_MILLIS = 29000;
-    private static final long DURATION_TO_BLOCKLIST_BSSID_AFTER_FIRST_EXITING_MILLIS = 30000;
     private static final long INVALID_WALL_CLOCK_MILLIS = -1;
 
     // Cache of the last score
@@ -62,19 +65,23 @@ public class WifiScoreReport {
     private final ScoringParams mScoringParams;
     private final Clock mClock;
     private int mSessionNumber = 0; // not to be confused with sessionid, this just counts resets
-    private String mInterfaceName;
+    private final String mInterfaceName;
     private final BssidBlocklistMonitor mBssidBlocklistMonitor;
     private final WifiDataStall mWifiDataStall;
-    private long mLastScoreBreachLowTimeMillis = -1;
+    private final Context mContext;
+    private long mLastScoreBreachLowTimeMillis = INVALID_WALL_CLOCK_MILLIS;
+    private long mLastScoreBreachHighTimeMillis = INVALID_WALL_CLOCK_MILLIS;
 
-    ConnectedScore mAggressiveConnectedScore;
-    VelocityBasedConnectedScore mVelocityBasedConnectedScore;
+    private final ConnectedScore mAggressiveConnectedScore;
+    private VelocityBasedConnectedScore mVelocityBasedConnectedScore;
 
-    NetworkAgent mNetworkAgent;
-    WifiMetrics mWifiMetrics;
-    WifiInfo mWifiInfo;
-    WifiNative mWifiNative;
-    WifiThreadRunner mWifiThreadRunner;
+    @Nullable
+    private NetworkAgent mNetworkAgent;
+    private final WifiMetrics mWifiMetrics;
+    private final WifiInfo mWifiInfo;
+    private final WifiNative mWifiNative;
+    private final WifiThreadRunner mWifiThreadRunner;
+    private final DeviceConfigFacade mDeviceConfigFacade;
 
     /**
      * Callback proxy. See {@link android.net.wifi.WifiManager.ScoreUpdateObserver}.
@@ -92,10 +99,6 @@ public class WifiScoreReport {
                             + " score=" + score);
                     return;
                 }
-                if (mNetworkAgent != null) {
-                    mNetworkAgent.sendNetworkScore(score);
-                }
-
                 long millis = mClock.getWallClockMillis();
                 if (score < ConnectedScore.WIFI_TRANSITION_SCORE) {
                     if (mScore >= ConnectedScore.WIFI_TRANSITION_SCORE) {
@@ -104,7 +107,14 @@ public class WifiScoreReport {
                 } else {
                     mLastScoreBreachLowTimeMillis = INVALID_WALL_CLOCK_MILLIS;
                 }
-
+                if (score > ConnectedScore.WIFI_TRANSITION_SCORE) {
+                    if (mScore <= ConnectedScore.WIFI_TRANSITION_SCORE) {
+                        mLastScoreBreachHighTimeMillis = millis;
+                    }
+                } else {
+                    mLastScoreBreachHighTimeMillis = INVALID_WALL_CLOCK_MILLIS;
+                }
+                reportNetworkScoreToConnectivityServiceIfNecessary(score);
                 mScore = score;
                 updateWifiMetrics(millis, -1, mScore);
             });
@@ -167,6 +177,55 @@ public class WifiScoreReport {
                 mWifiMetrics.updateWifiUsabilityStatsEntries(mWifiInfo, stats);
             });
         }
+    }
+
+    /**
+     * Report network score to connectivity service.
+     */
+    private void reportNetworkScoreToConnectivityServiceIfNecessary(int score) {
+        if (mNetworkAgent == null) {
+            return;
+        }
+        if (mWifiConnectedNetworkScorerHolder == null && score == mWifiInfo.getScore()) {
+            return;
+        }
+        if (mWifiConnectedNetworkScorerHolder != null
+                && mContext.getResources().getBoolean(
+                        R.bool.config_wifiMinConfirmationDurationSendNetworkScoreEnabled)
+                /// Turn off hysteresis/dampening for shell commands.
+                && !mWifiConnectedNetworkScorerHolder.isShellCommandScorer()) {
+            long millis = mClock.getWallClockMillis();
+            if (mLastScoreBreachLowTimeMillis != INVALID_WALL_CLOCK_MILLIS) {
+                if (mWifiInfo.getRssi()
+                        >= mDeviceConfigFacade.getRssiThresholdNotSendLowScoreToCsDbm()) {
+                    Log.d(TAG, "Not reporting low score because RSSI is high "
+                            + mWifiInfo.getRssi());
+                    return;
+                }
+                if ((millis - mLastScoreBreachLowTimeMillis)
+                        < mDeviceConfigFacade.getMinConfirmationDurationSendLowScoreMs()) {
+                    Log.d(TAG, "Not reporting low score because elapsed time is shorter than "
+                            + "the minimum confirmation duration");
+                    return;
+                }
+            }
+            if (mLastScoreBreachHighTimeMillis != INVALID_WALL_CLOCK_MILLIS
+                    && (millis - mLastScoreBreachHighTimeMillis)
+                            < mDeviceConfigFacade.getMinConfirmationDurationSendHighScoreMs()) {
+                Log.d(TAG, "Not reporting high score because elapsed time is shorter than "
+                        + "the minimum confirmation duration");
+                return;
+            }
+        }
+        // Stay a notch above the transition score if adaptive connectivity is disabled.
+        if (!mAdaptiveConnectivityEnabledSettingObserver.get()) {
+            score = ConnectedScore.WIFI_TRANSITION_SCORE + 1;
+            if (mVerboseLoggingEnabled) {
+                Log.d(TAG,
+                        "Adaptive connectivity disabled - Stay a notch above the transition score");
+            }
+        }
+        mNetworkAgent.sendNetworkScore(score);
     }
 
     /**
@@ -245,6 +304,10 @@ public class WifiScoreReport {
                 revertToDefaultConnectedScorer();
             }
         }
+
+        public boolean isShellCommandScorer() {
+            return mScorer instanceof WifiShellCommand.WifiScorer;
+        }
     }
 
     private final ScoreUpdateObserverProxy mScoreUpdateObserver =
@@ -252,12 +315,19 @@ public class WifiScoreReport {
 
     private WifiConnectedNetworkScorerHolder mWifiConnectedNetworkScorerHolder;
 
+    private final AdaptiveConnectivityEnabledSettingObserver
+            mAdaptiveConnectivityEnabledSettingObserver;
+
     WifiScoreReport(ScoringParams scoringParams, Clock clock, WifiMetrics wifiMetrics,
-                    WifiInfo wifiInfo, WifiNative wifiNative,
-                    BssidBlocklistMonitor bssidBlocklistMonitor,
-                    WifiThreadRunner wifiThreadRunner, WifiDataStall wifiDataStall) {
+            WifiInfo wifiInfo, WifiNative wifiNative,
+            BssidBlocklistMonitor bssidBlocklistMonitor,
+            WifiThreadRunner wifiThreadRunner, WifiDataStall wifiDataStall,
+            DeviceConfigFacade deviceConfigFacade, Context context,
+            AdaptiveConnectivityEnabledSettingObserver adaptiveConnectivityEnabledSettingObserver,
+            String interfaceName) {
         mScoringParams = scoringParams;
         mClock = clock;
+        mAdaptiveConnectivityEnabledSettingObserver = adaptiveConnectivityEnabledSettingObserver;
         mAggressiveConnectedScore = new AggressiveConnectedScore(scoringParams, clock);
         mVelocityBasedConnectedScore = new VelocityBasedConnectedScore(scoringParams, clock);
         mWifiMetrics = wifiMetrics;
@@ -266,6 +336,9 @@ public class WifiScoreReport {
         mBssidBlocklistMonitor = bssidBlocklistMonitor;
         mWifiThreadRunner = wifiThreadRunner;
         mWifiDataStall = wifiDataStall;
+        mDeviceConfigFacade = deviceConfigFacade;
+        mContext = context;
+        mInterfaceName = interfaceName;
     }
 
     /**
@@ -281,6 +354,7 @@ public class WifiScoreReport {
         }
         mLastDownwardBreachTimeMillis = 0;
         mLastScoreBreachLowTimeMillis = INVALID_WALL_CLOCK_MILLIS;
+        mLastScoreBreachHighTimeMillis = INVALID_WALL_CLOCK_MILLIS;
         if (mVerboseLoggingEnabled) Log.d(TAG, "reset");
     }
 
@@ -362,12 +436,7 @@ public class WifiScoreReport {
         }
 
         //report score
-        if (score != mWifiInfo.getScore()) {
-            if (mNetworkAgent != null) {
-                mNetworkAgent.sendNetworkScore(score);
-            }
-        }
-
+        reportNetworkScoreToConnectivityServiceIfNecessary(score);
         updateWifiMetrics(millis, s2, score);
         mScore = score;
     }
@@ -413,7 +482,7 @@ public class WifiScoreReport {
             }
             mWifiInfo.setScore(score);
         }
-        mWifiMetrics.incrementWifiScoreCount(score);
+        mWifiMetrics.incrementWifiScoreCount(mInterfaceName, score);
     }
 
     private static final double TIME_CONSTANT_MILLIS = 30.0e+3;
@@ -432,6 +501,13 @@ public class WifiScoreReport {
      * @return true to indicate that an IP reachability check is recommended
      */
     public boolean shouldCheckIpLayer() {
+        // Don't recommend if adaptive connectivity is disabled.
+        if (!mAdaptiveConnectivityEnabledSettingObserver.get()) {
+            if (mVerboseLoggingEnabled) {
+                Log.d(TAG, "Adaptive connectivity disabled - Don't check IP layer");
+            }
+            return false;
+        }
         int nud = mScoringParams.getNudKnob();
         if (nud == 0) {
             return false;
@@ -506,14 +582,15 @@ public class WifiScoreReport {
         double txRetriesRate = mWifiInfo.getRetriedTxPacketsPerSecond();
         double txBadRate = mWifiInfo.getLostTxPacketsPerSecond();
         double rxSuccessRate = mWifiInfo.getSuccessfulRxPacketsPerSecond();
+        long totalBeaconRx = mWifiMetrics.getTotalBeaconRxCount();
         String s;
         try {
             String timestamp = new SimpleDateFormat("MM-dd HH:mm:ss.SSS").format(new Date(now));
             s = String.format(Locale.US, // Use US to avoid comma/decimal confusion
-                    "%s,%d,%d,%.1f,%.1f,%.1f,%d,%d,%d,%d,%d,%.2f,%.2f,%.2f,%.2f,%d,%d,%d,%d,%d",
+                    "%s,%d,%d,%.1f,%.1f,%.1f,%d,%d,%d,%d,%d,%d,%.2f,%.2f,%.2f,%.2f,%d,%d,%d,%d,%d",
                     timestamp, mSessionNumber, netId,
                     rssi, filteredRssi, rssiThreshold, freq, txLinkSpeed, rxLinkSpeed,
-                    txThroughputMbps, rxThroughputMbps,
+                    txThroughputMbps, rxThroughputMbps, totalBeaconRx,
                     txSuccessRate, txRetriesRate, txBadRate, rxSuccessRate,
                     mNudYes, mNudCount,
                     s1, s2, score);
@@ -551,12 +628,13 @@ public class WifiScoreReport {
             history = new LinkedList<>(mLinkMetricsHistory);
         }
         pw.println("time,session,netid,rssi,filtered_rssi,rssi_threshold,freq,txLinkSpeed,"
-                + "rxLinkSpeed,txTput,rxTput,tx_good,tx_retry,tx_bad,rx_pps,nudrq,nuds,"
+                + "rxLinkSpeed,txTput,rxTput,bcnCnt,tx_good,tx_retry,tx_bad,rx_pps,nudrq,nuds,"
                 + "s1,s2,score");
         for (String line : history) {
             pw.println(line);
         }
         history.clear();
+        pw.println("externalScorerActive=" + (mWifiConnectedNetworkScorerHolder != null));
     }
 
     /**
@@ -623,8 +701,10 @@ public class WifiScoreReport {
                     + " sessionId=" + sessionId);
             return;
         }
+        mWifiInfo.setScore(ConnectedScore.WIFI_MAX_SCORE);
         mWifiConnectedNetworkScorerHolder.startSession(sessionId);
         mLastScoreBreachLowTimeMillis = INVALID_WALL_CLOCK_MILLIS;
+        mLastScoreBreachHighTimeMillis = INVALID_WALL_CLOCK_MILLIS;
     }
 
     /**
@@ -642,9 +722,8 @@ public class WifiScoreReport {
         if ((mLastScoreBreachLowTimeMillis != INVALID_WALL_CLOCK_MILLIS)
                 && ((millis - mLastScoreBreachLowTimeMillis)
                         >= MIN_TIME_TO_WAIT_BEFORE_BLOCKLIST_BSSID_MILLIS)) {
-            mBssidBlocklistMonitor.blockBssidForDurationMs(mWifiInfo.getBSSID(),
+            mBssidBlocklistMonitor.handleBssidConnectionFailure(mWifiInfo.getBSSID(),
                     mWifiInfo.getSSID(),
-                    DURATION_TO_BLOCKLIST_BSSID_AFTER_FIRST_EXITING_MILLIS,
                     BssidBlocklistMonitor.REASON_FRAMEWORK_DISCONNECT_CONNECTED_SCORE,
                     mWifiInfo.getRssi());
             mLastScoreBreachLowTimeMillis = INVALID_WALL_CLOCK_MILLIS;
@@ -663,14 +742,6 @@ public class WifiScoreReport {
      */
     public int getScore() {
         return mScore;
-    }
-
-    /**
-     * Set interface name
-     * @param ifaceName
-     */
-    public void setInterfaceName(String ifaceName) {
-        mInterfaceName = ifaceName;
     }
 
     private void revertToDefaultConnectedScorer() {

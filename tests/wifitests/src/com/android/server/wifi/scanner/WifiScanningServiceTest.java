@@ -120,7 +120,7 @@ public class WifiScanningServiceTest extends WifiBaseTest {
     private static final String TEST_FEATURE_ID = "test.feature";
     private static final String TEST_IFACE_NAME_0 = "wlan0";
     private static final String TEST_IFACE_NAME_1 = "wlan1";
-    private static final WifiScanner.ScanData DUMMY_SCAN_DATA =
+    private static final WifiScanner.ScanData PLACEHOLDER_SCAN_DATA =
             new WifiScanner.ScanData(0, 0, new ScanResult[0]);
 
     @Mock Context mContext;
@@ -156,21 +156,25 @@ public class WifiScanningServiceTest extends WifiBaseTest {
                 new int[]{2412, 2450},
                 new int[]{5160, 5175},
                 new int[]{5600, 5650, 5660},
-                new int[]{5945, 5985});
+                new int[]{5945, 5985},
+                new int[]{58320, 60480});
         mChannelHelper1 = new PresetKnownBandsChannelHelper(
                 new int[]{2412, 2450},
                 new int[]{5160, 5175},
                 new int[]{5600, 5660, 5680}, // 5650 is missing from channelHelper0
-                new int[]{5945, 5985});
+                new int[]{5945, 5985},
+                new int[]{58320, 60480});
         mLooper = new TestLooper();
         when(mWifiScannerImplFactory
                 .create(any(), any(), any(), eq(TEST_IFACE_NAME_0)))
                 .thenReturn(mWifiScannerImpl0);
         when(mWifiScannerImpl0.getChannelHelper()).thenReturn(mChannelHelper0);
+        when(mWifiScannerImpl0.getIfaceName()).thenReturn(TEST_IFACE_NAME_0);
         when(mWifiScannerImplFactory
                 .create(any(), any(), any(), eq(TEST_IFACE_NAME_1)))
                 .thenReturn(mWifiScannerImpl1);
         when(mWifiScannerImpl1.getChannelHelper()).thenReturn(mChannelHelper1);
+        when(mWifiScannerImpl1.getIfaceName()).thenReturn(TEST_IFACE_NAME_1);
         when(mWifiInjector.getWifiMetrics()).thenReturn(mWifiMetrics);
         when(mWifiInjector.makeLog(anyString())).thenReturn(mLog);
         WifiAsyncChannel mWifiAsyncChannel = new WifiAsyncChannel("ScanningServiceTest");
@@ -687,10 +691,10 @@ public class WifiScanningServiceTest extends WifiBaseTest {
      */
     @Test
     public void sendSingleScanBandRequest() throws Exception {
-        WifiScanner.ScanSettings requestSettings = createRequest(WifiScanner.WIFI_BAND_BOTH_WITH_DFS,
+        WifiScanner.ScanSettings requestSettings = createRequest(WifiScanner.WIFI_BAND_ALL,
                 0, 0, 20, WifiScanner.REPORT_EVENT_AFTER_EACH_SCAN);
         doSuccessfulSingleScan(requestSettings, computeSingleScanNativeSettings(requestSettings),
-                ScanResults.create(0, WifiScanner.WIFI_BAND_BOTH_WITH_DFS, 2412, 5160, 5175));
+                ScanResults.create(0, WifiScanner.WIFI_BAND_ALL, 2412, 5160, 5175));
     }
 
     /**
@@ -992,7 +996,7 @@ public class WifiScanningServiceTest extends WifiBaseTest {
     @Test
     public void testMetricsForOneshotScanWithDFSIsIncremented() throws Exception {
         WifiScanner.ScanSettings requestSettings = createRequest(
-                WifiScanner.WIFI_BAND_BOTH_WITH_DFS, 0, 0, 20,
+                WifiScanner.WIFI_BAND_24_5_WITH_DFS_6_60_GHZ, 0, 0, 20,
                 WifiScanner.REPORT_EVENT_AFTER_EACH_SCAN);
         int requestId = 33;
         WorkSource workSource = new WorkSource(Binder.getCallingUid()); // don't explicitly set
@@ -3028,12 +3032,12 @@ public class WifiScanningServiceTest extends WifiBaseTest {
         when(mWifiNative.getClientInterfaceNames())
                 .thenReturn(new ArraySet<>(Arrays.asList(TEST_IFACE_NAME_0, TEST_IFACE_NAME_1)));
         WifiScanner.ScanSettings requestSettings = createRequest(
-                WifiScanner.WIFI_BAND_BOTH_WITH_DFS, 0, 0, 20,
+                WifiScanner.WIFI_BAND_ALL, 0, 0, 20,
                 WifiScanner.REPORT_EVENT_AFTER_EACH_SCAN);
         doSuccessfulSingleScanOnImpls(requestSettings,
                 computeSingleScanNativeSettings(requestSettings),
-                ScanResults.create(0, WifiScanner.WIFI_BAND_BOTH_WITH_DFS, 2412),
-                ScanResults.create(0, WifiScanner.WIFI_BAND_BOTH_WITH_DFS, 5160));
+                ScanResults.create(0, WifiScanner.WIFI_BAND_ALL, 2412),
+                ScanResults.create(0, WifiScanner.WIFI_BAND_ALL, 5160));
     }
 
     /**
@@ -3153,7 +3157,7 @@ public class WifiScanningServiceTest extends WifiBaseTest {
         verify(mBatteryStats).reportWifiScanStartedFromSource(eq(workSource));
 
         when(mWifiScannerImpl0.getLatestSingleScanResults())
-                .thenReturn(new WifiScanner.ScanData(DUMMY_SCAN_DATA));
+                .thenReturn(new WifiScanner.ScanData(PLACEHOLDER_SCAN_DATA));
         // Send scan success on impl1
         when(mWifiScannerImpl1.getLatestSingleScanResults())
                 .thenReturn(results.getRawScanData());
@@ -3265,7 +3269,7 @@ public class WifiScanningServiceTest extends WifiBaseTest {
 
         // then fails to execute on impl0
         when(mWifiScannerImpl0.getLatestSingleScanResults())
-                .thenReturn(new WifiScanner.ScanData(DUMMY_SCAN_DATA));
+                .thenReturn(new WifiScanner.ScanData(PLACEHOLDER_SCAN_DATA));
         eventHandler0.onScanStatus(WifiNative.WIFI_SCAN_FAILED);
         // but succeeds on impl1
         when(mWifiScannerImpl1.getLatestSingleScanResults())

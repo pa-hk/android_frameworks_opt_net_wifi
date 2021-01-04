@@ -352,8 +352,12 @@ public class XmlUtil {
         public static final String XML_TAG_RANDOMIZED_MAC_ADDRESS = "RandomizedMacAddress";
         public static final String XML_TAG_MAC_RANDOMIZATION_SETTING = "MacRandomizationSetting";
         public static final String XML_TAG_CARRIER_ID = "CarrierId";
+        public static final String XML_TAG_SUBSCRIPTION_ID = "SubscriptionId";
         public static final String XML_TAG_IS_AUTO_JOIN = "AutoJoinEnabled";
         public static final String XML_TAG_IS_TRUSTED = "Trusted";
+        public static final String XML_TAG_IS_OEM_PAID = "OemPaid";
+        public static final String XML_TAG_IS_OEM_PRIVATE = "OemPrivate";
+        public static final String XML_TAG_IS_CARRIER_MERGED = "CarrierMerged";
         private static final String XML_TAG_IS_MOST_RECENTLY_CONNECTED = "IsMostRecentlyConnected";
         public static final String XML_TAG_SHARE_THIS_AP = "ShareThisAp";
 
@@ -492,6 +496,10 @@ public class XmlUtil {
                 throws XmlPullParserException, IOException {
             writeCommonElementsToXml(out, configuration, encryptionUtil);
             XmlUtil.writeNextValue(out, XML_TAG_IS_TRUSTED, configuration.trusted);
+            XmlUtil.writeNextValue(out, XML_TAG_IS_OEM_PAID, configuration.oemPaid);
+            XmlUtil.writeNextValue(out, XML_TAG_IS_OEM_PRIVATE, configuration.oemPrivate);
+            XmlUtil.writeNextValue(out, XML_TAG_IS_CARRIER_MERGED,
+                    configuration.carrierMerged);
             XmlUtil.writeNextValue(out, XML_TAG_BSSID, configuration.BSSID);
             XmlUtil.writeNextValue(out, XML_TAG_STATUS, configuration.status);
             XmlUtil.writeNextValue(out, XML_TAG_FQDN, configuration.FQDN);
@@ -527,6 +535,7 @@ public class XmlUtil {
             XmlUtil.writeNextValue(out, XML_TAG_CARRIER_ID, configuration.carrierId);
             XmlUtil.writeNextValue(out, XML_TAG_IS_MOST_RECENTLY_CONNECTED,
                     configuration.isMostRecentlyConnected);
+            XmlUtil.writeNextValue(out, XML_TAG_SUBSCRIPTION_ID, configuration.subscriptionId);
 
             XmlUtil.writeNextValue(out, XML_TAG_DPP_CONNECTOR, configuration.dppConnector);
             XmlUtil.writeNextValue(out, XML_TAG_DPP_NETACCESSKEY, configuration.dppNetAccessKey);
@@ -568,12 +577,13 @@ public class XmlUtil {
          * @param outerTagDepth depth of the outer tag in the XML document.
          * @param shouldExpectEncryptedCredentials Whether to expect encrypted credentials or not.
          * @param encryptionUtil Instance of {@link EncryptedDataXmlUtil}.
+         * @param fromSuggestion Is this WifiConfiguration created from a WifiNetworkSuggestion.
          * @return Pair<Config key, WifiConfiguration object> if parsing is successful,
          * null otherwise.
          */
         public static Pair<String, WifiConfiguration> parseFromXml(
                 XmlPullParser in, int outerTagDepth, boolean shouldExpectEncryptedCredentials,
-                @Nullable WifiConfigStoreEncryptionUtil encryptionUtil)
+                @Nullable WifiConfigStoreEncryptionUtil encryptionUtil, boolean fromSuggestion)
                 throws XmlPullParserException, IOException {
             WifiConfiguration configuration = new WifiConfiguration();
             String configKeyInData = null;
@@ -731,15 +741,26 @@ public class XmlUtil {
                         case XML_TAG_CARRIER_ID:
                             configuration.carrierId = (int) value;
                             break;
+                        case XML_TAG_SUBSCRIPTION_ID:
+                            configuration.subscriptionId = (int) value;
+                            break;
                         case XML_TAG_IS_AUTO_JOIN:
                             configuration.allowAutojoin = (boolean) value;
                             break;
                         case XML_TAG_IS_TRUSTED:
                             configuration.trusted = (boolean) value;
                             break;
+                        case XML_TAG_IS_OEM_PAID:
+                            configuration.oemPaid = (boolean) value;
+                            break;
+                        case XML_TAG_IS_OEM_PRIVATE:
+                            configuration.oemPrivate = (boolean) value;
+                            break;
                         case XML_TAG_IS_MOST_RECENTLY_CONNECTED:
                             configuration.isMostRecentlyConnected = (boolean) value;
                             break;
+                        case XML_TAG_IS_CARRIER_MERGED:
+                            configuration.carrierMerged = (boolean) value;
                         default:
                             Log.w(TAG, "Ignoring unknown value name found: " + valueName[0]);
                             break;
@@ -772,6 +793,10 @@ public class XmlUtil {
             }
             if (!macRandomizationSettingExists) {
                 configuration.macRandomizationSetting = WifiConfiguration.RANDOMIZATION_NONE;
+            }
+            if (configuration.macRandomizationSetting
+                    == WifiConfiguration.RANDOMIZATION_PERSISTENT && !fromSuggestion) {
+                configuration.macRandomizationSetting = WifiConfiguration.RANDOMIZATION_AUTO;
             }
             return Pair.create(configKeyInData, configuration);
         }
@@ -1021,7 +1046,7 @@ public class XmlUtil {
     }
 
     /**
-     * Utility class to serialize and deseriaize {@link NetworkSelectionStatus} object to XML &
+     * Utility class to serialize and deserialize {@link NetworkSelectionStatus} object to XML &
      * vice versa. This is used by {@link com.android.server.wifi.WifiConfigStore} module.
      */
     public static class NetworkSelectionStatusXmlUtil {
@@ -1033,6 +1058,8 @@ public class XmlUtil {
         public static final String XML_TAG_DISABLE_REASON = "DisableReason";
         public static final String XML_TAG_CONNECT_CHOICE = "ConnectChoice";
         public static final String XML_TAG_HAS_EVER_CONNECTED = "HasEverConnected";
+        public static final String XML_TAG_IS_CAPTIVE_PORTAL_NEVER_DETECTED =
+                "CaptivePortalNeverDetected";
 
         /**
          * Write the NetworkSelectionStatus data elements from the provided status to the XML
@@ -1051,6 +1078,8 @@ public class XmlUtil {
             XmlUtil.writeNextValue(out, XML_TAG_CONNECT_CHOICE, selectionStatus.getConnectChoice());
             XmlUtil.writeNextValue(
                     out, XML_TAG_HAS_EVER_CONNECTED, selectionStatus.hasEverConnected());
+            XmlUtil.writeNextValue(out, XML_TAG_IS_CAPTIVE_PORTAL_NEVER_DETECTED,
+                    selectionStatus.hasNeverDetectedCaptivePortal());
         }
 
         /**
@@ -1066,6 +1095,9 @@ public class XmlUtil {
             NetworkSelectionStatus selectionStatus = new NetworkSelectionStatus();
             String statusString = "";
             String disableReasonString = "";
+            // Initialize hasNeverDetectedCaptivePortal to "false" for upgrading legacy configs
+            // which do not have the XML_TAG_IS_CAPTIVE_PORTAL_NEVER_DETECTED tag.
+            selectionStatus.setHasNeverDetectedCaptivePortal(false);
 
             // Loop through and parse out all the elements from the stream within this section.
             while (!XmlUtil.isNextSectionEnd(in, outerTagDepth)) {
@@ -1087,6 +1119,8 @@ public class XmlUtil {
                     case XML_TAG_HAS_EVER_CONNECTED:
                         selectionStatus.setHasEverConnected((boolean) value);
                         break;
+                    case XML_TAG_IS_CAPTIVE_PORTAL_NEVER_DETECTED:
+                        selectionStatus.setHasNeverDetectedCaptivePortal((boolean) value);
                     default:
                         Log.w(TAG, "Ignoring unknown value name found: " + valueName[0]);
                         break;
@@ -1110,6 +1144,10 @@ public class XmlUtil {
             }
             selectionStatus.setNetworkSelectionStatus(status);
             selectionStatus.setNetworkSelectionDisableReason(disableReason);
+            if (status == NetworkSelectionStatus.NETWORK_SELECTION_PERMANENTLY_DISABLED) {
+                // Make the counter non-zero so that logging code works properly
+                selectionStatus.setDisableReasonCounter(disableReason, 1);
+            }
             return selectionStatus;
         }
     }
@@ -1256,7 +1294,7 @@ public class XmlUtil {
                                     WifiEnterpriseConfig.PASSWORD_KEY, (String) value);
                             if (shouldExpectEncryptedCredentials
                                     && !TextUtils.isEmpty(enterpriseConfig.getFieldValue(
-                                            WifiEnterpriseConfig.PASSWORD_KEY))) {
+                                    WifiEnterpriseConfig.PASSWORD_KEY))) {
                                 // Indicates that encryption of password failed when it was last
                                 // written.
                                 Log.e(TAG, "password value not expected");

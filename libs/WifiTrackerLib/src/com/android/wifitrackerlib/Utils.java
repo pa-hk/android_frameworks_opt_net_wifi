@@ -46,6 +46,7 @@ import android.net.NetworkInfo.DetailedState;
 import android.net.NetworkKey;
 import android.net.NetworkScoreManager;
 import android.net.ScoredNetwork;
+import android.net.WifiKey;
 import android.net.wifi.ScanResult;
 import android.net.wifi.WifiConfiguration;
 import android.net.wifi.WifiConfiguration.NetworkSelectionStatus;
@@ -82,6 +83,9 @@ import java.util.StringJoiner;
  * Utility methods for WifiTrackerLib.
  */
 class Utils {
+    /** Copy of the @hide Settings.Global.USE_OPEN_WIFI_PACKAGE constant. */
+    static final String SETTINGS_GLOBAL_USE_OPEN_WIFI_PACKAGE = "use_open_wifi_package";
+
     private static NetworkScoreManager sNetworkScoreManager;
 
     private static String getActiveScorerPackage(@NonNull Context context) {
@@ -345,8 +349,14 @@ class Utils {
     @Speed
     static int getSpeedFromWifiInfo(@NonNull WifiNetworkScoreCache scoreCache,
             @NonNull WifiInfo wifiInfo) {
+        final WifiKey wifiKey;
+        try {
+            wifiKey = new WifiKey(wifiInfo.getSSID(), wifiInfo.getBSSID());
+        } catch (IllegalArgumentException e) {
+            return SPEED_NONE;
+        }
         ScoredNetwork scoredNetwork = scoreCache.getScoredNetwork(
-                NetworkKey.createFromWifiInfo(wifiInfo));
+                new NetworkKey(wifiKey));
         if (scoredNetwork == null) {
             return SPEED_NONE;
         }
@@ -374,7 +384,7 @@ class Utils {
     static String getAppLabel(Context context, String packageName) {
         try {
             String openWifiPackageName = Settings.Global.getString(context.getContentResolver(),
-                    Settings.Global.USE_OPEN_WIFI_PACKAGE);
+                    SETTINGS_GLOBAL_USE_OPEN_WIFI_PACKAGE);
             if (!TextUtils.isEmpty(openWifiPackageName) && TextUtils.equals(packageName,
                     getActiveScorerPackage(context))) {
                 packageName = openWifiPackageName;
@@ -383,7 +393,7 @@ class Utils {
             ApplicationInfo appInfo = context.getPackageManager().getApplicationInfoAsUser(
                     packageName,
                     0 /* flags */,
-                    UserHandle.getUserId(UserHandle.USER_CURRENT));
+                    UserHandle.CURRENT);
             return appInfo.loadLabel(context.getPackageManager()).toString();
         } catch (PackageManager.NameNotFoundException e) {
             return "";
@@ -426,9 +436,16 @@ class Utils {
         } else if (wifiEntry.getLevel() == WifiEntry.WIFI_LEVEL_UNREACHABLE) {
             // Do nothing because users know it by signal icon.
         } else { // In range, not disabled.
-            if (wifiConfiguration.getRecentFailureReason()
-                    == WifiConfiguration.RECENT_FAILURE_AP_UNABLE_TO_HANDLE_NEW_STA) {
-                return context.getString(R.string.wifitrackerlib_wifi_ap_unable_to_handle_new_sta);
+            switch (wifiConfiguration.getRecentFailureReason()) {
+                case WifiConfiguration.RECENT_FAILURE_AP_UNABLE_TO_HANDLE_NEW_STA:
+                case WifiConfiguration.RECENT_FAILURE_REFUSED_TEMPORARILY:
+                case WifiConfiguration.RECENT_FAILURE_DISCONNECTION_AP_BUSY:
+                    return context.getString(R.string
+                            .wifitrackerlib_wifi_ap_unable_to_handle_new_sta);
+                case WifiConfiguration.RECENT_FAILURE_POOR_CHANNEL_CONDITIONS:
+                    return context.getString(R.string.wifitrackerlib_wifi_poor_channel_conditions);
+                default:
+                    // do nothing
             }
         }
         return "";
@@ -495,6 +512,11 @@ class Utils {
         final String wifiInfoDescription = wifiEntry.getWifiInfoDescription();
         if (!TextUtils.isEmpty(wifiInfoDescription)) {
             sj.add(wifiInfoDescription);
+        }
+
+        final String networkCapabilityDescription = wifiEntry.getNetworkCapabilityDescription();
+        if (!TextUtils.isEmpty(networkCapabilityDescription)) {
+            sj.add(networkCapabilityDescription);
         }
 
         final String scanResultsDescription = wifiEntry.getScanResultDescription();
@@ -700,6 +722,11 @@ class Utils {
     /** Find the annotation of specified id in rawText and linkify it with helpUriString. */
     static CharSequence linkifyAnnotation(Context context, CharSequence rawText, String id,
             String helpUriString) {
+        // Return original string when helpUriString is empty.
+        if (TextUtils.isEmpty(helpUriString)) {
+            return rawText;
+        }
+
         SpannableString spannableText = new SpannableString(rawText);
         Annotation[] annotations = spannableText.getSpans(0, spannableText.length(),
                 Annotation.class);

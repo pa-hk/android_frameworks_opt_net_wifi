@@ -70,7 +70,7 @@ public class WifiConfigurationTestUtil {
     public static final String TEST_SSID = "WifiConfigurationTestSSID";
     public static final String TEST_PSK = "\"WifiConfigurationTestUtilPsk\"";
     public static final String[] TEST_WEP_KEYS =
-            {"\"WifiConfigurationTestUtilWep1\"", "\"WifiConfigurationTestUtilWep2\"",
+            {"\"WifiTestWep12\"", "\"WifiTestWep34\"",
                     "45342312ab", "45342312ab45342312ab34ac12"};
     public static final String TEST_EAP_PASSWORD = "WifiConfigurationTestUtilEapPassword";
     public static final int TEST_WEP_TX_KEY_INDEX = 1;
@@ -662,6 +662,10 @@ public class WifiConfigurationTestUtil {
         assertEquals(expected.meteredHint, actual.meteredHint);
         assertEquals(expected.meteredOverride, actual.meteredOverride);
         assertEquals(expected.useExternalScores, actual.useExternalScores);
+        assertEquals(expected.trusted, actual.trusted);
+        assertEquals(expected.oemPaid, actual.oemPaid);
+        assertEquals(expected.oemPrivate, actual.oemPrivate);
+        assertEquals(expected.carrierMerged, actual.carrierMerged);
         assertEquals(0, actual.numAssociation);
         assertEquals(expected.creatorUid, actual.creatorUid);
         assertEquals(expected.creatorName, actual.creatorName);
@@ -693,6 +697,7 @@ public class WifiConfigurationTestUtil {
         assertEquals(expected.ephemeral, actual.ephemeral);
         assertEquals(expected.osu, actual.osu);
         assertEquals(expected.trusted, actual.trusted);
+        assertEquals(expected.oemPaid, actual.oemPaid);
         assertEquals(expected.fromWifiNetworkSuggestion, actual.fromWifiNetworkSuggestion);
         assertEquals(expected.fromWifiNetworkSpecifier, actual.fromWifiNetworkSpecifier);
         assertEquals(expected.creatorUid, actual.creatorUid);

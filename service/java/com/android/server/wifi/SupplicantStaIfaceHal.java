@@ -21,6 +21,7 @@ import static android.net.wifi.WifiManager.WIFI_FEATURE_FILS_SHA384;
 import static android.net.wifi.WifiManager.WIFI_FEATURE_MBO;
 import static android.net.wifi.WifiManager.WIFI_FEATURE_OCE;
 import static android.net.wifi.WifiManager.WIFI_FEATURE_OWE;
+import static android.net.wifi.WifiManager.WIFI_FEATURE_SAE_PK;
 import static android.net.wifi.WifiManager.WIFI_FEATURE_WAPI;
 import static android.net.wifi.WifiManager.WIFI_FEATURE_WPA3_SAE;
 import static android.net.wifi.WifiManager.WIFI_FEATURE_WPA3_SUITE_B;
@@ -51,6 +52,7 @@ import android.hardware.wifi.supplicant.V1_0.WpsConfigMethods;
 import android.hardware.wifi.supplicant.V1_3.ConnectionCapabilities;
 import android.hardware.wifi.supplicant.V1_3.WifiTechnology;
 import android.hardware.wifi.supplicant.V1_3.WpaDriverCapabilitiesMask;
+import android.hardware.wifi.supplicant.V1_4.LegacyMode;
 import android.hidl.manager.V1_0.IServiceManager;
 import android.hidl.manager.V1_0.IServiceNotification;
 import android.net.MacAddress;
@@ -411,10 +413,29 @@ public class SupplicantStaIfaceHal {
         }
     }
 
+    private boolean trySetupStaIfaceV1_4(@NonNull String ifaceName,
+            @NonNull ISupplicantStaIface iface)  throws RemoteException {
+        if (!isV1_4()) return false;
+
+        SupplicantStaIfaceHalCallbackV1_4 callbackV14 =
+                new SupplicantStaIfaceHalCallbackV1_4(ifaceName);
+        if (!registerCallbackV1_4(getStaIfaceMockableV1_4(iface), callbackV14)) {
+            throw new RemoteException("Init StaIface V1_4 failed.");
+        }
+        /* keep this in a store to avoid recycling by garbage collector. */
+        mISupplicantStaIfaceCallbacks.put(ifaceName, callbackV14);
+        return true;
+    }
+
     private boolean trySetupStaIfaceV1_3(@NonNull String ifaceName,
             @NonNull ISupplicantStaIface iface)  throws RemoteException {
         if (!isV1_3()) return false;
 
+        /* try newer version first. */
+        if (trySetupStaIfaceV1_4(ifaceName, iface)) {
+            logd("Newer HAL is found, skip V1_3 remaining init flow.");
+            return true;
+        }
         SupplicantStaIfaceHalCallbackV1_3 callbackV13 =
                 new SupplicantStaIfaceHalCallbackV1_3(ifaceName);
         if (!registerCallbackV1_3(getStaIfaceMockableV1_3(iface), callbackV13)) {
@@ -429,7 +450,7 @@ public class SupplicantStaIfaceHal {
             @NonNull ISupplicantStaIface iface) throws RemoteException {
         if (!isV1_2()) return false;
 
-        /* try newer version fist. */
+        /* try newer version first. */
         if (trySetupStaIfaceV1_3(ifaceName, iface)) {
             logd("Newer HAL is found, skip V1_2 remaining init flow.");
             return true;
@@ -449,7 +470,7 @@ public class SupplicantStaIfaceHal {
             @NonNull ISupplicantStaIface iface) throws RemoteException {
         if (!isV1_1()) return false;
 
-        /* try newer version fist. */
+        /* try newer version first. */
         if (trySetupStaIfaceV1_2(ifaceName, iface)) {
             logd("Newer HAL is found, skip V1_1 remaining init flow.");
             return true;
@@ -735,6 +756,10 @@ public class SupplicantStaIfaceHal {
                 Log.e(TAG, "ISupplicant.addInterface exception: " + e);
                 handleNoSuchElementException(e, "addInterface");
                 return null;
+            } catch (IllegalArgumentException e) {
+                handleIllegalArgumentException(e, "addInterface");
+                Log.e(TAG, "ISupplicant.addInterface exception: " + e);
+                return null;
             }
             return supplicantIface.value;
         }
@@ -919,7 +944,13 @@ public class SupplicantStaIfaceHal {
                 return startDaemon_V1_1();
             } else {
                 Log.i(TAG, "Starting supplicant using init");
-                mFrameworkFacade.startSupplicant();
+                try {
+                    mFrameworkFacade.startSupplicant();
+                } catch (RuntimeException e) {
+                    // likely a "failed to set system property" runtime exception
+                    Log.e(TAG, "Failed to start supplicant using init", e);
+                    return false;
+                }
                 return true;
             }
         }
@@ -1077,6 +1108,14 @@ public class SupplicantStaIfaceHal {
         }
     }
 
+    protected android.hardware.wifi.supplicant.V1_4.ISupplicantStaIface
+            getStaIfaceMockableV1_4(ISupplicantIface iface) {
+        synchronized (mLock) {
+            return android.hardware.wifi.supplicant.V1_4.ISupplicantStaIface
+                    .asInterface(iface.asBinder());
+        }
+    }
+
     /**
      * Uses the IServiceManager to check if the device is running V1_1 of the HAL from the VINTF for
      * the device.
@@ -1105,6 +1144,16 @@ public class SupplicantStaIfaceHal {
     private boolean isV1_3() {
         return checkHalVersionByInterfaceName(
                 android.hardware.wifi.supplicant.V1_3.ISupplicant.kInterfaceName);
+    }
+
+    /**
+     * Uses the IServiceManager to check if the device is running V1_4 of the HAL from the VINTF for
+     * the device.
+     * @return true if supported, false otherwise.
+     */
+    private boolean isV1_4() {
+        return checkHalVersionByInterfaceName(
+                android.hardware.wifi.supplicant.V1_4.ISupplicant.kInterfaceName);
     }
 
     private boolean checkHalVersionByInterfaceName(String interfaceName) {
@@ -1278,7 +1327,7 @@ public class SupplicantStaIfaceHal {
                     && pmkData.expirationTimeInSec > mClock.getElapsedSinceBootMillis() / 1000) {
                 logi("Set PMK cache for config id " + config.networkId);
                 if (networkHandle.setPmkCache(pmkData.data)) {
-                    mWifiMetrics.setConnectionPmkCache(true);
+                    mWifiMetrics.setConnectionPmkCache(ifaceName, true);
                 }
             }
 
@@ -1761,6 +1810,24 @@ public class SupplicantStaIfaceHal {
         }
     }
 
+    private boolean registerCallbackV1_4(
+            android.hardware.wifi.supplicant.V1_4.ISupplicantStaIface iface,
+            android.hardware.wifi.supplicant.V1_4.ISupplicantStaIfaceCallback callback) {
+        synchronized (mLock) {
+            String methodStr = "registerCallback_1_4";
+
+            if (iface == null) return false;
+            try {
+                android.hardware.wifi.supplicant.V1_4.SupplicantStatus status =
+                        iface.registerCallback_1_4(callback);
+                return checkStatusAndLogFailure(status, methodStr);
+            } catch (RemoteException e) {
+                handleRemoteException(e, methodStr);
+                return false;
+            }
+        }
+    }
+
     /**
      * @return a list of SupplicantNetworkID ints for all networks controlled by supplicant, returns
      * null if the call fails
@@ -2194,6 +2261,54 @@ public class SupplicantStaIfaceHal {
             try {
                 SupplicantStatus status = iface.initiateAnqpQuery(
                         macAddress, infoElements, subTypes);
+                return checkStatusAndLogFailure(status, methodStr);
+            } catch (RemoteException e) {
+                handleRemoteException(e, methodStr);
+                return false;
+            }
+        }
+    }
+
+    /**
+     * Request Venue URL ANQP element from the specified AP |bssid|.
+     *
+     * @param ifaceName Name of the interface.
+     * @param bssid BSSID of the AP
+     * @return true if request is sent successfully, false otherwise.
+     */
+    public boolean initiateVenueUrlAnqpQuery(@NonNull String ifaceName, String bssid) {
+        synchronized (mLock) {
+            try {
+                return initiateVenueUrlAnqpQuery(
+                        ifaceName, NativeUtil.macAddressToByteArray(bssid));
+            } catch (IllegalArgumentException e) {
+                Log.e(TAG, "Illegal argument " + bssid, e);
+                return false;
+            }
+        }
+    }
+
+    /** See ISupplicantStaIface.hal for documentation */
+    private boolean initiateVenueUrlAnqpQuery(@NonNull String ifaceName, byte[/* 6 */] macAddress) {
+        synchronized (mLock) {
+            final String methodStr = "initiateVenueUrlAnqpQuery";
+            if (!isV1_4()) {
+                Log.e(TAG, "Method " + methodStr + " is not supported in existing HAL");
+                return false;
+            }
+            ISupplicantStaIface iface = checkSupplicantStaIfaceAndLogFailure(ifaceName, methodStr);
+            // Get a v1.4 supplicant STA Interface
+            android.hardware.wifi.supplicant.V1_4.ISupplicantStaIface staIfaceV14 =
+                    getStaIfaceMockableV1_4(iface);
+
+            if (staIfaceV14 == null) {
+                Log.e(TAG, methodStr
+                        + ": SupplicantStaIface is null, cannot initiate Venue URL ANQP request");
+                return false;
+            }
+            try {
+                android.hardware.wifi.supplicant.V1_4.SupplicantStatus status =
+                        staIfaceV14.initiateVenueUrlAnqpQuery(macAddress);
                 return checkStatusAndLogFailure(status, methodStr);
             } catch (RemoteException e) {
                 handleRemoteException(e, methodStr);
@@ -2955,7 +3070,7 @@ public class SupplicantStaIfaceHal {
     private boolean checkStatusAndLogFailure(SupplicantStatus status,
             final String methodStr) {
         synchronized (mLock) {
-            if (status.code != SupplicantStatusCode.SUCCESS) {
+            if (status == null || status.code != SupplicantStatusCode.SUCCESS) {
                 Log.e(TAG, "ISupplicantStaIface." + methodStr + " failed: " + status);
                 return false;
             } else {
@@ -3006,6 +3121,28 @@ public class SupplicantStaIfaceHal {
     }
 
     /**
+     * Returns true if provided status code is SUCCESS, logs debug message and returns false
+     * otherwise
+     */
+    private boolean checkStatusAndLogFailure(
+            android.hardware.wifi.supplicant.V1_4.SupplicantStatus status,
+            final String methodStr) {
+        synchronized (mLock) {
+            if (status == null
+                    || status.code
+                    != android.hardware.wifi.supplicant.V1_4.SupplicantStatusCode.SUCCESS) {
+                Log.e(TAG, "ISupplicantStaIface." + methodStr + " failed: " + status);
+                return false;
+            } else {
+                if (mVerboseLoggingEnabled) {
+                    Log.d(TAG, "ISupplicantStaIface." + methodStr + " succeeded");
+                }
+                return true;
+            }
+        }
+    }
+
+    /**
      * Helper function to log callbacks.
      */
     protected void logCallback(final String methodStr) {
@@ -3024,6 +3161,13 @@ public class SupplicantStaIfaceHal {
     }
 
     private void handleRemoteException(RemoteException e, String methodStr) {
+        synchronized (mLock) {
+            clearState();
+            Log.e(TAG, "ISupplicantStaIface." + methodStr + " failed with exception", e);
+        }
+    }
+
+    private void handleIllegalArgumentException(IllegalArgumentException e, String methodStr) {
         synchronized (mLock) {
             clearState();
             Log.e(TAG, "ISupplicantStaIface." + methodStr + " failed with exception", e);
@@ -3170,6 +3314,12 @@ public class SupplicantStaIfaceHal {
     protected class SupplicantStaIfaceHalCallbackV1_3 extends SupplicantStaIfaceCallbackV1_3Impl {
         SupplicantStaIfaceHalCallbackV1_3(@NonNull String ifaceName) {
             super(SupplicantStaIfaceHal.this, ifaceName, mWifiMonitor);
+        }
+    }
+
+    protected class SupplicantStaIfaceHalCallbackV1_4 extends SupplicantStaIfaceCallbackV1_4Impl {
+        SupplicantStaIfaceHalCallbackV1_4(@NonNull String ifaceName) {
+            super(SupplicantStaIfaceHal.this, ifaceName, mLock, mWifiMonitor);
         }
     }
 
@@ -3411,6 +3561,67 @@ public class SupplicantStaIfaceHal {
         return keyMgmtMask.value;
     }
 
+    private MutableInt getWpaDriverCapabilities_1_4(@NonNull String ifaceName) {
+        final String methodStr = "getWpaDriverCapabilities_1_4";
+        MutableInt drvCapabilitiesMask = new MutableInt(0);
+        ISupplicantStaIface iface = checkSupplicantStaIfaceAndLogFailure(ifaceName, methodStr);
+
+        if (null == iface) return drvCapabilitiesMask;
+
+        android.hardware.wifi.supplicant.V1_4.ISupplicantStaIface staIfaceV14 =
+                getStaIfaceMockableV1_4(iface);
+        if (null == staIfaceV14) {
+            Log.e(TAG, methodStr
+                    + ": SupplicantStaIface is null, cannot get wpa driver features");
+            return drvCapabilitiesMask;
+        }
+
+        try {
+            staIfaceV14.getWpaDriverCapabilities_1_4(
+                    (android.hardware.wifi.supplicant.V1_4.SupplicantStatus statusInternal,
+                            int drvCapabilities) -> {
+                        if (statusInternal.code
+                                == android.hardware.wifi.supplicant.V1_4
+                                .SupplicantStatusCode.SUCCESS) {
+                            drvCapabilitiesMask.value = drvCapabilities;
+                        }
+                        checkStatusAndLogFailure(statusInternal, methodStr);
+                    });
+        } catch (RemoteException e) {
+            handleRemoteException(e, methodStr);
+        }
+        return drvCapabilitiesMask;
+    }
+
+    private MutableInt getWpaDriverCapabilities_1_3(@NonNull String ifaceName) {
+        final String methodStr = "getWpaDriverCapabilities_1_3";
+        MutableInt drvCapabilitiesMask = new MutableInt(0);
+        ISupplicantStaIface iface = checkSupplicantStaIfaceAndLogFailure(ifaceName, methodStr);
+
+        if (null == iface) return drvCapabilitiesMask;
+
+        android.hardware.wifi.supplicant.V1_3.ISupplicantStaIface staIfaceV13 =
+                getStaIfaceMockableV1_3(iface);
+        if (null == staIfaceV13) {
+            Log.e(TAG, methodStr
+                    + ": SupplicantStaIface is null, cannot get wpa driver features");
+            return drvCapabilitiesMask;
+        }
+
+        try {
+            staIfaceV13.getWpaDriverCapabilities(
+                    (SupplicantStatus statusInternal, int drvCapabilities) -> {
+                        if (statusInternal.code == SupplicantStatusCode.SUCCESS) {
+                            drvCapabilitiesMask.value = drvCapabilities;
+                        }
+                        checkStatusAndLogFailure(statusInternal, methodStr);
+                    });
+        } catch (RemoteException e) {
+            handleRemoteException(e, methodStr);
+        }
+        return drvCapabilitiesMask;
+    }
+
     /**
      * Get the driver supported features through supplicant.
      *
@@ -3422,31 +3633,10 @@ public class SupplicantStaIfaceHal {
         MutableInt drvCapabilitiesMask = new MutableInt(0);
         long featureSet = 0;
 
-        if (isV1_3()) {
-            ISupplicantStaIface iface = checkSupplicantStaIfaceAndLogFailure(ifaceName, methodStr);
-            if (iface == null) {
-                return 0;
-            }
-            // Get a v1.3 supplicant STA Interface
-            android.hardware.wifi.supplicant.V1_3.ISupplicantStaIface staIfaceV13 =
-                    getStaIfaceMockableV1_3(iface);
-            if (staIfaceV13 == null) {
-                Log.e(TAG, methodStr
-                        + ": SupplicantStaIface is null, cannot get wpa driver features");
-                return 0;
-            }
-
-            try {
-                staIfaceV13.getWpaDriverCapabilities(
-                        (SupplicantStatus statusInternal, int drvCapabilities) -> {
-                            if (statusInternal.code == SupplicantStatusCode.SUCCESS) {
-                                drvCapabilitiesMask.value = drvCapabilities;
-                            }
-                            checkStatusAndLogFailure(statusInternal, methodStr);
-                        });
-            } catch (RemoteException e) {
-                handleRemoteException(e, methodStr);
-            }
+        if (isV1_4()) {
+            drvCapabilitiesMask = getWpaDriverCapabilities_1_4(ifaceName);
+        } else if (isV1_3()) {
+            drvCapabilitiesMask = getWpaDriverCapabilities_1_3(ifaceName);
         } else {
             Log.i(TAG, "Method " + methodStr + " is not supported in existing HAL");
             return 0;
@@ -3466,11 +3656,19 @@ public class SupplicantStaIfaceHal {
             }
         }
 
+        if ((drvCapabilitiesMask.value
+                & android.hardware.wifi.supplicant.V1_4.WpaDriverCapabilitiesMask.SAE_PK) != 0) {
+            featureSet |= WIFI_FEATURE_SAE_PK;
+            if (mVerboseLoggingEnabled) {
+                Log.v(TAG, methodStr + ": SAE-PK supported");
+            }
+        }
+
         return featureSet;
     }
 
-    private @WifiStandard int getWifiStandardFromCap(ConnectionCapabilities capa) {
-        switch(capa.technology) {
+    private @WifiStandard int getWifiStandard(int technology) {
+        switch(technology) {
             case WifiTechnology.HE:
                 return ScanResult.WIFI_STANDARD_11AX;
             case WifiTechnology.VHT:
@@ -3484,8 +3682,8 @@ public class SupplicantStaIfaceHal {
         }
     }
 
-    private int getChannelBandwidthFromCap(ConnectionCapabilities cap) {
-        switch(cap.channelBandwidth) {
+    private int getChannelBandwidth(int channelBandwidth) {
+        switch(channelBandwidth) {
             case WifiChannelWidthInMhz.WIDTH_20:
                 return ScanResult.CHANNEL_WIDTH_20MHZ;
             case WifiChannelWidthInMhz.WIDTH_40:
@@ -3511,42 +3709,87 @@ public class SupplicantStaIfaceHal {
     public WifiNative.ConnectionCapabilities getConnectionCapabilities(@NonNull String ifaceName) {
         final String methodStr = "getConnectionCapabilities";
         WifiNative.ConnectionCapabilities capOut = new WifiNative.ConnectionCapabilities();
-        if (isV1_3()) {
-            ISupplicantStaIface iface = checkSupplicantStaIfaceAndLogFailure(ifaceName, methodStr);
-            if (iface == null) {
-                return capOut;
-            }
-
-            // Get a v1.3 supplicant STA Interface
-            android.hardware.wifi.supplicant.V1_3.ISupplicantStaIface staIfaceV13 =
-                    getStaIfaceMockableV1_3(iface);
-
-            if (staIfaceV13 == null) {
-                Log.e(TAG, methodStr
-                        + ": SupplicantStaIface is null, cannot get Connection Capabilities");
-                return capOut;
-            }
-
-            try {
-                staIfaceV13.getConnectionCapabilities(
-                        (SupplicantStatus statusInternal, ConnectionCapabilities cap) -> {
-                            if (statusInternal.code == SupplicantStatusCode.SUCCESS) {
-                                capOut.wifiStandard = getWifiStandardFromCap(cap);
-                                capOut.channelBandwidth = getChannelBandwidthFromCap(cap);
-                                capOut.maxNumberTxSpatialStreams = cap.maxNumberTxSpatialStreams;
-                                capOut.maxNumberRxSpatialStreams = cap.maxNumberRxSpatialStreams;
-                            }
-                            checkStatusAndLogFailure(statusInternal, methodStr);
-                        });
-            } catch (RemoteException e) {
-                handleRemoteException(e, methodStr);
-            }
+        ISupplicantStaIface iface = checkSupplicantStaIfaceAndLogFailure(ifaceName, methodStr);
+        if (iface == null) {
+            return capOut;
+        }
+        if (isV1_4()) {
+            return getConnectionCapabilities_1_4(iface);
+        } else if (isV1_3()) {
+            return getConnectionCapabilities_1_3(iface);
         } else {
             Log.e(TAG, "Method " + methodStr + " is not supported in existing HAL");
         }
         return capOut;
     }
 
+    private WifiNative.ConnectionCapabilities getConnectionCapabilities_1_3(
+            @NonNull ISupplicantStaIface iface) {
+        final String methodStr = "getConnectionCapabilities_1_3";
+        WifiNative.ConnectionCapabilities capOut = new WifiNative.ConnectionCapabilities();
+
+        // Get a v1.3 supplicant STA Interface
+        android.hardware.wifi.supplicant.V1_3.ISupplicantStaIface staIfaceV13 =
+                getStaIfaceMockableV1_3(iface);
+
+        if (staIfaceV13 == null) {
+            Log.e(TAG, methodStr
+                    + ": SupplicantStaIface is null, cannot get Connection Capabilities");
+            return capOut;
+        }
+
+        try {
+            staIfaceV13.getConnectionCapabilities(
+                    (SupplicantStatus statusInternal, ConnectionCapabilities cap) -> {
+                        if (statusInternal.code == SupplicantStatusCode.SUCCESS) {
+                            capOut.wifiStandard = getWifiStandard(cap.technology);
+                            capOut.channelBandwidth = getChannelBandwidth(
+                                    cap.channelBandwidth);
+                            capOut.maxNumberTxSpatialStreams = cap.maxNumberTxSpatialStreams;
+                            capOut.maxNumberRxSpatialStreams = cap.maxNumberRxSpatialStreams;
+                        }
+                        checkStatusAndLogFailure(statusInternal, methodStr);
+                    });
+        } catch (RemoteException e) {
+            handleRemoteException(e, methodStr);
+        }
+        return capOut;
+    }
+
+    private WifiNative.ConnectionCapabilities getConnectionCapabilities_1_4(
+            @NonNull ISupplicantStaIface iface) {
+        final String methodStr = "getConnectionCapabilities_1_4";
+        WifiNative.ConnectionCapabilities capOut = new WifiNative.ConnectionCapabilities();
+        // Get a v1.4 supplicant STA Interface
+        android.hardware.wifi.supplicant.V1_4.ISupplicantStaIface staIfaceV14 =
+                getStaIfaceMockableV1_4(iface);
+
+        if (staIfaceV14 == null) {
+            Log.e(TAG, methodStr
+                    + ": SupplicantStaIface is null, cannot get Connection Capabilities");
+            return capOut;
+        }
+
+        try {
+            staIfaceV14.getConnectionCapabilities_1_4(
+                    (android.hardware.wifi.supplicant.V1_4.SupplicantStatus statusInternal,
+                            android.hardware.wifi.supplicant.V1_4.ConnectionCapabilities cap)
+                            -> {
+                        if (statusInternal.code == SupplicantStatusCode.SUCCESS) {
+                            capOut.wifiStandard = getWifiStandard(cap.V1_3.technology);
+                            capOut.channelBandwidth = getChannelBandwidth(
+                                    cap.V1_3.channelBandwidth);
+                            capOut.is11bMode = (cap.legacyMode == LegacyMode.B_MODE);
+                            capOut.maxNumberTxSpatialStreams = cap.V1_3.maxNumberTxSpatialStreams;
+                            capOut.maxNumberRxSpatialStreams = cap.V1_3.maxNumberRxSpatialStreams;
+                        }
+                        checkStatusAndLogFailure(statusInternal, methodStr);
+                    });
+        } catch (RemoteException e) {
+            handleRemoteException(e, methodStr);
+        }
+        return capOut;
+    }
     /**
      * Add the DPP bootstrap info obtained from QR code.
      *

@@ -85,13 +85,15 @@ public class WifiMonitor {
     public static final int ASSOCIATED_BSSID_EVENT               = BASE + 45;
     public static final int TARGET_BSSID_EVENT                   = BASE + 46;
 
-    /* hotspot 2.0 ANQP events */
+    /* Passpoint ANQP events */
     public static final int GAS_QUERY_START_EVENT                = BASE + 51;
     public static final int GAS_QUERY_DONE_EVENT                 = BASE + 52;
     public static final int RX_HS20_ANQP_ICON_EVENT              = BASE + 53;
 
-    /* hotspot 2.0 events */
+    /* Passpoint events */
     public static final int HS20_REMEDIATION_EVENT               = BASE + 61;
+    public static final int HS20_DEAUTH_IMMINENT_EVENT           = BASE + 62;
+    public static final int HS20_TERMS_AND_CONDITIONS_ACCEPTANCE_REQUIRED_EVENT = BASE + 63;
 
     /* MBO/OCE events */
     public static final int MBO_OCE_BSS_TM_HANDLING_DONE         = BASE + 71;
@@ -106,6 +108,18 @@ public class WifiMonitor {
     /* WPS error indications */
     private static final int REASON_TKIP_ONLY_PROHIBITED = 1;
     private static final int REASON_WEP_PROHIBITED = 2;
+
+    /**
+     * Use this key to get the interface name of the message sent by WifiMonitor,
+     * or null if not available.
+     *
+     * <br />
+     * Sample code:
+     * <code>
+     * message.getData().getString(KEY_IFACE)
+     * </code>
+     */
+    public static final String KEY_IFACE = "com.android.server.wifi.WifiMonitor.KEY_IFACE";
 
     private boolean mVerboseLoggingEnabled = false;
 
@@ -222,7 +236,7 @@ public class WifiMonitor {
                 if (ifaceWhatHandlers != null) {
                     for (Handler handler : ifaceWhatHandlers) {
                         if (handler != null) {
-                            sendMessage(handler, Message.obtain(message));
+                            sendMessage(iface, handler, Message.obtain(message));
                         }
                     }
                 }
@@ -236,12 +250,13 @@ public class WifiMonitor {
                 Log.d(TAG, "Sending to all monitors because there's no matching iface");
             }
             for (Map.Entry<String, SparseArray<Set<Handler>>> entry : mHandlerMap.entrySet()) {
-                if (isMonitoring(entry.getKey())) {
+                iface = entry.getKey();
+                if (isMonitoring(iface)) {
                     Set<Handler> ifaceWhatHandlers = entry.getValue().get(message.what);
                     if (ifaceWhatHandlers == null) continue;
                     for (Handler handler : ifaceWhatHandlers) {
                         if (handler != null) {
-                            sendMessage(handler, Message.obtain(message));
+                            sendMessage(iface, handler, Message.obtain(message));
                         }
                     }
                 }
@@ -251,8 +266,11 @@ public class WifiMonitor {
         message.recycle();
     }
 
-    private void sendMessage(Handler handler, Message message) {
+    private void sendMessage(String iface, Handler handler, Message message) {
         message.setTarget(handler);
+        // getData() will return the existing Bundle if it exists, or create a new one
+        // This prevents clearing the existing data.
+        message.getData().putString(KEY_IFACE, iface);
         message.sendToTarget();
     }
 
@@ -347,7 +365,25 @@ public class WifiMonitor {
      * @param wnmData Instance of WnmData containing the event data.
      */
     public void broadcastWnmEvent(String iface, WnmData wnmData) {
-        sendMessage(iface, HS20_REMEDIATION_EVENT, wnmData);
+        if (mVerboseLoggingEnabled) Log.d(TAG, "WNM-Notification " + wnmData.getEventType());
+        switch (wnmData.getEventType()) {
+            case WnmData.HS20_REMEDIATION_EVENT:
+                sendMessage(iface, HS20_REMEDIATION_EVENT, wnmData);
+                break;
+
+            case WnmData.HS20_DEAUTH_IMMINENT_EVENT:
+                sendMessage(iface, HS20_DEAUTH_IMMINENT_EVENT, wnmData);
+                break;
+
+            case WnmData.HS20_TERMS_AND_CONDITIONS_ACCEPTANCE_REQUIRED_EVENT:
+                sendMessage(iface, HS20_TERMS_AND_CONDITIONS_ACCEPTANCE_REQUIRED_EVENT, wnmData);
+                break;
+
+            default:
+                Log.e(TAG, "Broadcast request for an unknown WNM-notification "
+                        + wnmData.getEventType());
+                break;
+        }
     }
 
     /**
@@ -521,6 +557,8 @@ public class WifiMonitor {
 
     /**
      * Broadcast the DPP events to all the handlers registered for this event.
+     * Broadcast the bss transition management frame handling event
+     * to all the handlers registered for this event.
      *
      * @param iface Name of iface on which this occurred.
      * @param dppEventType Name of DPP event as defined in DppResults.

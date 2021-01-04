@@ -18,12 +18,14 @@ package com.android.server.wifi.hotspot2;
 
 import static android.app.AppOpsManager.OPSTR_CHANGE_WIFI_STATE;
 import static android.net.wifi.WifiConfiguration.MeteredOverride;
+import static android.net.wifi.WifiInfo.DEFAULT_MAC_ADDRESS;
 
 import static java.security.cert.PKIXReason.NO_TRUST_ANCHOR;
 
 import android.annotation.NonNull;
 import android.app.AppOpsManager;
 import android.content.Context;
+import android.net.MacAddress;
 import android.net.wifi.ScanResult;
 import android.net.wifi.WifiConfiguration;
 import android.net.wifi.WifiEnterpriseConfig;
@@ -40,6 +42,7 @@ import android.util.Log;
 import android.util.Pair;
 
 import com.android.server.wifi.Clock;
+import com.android.server.wifi.MacAddressUtil;
 import com.android.server.wifi.NetworkUpdateResult;
 import com.android.server.wifi.WifiCarrierInfoManager;
 import com.android.server.wifi.WifiConfigManager;
@@ -118,6 +121,7 @@ public class PasspointManager {
     private final PasspointProvisioner mPasspointProvisioner;
     private final AppOpsManager mAppOps;
     private final WifiCarrierInfoManager mWifiCarrierInfoManager;
+    private final MacAddressUtil mMacAddressUtil;
 
     /**
      * Map of package name of an app to the app ops changed listener for the app.
@@ -139,7 +143,11 @@ public class PasspointManager {
                 Map<Constants.ANQPElementType, ANQPElement> anqpElements) {
             if (mVerboseLoggingEnabled) {
                 Log.d(TAG, "ANQP response received from BSSID "
-                        + Utils.macToString(bssid));
+                        + Utils.macToString(bssid) + " - List of ANQP elements:");
+                int i = 0;
+                for (Constants.ANQPElementType type : anqpElements.keySet()) {
+                    Log.d(TAG, "#" + i++ + ": " + type);
+                }
             }
             // Notify request manager for the completion of a request.
             ANQPNetworkKey anqpKey =
@@ -151,7 +159,7 @@ public class PasspointManager {
             }
 
             // Add new entry to the cache.
-            mAnqpCache.addEntry(anqpKey, anqpElements);
+            mAnqpCache.addOrUpdateEntry(anqpKey, anqpElements);
         }
 
         @Override
@@ -290,7 +298,8 @@ public class PasspointManager {
             PasspointObjectFactory objectFactory, WifiConfigManager wifiConfigManager,
             WifiConfigStore wifiConfigStore,
             WifiMetrics wifiMetrics,
-            WifiCarrierInfoManager wifiCarrierInfoManager) {
+            WifiCarrierInfoManager wifiCarrierInfoManager,
+            MacAddressUtil macAddressUtil) {
         mPasspointEventHandler = objectFactory.makePasspointEventHandler(wifiNative,
                 new CallbackHandler(context));
         mWifiInjector = wifiInjector;
@@ -312,6 +321,7 @@ public class PasspointManager {
                 this, wifiMetrics);
         mAppOps = (AppOpsManager) context.getSystemService(Context.APP_OPS_SERVICE);
         sPasspointManager = this;
+        mMacAddressUtil = macAddressUtil;
     }
 
     /**
@@ -582,7 +592,11 @@ public class PasspointManager {
                                 ? UserActionEvent.EVENT_CONFIGURE_AUTO_CONNECT_ON
                                 : UserActionEvent.EVENT_CONFIGURE_AUTO_CONNECT_OFF,
                         provider.isFromSuggestion(), true);
+                // Update WifiConfigManager if changed.
+                updateWifiConfigInWcmIfPresent(provider.getWifiConfig(), provider.getCreatorUid(),
+                        provider.getPackageName(), provider.isFromSuggestion());
             }
+
             mWifiConfigManager.saveToStore(true);
             return true;
         }
@@ -598,6 +612,10 @@ public class PasspointManager {
                                     ? UserActionEvent.EVENT_CONFIGURE_AUTO_CONNECT_ON
                                     : UserActionEvent.EVENT_CONFIGURE_AUTO_CONNECT_OFF,
                             provider.isFromSuggestion(), true);
+                    // Update WifiConfigManager if changed.
+                    updateWifiConfigInWcmIfPresent(provider.getWifiConfig(),
+                            provider.getCreatorUid(), provider.getPackageName(),
+                            provider.isFromSuggestion());
                 }
                 found = true;
             }
@@ -1082,6 +1100,15 @@ public class PasspointManager {
                 continue;
             }
             WifiConfiguration config = provider.getWifiConfig();
+            if (mWifiConfigManager.shouldUseEnhancedRandomization(config)) {
+                config.setRandomizedMacAddress(MacAddress.fromString(DEFAULT_MAC_ADDRESS));
+            } else {
+                MacAddress result = mMacAddressUtil.calculatePersistentMac(config.getNetworkKey(),
+                        mMacAddressUtil.obtainMacRandHashFunction(Process.WIFI_UID));
+                if (result != null) {
+                    config.setRandomizedMacAddress(result);
+                }
+            }
             // If the Passpoint configuration is from a suggestion, check if the app shares this
             // suggestion with the user.
             if (provider.isFromSuggestion()
@@ -1292,5 +1319,28 @@ public class PasspointManager {
         PKIXParameters params = new PKIXParameters(ks);
         params.setRevocationEnabled(false);
         validator.validate(path, params);
+    }
+
+    /**
+     * Request the Venue URL ANQP-element from the AP post connection
+     *
+     * @param scanResult Scan result associated to the requested AP
+     */
+    public void requestVenueUrlAnqpElement(@NonNull ScanResult scanResult) {
+        long bssid;
+        try {
+            bssid = Utils.parseMac(scanResult.BSSID);
+        } catch (IllegalArgumentException e) {
+            Log.e(TAG, "Invalid BSSID provided in the scan result: " + scanResult.BSSID);
+            return;
+        }
+        InformationElementUtil.Vsa vsa = InformationElementUtil.getHS2VendorSpecificIE(
+                scanResult.informationElements);
+        ANQPNetworkKey anqpKey = ANQPNetworkKey.buildKey(scanResult.SSID, bssid, scanResult.hessid,
+                vsa.anqpDomainID);
+        // TODO(haishalom@): Should we limit to R3 only? vsa.hsRelease > NetworkDetail.HSRelease.R2
+        // I am seeing R2's that respond to Venue URL request, so may keep it this way.
+        // APs that do not support this ANQP request simply ignore it.
+        mAnqpRequestManager.requestVenueUrlAnqpElement(bssid, anqpKey);
     }
 }

@@ -198,7 +198,7 @@ public class ScanResultUtil {
         } else if (isScanResultForPskNetwork(scanResult)) {
             config.setSecurityParams(WifiConfiguration.SECURITY_TYPE_PSK);
         } else if (isScanResultForEapSuiteBNetwork(scanResult)) {
-            config.setSecurityParams(WifiConfiguration.SECURITY_TYPE_EAP_SUITE_B);
+            config.setSecurityParams(WifiConfiguration.SECURITY_TYPE_EAP_WPA3_ENTERPRISE_192_BIT);
         } else if (isScanResultForEapNetwork(scanResult)) {
             config.setSecurityParams(WifiConfiguration.SECURITY_TYPE_EAP);
         } else if (isScanResultForWepNetwork(scanResult)) {
@@ -240,6 +240,10 @@ public class ScanResultUtil {
                             r.radioChainInfos[1].id, r.radioChainInfos[1].level);
                 } else {
                     rssiInfo = String.format("%9d         ", r.level);
+                }
+                if ((r.flags & ScanResult.FLAG_PASSPOINT_NETWORK)
+                        == ScanResult.FLAG_PASSPOINT_NETWORK) {
+                    r.capabilities += "[PASSPOINT]";
                 }
                 pw.printf("  %17s  %9d  %18s   %7s    %-32s  %s\n",
                         r.BSSID,

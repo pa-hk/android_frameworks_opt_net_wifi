@@ -16,11 +16,23 @@
 
 package com.android.server.wifi;
 
+import static android.net.NetworkCapabilities.NET_CAPABILITY_OEM_PAID;
+import static android.net.NetworkCapabilities.NET_CAPABILITY_OEM_PRIVATE;
+import static android.net.NetworkCapabilitiesProto.NET_CAPABILITY_TRUSTED;
+import static android.net.NetworkCapabilitiesProto.TRANSPORT_WIFI;
+import static android.net.wifi.WifiManager.WIFI_STATE_ENABLED;
+
+import static com.android.server.wifi.WifiShellCommand.SHELL_PACKAGE_NAME;
+
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.validateMockitoUsage;
@@ -31,6 +43,9 @@ import static org.mockito.Mockito.when;
 import android.content.Context;
 import android.net.ConnectivityManager;
 import android.net.wifi.SoftApConfiguration;
+import android.net.wifi.SupplicantState;
+import android.net.wifi.WifiInfo;
+import android.net.wifi.WifiNetworkSuggestion;
 import android.os.Binder;
 import android.os.Process;
 
@@ -44,6 +59,7 @@ import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
 import java.io.FileDescriptor;
+import java.util.Arrays;
 
 /**
  * Unit tests for {@link com.android.server.wifi.WifiShellCommand}.
@@ -53,7 +69,8 @@ public class WifiShellCommandTest extends WifiBaseTest {
     private static final String TEST_PACKAGE = "com.android.test";
 
     @Mock WifiInjector mWifiInjector;
-    @Mock ClientModeManager mClientModeManager;
+    @Mock ActiveModeWarden mActiveModeWarden;
+    @Mock ClientModeManager mPrimaryClientModeManager;
     @Mock WifiLockManager mWifiLockManager;
     @Mock WifiNetworkSuggestionsManager mWifiNetworkSuggestionsManager;
     @Mock WifiConfigManager mWifiConfigManager;
@@ -74,6 +91,10 @@ public class WifiShellCommandTest extends WifiBaseTest {
     public void setUp() throws Exception {
         MockitoAnnotations.initMocks(this);
 
+        when(mWifiInjector.getActiveModeWarden()).thenReturn(mActiveModeWarden);
+        when(mActiveModeWarden.getPrimaryClientModeManager()).thenReturn(mPrimaryClientModeManager);
+        when(mActiveModeWarden.getClientModeManagers())
+                .thenReturn(Arrays.asList(mPrimaryClientModeManager));
         when(mWifiInjector.getWifiLockManager()).thenReturn(mWifiLockManager);
         when(mWifiInjector.getWifiNetworkSuggestionsManager())
                 .thenReturn(mWifiNetworkSuggestionsManager);
@@ -84,9 +105,10 @@ public class WifiShellCommandTest extends WifiBaseTest {
         when(mWifiInjector.getWifiLastResortWatchdog()).thenReturn(mWifiLastResortWatchdog);
         when(mWifiInjector.getWifiCarrierInfoManager()).thenReturn(mWifiCarrierInfoManager);
         when(mWifiInjector.getWifiNetworkFactory()).thenReturn(mWifiNetworkFactory);
+        when(mContext.getSystemService(ConnectivityManager.class)).thenReturn(mConnectivityManager);
 
         mWifiShellCommand = new WifiShellCommand(mWifiInjector, mWifiService, mContext,
-                mClientModeManager, mWifiGlobals);
+                mWifiGlobals);
 
         // by default emulate shell uid.
         BinderUtil.setUid(Process.SHELL_UID);
@@ -410,12 +432,13 @@ public class WifiShellCommandTest extends WifiBaseTest {
                 new String[]{"start-softap", "ap1", "wpa2", "xyzabc321", "-b", "5"});
         ArgumentCaptor<SoftApConfiguration> softApConfigurationCaptor = ArgumentCaptor.forClass(
                 SoftApConfiguration.class);
-        verify(mWifiService).startTetheredHotspot(softApConfigurationCaptor.capture());
+        verify(mWifiService).startTetheredHotspot(
+                softApConfigurationCaptor.capture(), eq(SHELL_PACKAGE_NAME));
         assertEquals(SoftApConfiguration.BAND_5GHZ,
                 softApConfigurationCaptor.getValue().getBand());
         assertEquals(SoftApConfiguration.SECURITY_TYPE_WPA2_PSK,
                 softApConfigurationCaptor.getValue().getSecurityType());
-        assertEquals("\"ap1\"", softApConfigurationCaptor.getValue().getSsid());
+        assertEquals("ap1", softApConfigurationCaptor.getValue().getSsid());
         assertEquals("xyzabc321", softApConfigurationCaptor.getValue().getPassphrase());
     }
 
@@ -425,5 +448,155 @@ public class WifiShellCommandTest extends WifiBaseTest {
                 new Binder(), new FileDescriptor(), new FileDescriptor(), new FileDescriptor(),
                 new String[]{"stop-softap"});
         verify(mWifiService).stopSoftAp();
+    }
+
+
+    @Test
+    public void testSetScanAlwaysAvailable() {
+        mWifiShellCommand.exec(
+                new Binder(), new FileDescriptor(), new FileDescriptor(), new FileDescriptor(),
+                new String[]{"set-scan-always-available", "enabled"});
+        verify(mWifiService).setScanAlwaysAvailable(true, SHELL_PACKAGE_NAME);
+
+        mWifiShellCommand.exec(
+                new Binder(), new FileDescriptor(), new FileDescriptor(), new FileDescriptor(),
+                new String[]{"set-scan-always-available", "disabled"});
+        verify(mWifiService).setScanAlwaysAvailable(false, SHELL_PACKAGE_NAME);
+    }
+
+    @Test
+    public void testAddSuggestionWithUntrusted() {
+        mWifiShellCommand.exec(
+                new Binder(), new FileDescriptor(), new FileDescriptor(), new FileDescriptor(),
+                new String[]{"add-suggestion", "ssid1234", "open", "-u"});
+        verify(mWifiService).addNetworkSuggestions(argThat(sL -> {
+            return (sL.size() == 1)
+                    && (sL.get(0).getSsid().equals("ssid1234"))
+                    && (sL.get(0).isUntrusted());
+        }), eq(SHELL_PACKAGE_NAME), any());
+        verify(mConnectivityManager).requestNetwork(argThat(nR -> {
+            return (nR.hasTransport(TRANSPORT_WIFI))
+                    && (!nR.hasCapability(NET_CAPABILITY_TRUSTED));
+        }), any(ConnectivityManager.NetworkCallback.class));
+
+        when(mWifiService.getNetworkSuggestions(any()))
+                .thenReturn(Arrays.asList(
+                        new WifiNetworkSuggestion.Builder()
+                                .setSsid("ssid1234")
+                                .setUntrusted(true)
+                                .build()));
+        mWifiShellCommand.exec(
+                new Binder(), new FileDescriptor(), new FileDescriptor(), new FileDescriptor(),
+                new String[]{"remove-suggestion", "ssid1234"});
+        verify(mWifiService).removeNetworkSuggestions(argThat(sL -> {
+            return (sL.size() == 1)
+                    && (sL.get(0).getSsid().equals("ssid1234"))
+                    && (sL.get(0).isUntrusted());
+        }), eq(SHELL_PACKAGE_NAME));
+        verify(mConnectivityManager).unregisterNetworkCallback(
+                any(ConnectivityManager.NetworkCallback.class));
+    }
+
+    @Test
+    public void testAddSuggestionWithOemPaid() {
+        mWifiShellCommand.exec(
+                new Binder(), new FileDescriptor(), new FileDescriptor(), new FileDescriptor(),
+                new String[]{"add-suggestion", "ssid1234", "open", "-o"});
+        verify(mWifiService).addNetworkSuggestions(argThat(sL -> {
+            return (sL.size() == 1)
+                    && (sL.get(0).getSsid().equals("ssid1234"))
+                    && (sL.get(0).isOemPaid());
+        }), eq(SHELL_PACKAGE_NAME), any());
+        verify(mConnectivityManager).requestNetwork(argThat(nR -> {
+            return (nR.hasTransport(TRANSPORT_WIFI))
+                    && (nR.hasCapability(NET_CAPABILITY_OEM_PAID));
+        }), any(ConnectivityManager.NetworkCallback.class));
+
+        when(mWifiService.getNetworkSuggestions(any()))
+                .thenReturn(Arrays.asList(
+                        new WifiNetworkSuggestion.Builder()
+                                .setSsid("ssid1234")
+                                .setOemPaid(true)
+                                .build()));
+        mWifiShellCommand.exec(
+                new Binder(), new FileDescriptor(), new FileDescriptor(), new FileDescriptor(),
+                new String[]{"remove-suggestion", "ssid1234"});
+        verify(mWifiService).removeNetworkSuggestions(argThat(sL -> {
+            return (sL.size() == 1)
+                    && (sL.get(0).getSsid().equals("ssid1234"))
+                    && (sL.get(0).isOemPaid());
+        }), eq(SHELL_PACKAGE_NAME));
+        verify(mConnectivityManager).unregisterNetworkCallback(
+                any(ConnectivityManager.NetworkCallback.class));
+    }
+
+    @Test
+    public void testAddSuggestionWithOemPrivate() {
+        mWifiShellCommand.exec(
+                new Binder(), new FileDescriptor(), new FileDescriptor(), new FileDescriptor(),
+                new String[]{"add-suggestion", "ssid1234", "open", "-p"});
+        verify(mWifiService).addNetworkSuggestions(argThat(sL -> {
+            return (sL.size() == 1)
+                    && (sL.get(0).getSsid().equals("ssid1234"))
+                    && (sL.get(0).isOemPrivate());
+        }), eq(SHELL_PACKAGE_NAME), any());
+        verify(mConnectivityManager).requestNetwork(argThat(nR -> {
+            return (nR.hasTransport(TRANSPORT_WIFI))
+                    && (nR.hasCapability(NET_CAPABILITY_OEM_PRIVATE));
+        }), any(ConnectivityManager.NetworkCallback.class));
+
+        when(mWifiService.getNetworkSuggestions(any()))
+                .thenReturn(Arrays.asList(
+                        new WifiNetworkSuggestion.Builder()
+                                .setSsid("ssid1234")
+                                .setOemPrivate(true)
+                                .build()));
+        mWifiShellCommand.exec(
+                new Binder(), new FileDescriptor(), new FileDescriptor(), new FileDescriptor(),
+                new String[]{"remove-suggestion", "ssid1234"});
+        verify(mWifiService).removeNetworkSuggestions(argThat(sL -> {
+            return (sL.size() == 1)
+                    && (sL.get(0).getSsid().equals("ssid1234"))
+                    && (sL.get(0).isOemPrivate());
+        }), eq(SHELL_PACKAGE_NAME));
+        verify(mConnectivityManager).unregisterNetworkCallback(
+                any(ConnectivityManager.NetworkCallback.class));
+    }
+
+    @Test
+    public void testStatus() {
+        when(mWifiService.getWifiEnabledState()).thenReturn(WIFI_STATE_ENABLED);
+
+        // unrooted shell.
+        mWifiShellCommand.exec(
+                new Binder(), new FileDescriptor(), new FileDescriptor(), new FileDescriptor(),
+                new String[]{"status"});
+        verify(mWifiService).getWifiEnabledState();
+        verify(mWifiService).isScanAlwaysAvailable();
+        verify(mWifiService).getConnectionInfo(SHELL_PACKAGE_NAME, null);
+
+        verify(mPrimaryClientModeManager, never()).syncRequestConnectionInfo();
+        verify(mActiveModeWarden, never()).getClientModeManagers();
+
+        // rooted shell.
+        BinderUtil.setUid(Process.ROOT_UID);
+
+        ClientModeManager additionalClientModeManager = mock(ClientModeManager.class);
+        when(mActiveModeWarden.getClientModeManagers()).thenReturn(
+                Arrays.asList(mPrimaryClientModeManager, additionalClientModeManager));
+
+        WifiInfo wifiInfo = new WifiInfo();
+        wifiInfo.setSupplicantState(SupplicantState.COMPLETED);
+        when(mPrimaryClientModeManager.syncRequestConnectionInfo()).thenReturn(wifiInfo);
+        when(additionalClientModeManager.syncRequestConnectionInfo()).thenReturn(wifiInfo);
+
+        mWifiShellCommand.exec(
+                new Binder(), new FileDescriptor(), new FileDescriptor(), new FileDescriptor(),
+                new String[]{"status"});
+        verify(mActiveModeWarden).getClientModeManagers();
+        verify(mPrimaryClientModeManager).syncRequestConnectionInfo();
+        verify(mPrimaryClientModeManager).syncGetCurrentNetwork();
+        verify(additionalClientModeManager).syncRequestConnectionInfo();
+        verify(additionalClientModeManager).syncGetCurrentNetwork();
     }
 }

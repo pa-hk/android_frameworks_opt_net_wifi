@@ -21,6 +21,7 @@ import android.net.wifi.WifiConfiguration;
 import android.util.LocalLog;
 import android.util.Log;
 import android.util.Pair;
+import android.util.SparseArray;
 
 import com.android.server.wifi.WifiNetworkSuggestionsManager.ExtendedWifiNetworkSuggestion;
 import com.android.server.wifi.hotspot2.PasspointNetworkNominateHelper;
@@ -28,10 +29,10 @@ import com.android.server.wifi.hotspot2.PasspointNetworkNominateHelper;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -73,7 +74,8 @@ public class NetworkSuggestionNominator implements WifiNetworkSelector.NetworkNo
     @Override
     public void nominateNetworks(List<ScanDetail> scanDetails,
             WifiConfiguration currentNetwork, String currentBssid, boolean connected,
-            boolean untrustedNetworkAllowed,
+            boolean untrustedNetworkAllowed, boolean oemPaidNetworkAllowed,
+            boolean oemPrivateNetworkAllowed,
             @NonNull OnConnectableListener onConnectableListener) {
         if (scanDetails.isEmpty()) {
             return;
@@ -81,9 +83,12 @@ public class NetworkSuggestionNominator implements WifiNetworkSelector.NetworkNo
         MatchMetaInfo matchMetaInfo = new MatchMetaInfo();
         Set<ExtendedWifiNetworkSuggestion> autoJoinDisabledSuggestions = new HashSet<>();
 
-        findMatchedPasspointSuggestionNetworks(scanDetails, matchMetaInfo, untrustedNetworkAllowed);
+        findMatchedPasspointSuggestionNetworks(
+                scanDetails, matchMetaInfo, untrustedNetworkAllowed, oemPaidNetworkAllowed,
+                oemPrivateNetworkAllowed);
         findMatchedSuggestionNetworks(scanDetails, matchMetaInfo,
-                autoJoinDisabledSuggestions, untrustedNetworkAllowed);
+                autoJoinDisabledSuggestions, untrustedNetworkAllowed, oemPaidNetworkAllowed,
+                oemPrivateNetworkAllowed);
 
         if (matchMetaInfo.isEmpty()) {
             mLocalLog.log("did not see any matching auto-join enabled network suggestions.");
@@ -94,8 +99,43 @@ public class NetworkSuggestionNominator implements WifiNetworkSelector.NetworkNo
         addAutojoinDisabledSuggestionToWifiConfigManager(autoJoinDisabledSuggestions);
     }
 
+    /** Helper method to avoid code duplication in regular & passpoint based suggestions filter. */
+    private boolean shouldIgnoreBasedOnChecksForTrustedOrOemPaidOrOemPrivate(
+            WifiConfiguration config, boolean untrustedNetworkAllowed,
+            boolean oemPaidNetworkAllowed, boolean oemPrivateNetworkAllowed) {
+        // If untrusted network is not allowed, ignore untrusted suggestion.
+        if (!untrustedNetworkAllowed && !config.trusted) {
+            return true;
+        }
+        // For suggestions with both oem paid & oem private set, ignore them If both oem paid
+        // & oem private network is not allowed. If oem paid network is allowed, then mark
+        // the suggestion oem paid for this connection attempt, else mark oem private for this
+        // connection attempt.
+        if (config.oemPaid && config.oemPrivate) {
+            if (!oemPaidNetworkAllowed && !oemPrivateNetworkAllowed) {
+                return true;
+            }
+            if (oemPaidNetworkAllowed) {
+                config.oemPrivate = false; // only oemPaid set.
+            } else if (oemPrivateNetworkAllowed) {
+                config.oemPaid = false; // only oemPrivate set.
+            }
+        } else {
+            // If oem paid network is not allowed, ignore oem paid suggestion.
+            if (!oemPaidNetworkAllowed && config.oemPaid) {
+                return true;
+            }
+            // If oem paid network is not allowed, ignore oem paid suggestion.
+            if (!oemPrivateNetworkAllowed && config.oemPrivate) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private void findMatchedPasspointSuggestionNetworks(List<ScanDetail> scanDetails,
-            MatchMetaInfo matchMetaInfo, boolean untrustedNetworkAllowed) {
+            MatchMetaInfo matchMetaInfo, boolean untrustedNetworkAllowed,
+            boolean oemPaidNetworkAllowed, boolean oemPrivateNetworkAllowed) {
         List<Pair<ScanDetail, WifiConfiguration>> candidates =
                 mPasspointNetworkNominateHelper.getPasspointNetworkCandidates(scanDetails, true);
         for (Pair<ScanDetail, WifiConfiguration> candidate : candidates) {
@@ -116,8 +156,9 @@ public class NetworkSuggestionNominator implements WifiNetworkSelector.NetworkNo
             if (!isSimBasedNetworkAvailableToAutoConnect(config)) {
                 continue;
             }
-            // If untrusted network is not allowed, ignore untrusted suggestion.
-            if (!untrustedNetworkAllowed && !config.trusted) {
+            if (shouldIgnoreBasedOnChecksForTrustedOrOemPaidOrOemPrivate(
+                    config, untrustedNetworkAllowed, oemPaidNetworkAllowed,
+                    oemPrivateNetworkAllowed)) {
                 continue;
             }
             Set<ExtendedWifiNetworkSuggestion> autoJoinEnabledExtSuggestions =
@@ -136,7 +177,8 @@ public class NetworkSuggestionNominator implements WifiNetworkSelector.NetworkNo
     private void findMatchedSuggestionNetworks(List<ScanDetail> scanDetails,
             MatchMetaInfo matchMetaInfo,
             Set<ExtendedWifiNetworkSuggestion> autoJoinDisabledSuggestions,
-            boolean untrustedNetworkAllowed) {
+            boolean untrustedNetworkAllowed, boolean oemPaidNetworkAllowed,
+            boolean oemPrivateNetworkAllowed) {
         for (ScanDetail scanDetail : scanDetails) {
             Set<ExtendedWifiNetworkSuggestion> matchingExtNetworkSuggestions =
                     mWifiNetworkSuggestionsManager.getNetworkSuggestionsForScanDetail(scanDetail);
@@ -150,9 +192,10 @@ public class NetworkSuggestionNominator implements WifiNetworkSelector.NetworkNo
                         && ewns.wns.wifiConfiguration.enterpriseConfig.isInsecure()) {
                     continue;
                 }
-                // If untrusted network is not allowed, ignore untrusted suggestion.
                 WifiConfiguration config = ewns.wns.wifiConfiguration;
-                if (!untrustedNetworkAllowed && !config.trusted) {
+                if (shouldIgnoreBasedOnChecksForTrustedOrOemPaidOrOemPrivate(
+                        config, untrustedNetworkAllowed, oemPaidNetworkAllowed,
+                        oemPrivateNetworkAllowed)) {
                     continue;
                 }
                 if (WifiConfiguration.isMetered(config, null)
@@ -238,6 +281,8 @@ public class NetworkSuggestionNominator implements WifiNetworkSelector.NetworkNo
                 continue;
             }
             WifiConfiguration config = ewns.createInternalWifiConfiguration();
+            config.subscriptionId = mWifiCarrierInfoManager
+                    .getBestMatchSubscriptionId(ewns.wns.getWifiConfiguration());
             WifiConfiguration wCmConfiguredNetwork =
                     mWifiConfigManager.getConfiguredNetwork(config.getKey());
             NetworkUpdateResult result = mWifiConfigManager.addOrUpdateNetwork(
@@ -246,8 +291,9 @@ public class NetworkSuggestionNominator implements WifiNetworkSelector.NetworkNo
                 mLocalLog.log("Failed to add network suggestion");
                 continue;
             }
+            mWifiConfigManager.allowAutojoin(result.getNetworkId(), config.allowAutojoin);
             WifiConfiguration currentWCmConfiguredNetwork =
-                    mWifiConfigManager.getConfiguredNetwork(result.netId);
+                    mWifiConfigManager.getConfiguredNetwork(result.getNetworkId());
             // Try to enable network selection
             if (wCmConfiguredNetwork == null) {
                 if (!mWifiConfigManager.updateNetworkSelectionStatus(result.getNetworkId(),
@@ -269,6 +315,8 @@ public class NetworkSuggestionNominator implements WifiNetworkSelector.NetworkNo
     private WifiConfiguration addCandidateToWifiConfigManager(
             @NonNull ExtendedWifiNetworkSuggestion ewns) {
         WifiConfiguration wifiConfiguration = ewns.createInternalWifiConfiguration();
+        wifiConfiguration.subscriptionId =
+                mWifiCarrierInfoManager.getBestMatchSubscriptionId(ewns.wns.getWifiConfiguration());
         NetworkUpdateResult result =
                 mWifiConfigManager.addOrUpdateNetwork(wifiConfiguration, ewns.perAppInfo.uid,
                         ewns.perAppInfo.packageName);
@@ -276,6 +324,7 @@ public class NetworkSuggestionNominator implements WifiNetworkSelector.NetworkNo
             mLocalLog.log("Failed to add network suggestion");
             return null;
         }
+        mWifiConfigManager.allowAutojoin(result.getNetworkId(), wifiConfiguration.allowAutojoin);
         if (!mWifiConfigManager.updateNetworkSelectionStatus(result.getNetworkId(),
                 WifiConfiguration.NetworkSelectionStatus.DISABLED_NONE)) {
             mLocalLog.log("Failed to make network suggestion selectable");
@@ -353,7 +402,7 @@ public class NetworkSuggestionNominator implements WifiNetworkSelector.NetworkNo
     }
 
     private class MatchMetaInfo {
-        private Map<String, PerAppMatchMetaInfo> mAppInfos = new HashMap<>();
+        private SparseArray<PerAppMatchMetaInfo> mAppInfos = new SparseArray<>();
 
         /**
          * Add all the network suggestion & associated info.
@@ -364,10 +413,11 @@ public class NetworkSuggestionNominator implements WifiNetworkSelector.NetworkNo
             // Separate the suggestions into buckets for each app to allow sorting based on
             // priorities set by app.
             for (ExtendedWifiNetworkSuggestion wifiNetworkSuggestion : wifiNetworkSuggestions) {
-                PerAppMatchMetaInfo appInfo = mAppInfos.computeIfAbsent(
-                        wifiNetworkSuggestion.perAppInfo.packageName,
-                        k -> new PerAppMatchMetaInfo());
+                int key = Objects.hash(wifiNetworkSuggestion.perAppInfo.packageName,
+                        wifiNetworkSuggestion.wns.priorityGroup);
+                PerAppMatchMetaInfo appInfo = mAppInfos.get(key, new PerAppMatchMetaInfo());
                 appInfo.put(wifiNetworkSuggestion, wCmConfiguredNetwork, matchingScanDetail);
+                mAppInfos.put(key, appInfo);
             }
         }
 
@@ -375,7 +425,7 @@ public class NetworkSuggestionNominator implements WifiNetworkSelector.NetworkNo
          * Are there any matched candidates?
          */
         public boolean isEmpty() {
-            return mAppInfos.isEmpty();
+            return mAppInfos.size() == 0;
         }
 
         /**
@@ -384,9 +434,9 @@ public class NetworkSuggestionNominator implements WifiNetworkSelector.NetworkNo
          */
         public void findConnectableNetworksAndHighestPriority(
                 @NonNull OnConnectableListener onConnectableListener) {
-            for (PerAppMatchMetaInfo appInfo : mAppInfos.values()) {
+            for (int i = 0; i < mAppInfos.size(); i++) {
                 List<PerNetworkSuggestionMatchMetaInfo> matchedNetworkInfos =
-                        appInfo.getHighestPriorityNetworks();
+                        mAppInfos.valueAt(i).getHighestPriorityNetworks();
                 for (PerNetworkSuggestionMatchMetaInfo matchedNetworkInfo : matchedNetworkInfos) {
                     // if the network does not already exist in WifiConfigManager, add now.
                     if (matchedNetworkInfo.wCmConfiguredNetwork == null) {

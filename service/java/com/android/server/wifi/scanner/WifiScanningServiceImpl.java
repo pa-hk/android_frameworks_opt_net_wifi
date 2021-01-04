@@ -685,7 +685,10 @@ public class WifiScanningServiceImpl extends IWifiScanner.Stub {
                  */
                 @Override
                 public void onScanStatus(int event) {
-                    if (DBG) localLog("onScanStatus event received, event=" + event);
+                    if (DBG) {
+                        localLog("onScanStatus event received, event=" + event
+                                + ", iface=" + mImplIfaceName);
+                    }
                     switch (event) {
                         case WifiNative.WIFI_SCAN_RESULTS_AVAILABLE:
                         case WifiNative.WIFI_SCAN_THRESHOLD_NUM_SCANS:
@@ -706,7 +709,7 @@ public class WifiScanningServiceImpl extends IWifiScanner.Stub {
                  */
                 @Override
                 public void onFullScanResult(ScanResult fullScanResult, int bucketsScanned) {
-                    if (DBG) localLog("onFullScanResult received");
+                    if (DBG) localLog("onFullScanResult received on iface " + mImplIfaceName);
                     reportFullScanResultForImpl(mImplIfaceName, fullScanResult, bucketsScanned);
                 }
 
@@ -744,6 +747,7 @@ public class WifiScanningServiceImpl extends IWifiScanner.Stub {
                             scanSettings, new ScanEventHandler(ifaceName));
                     if (!success) {
                         Log.e(TAG, "Failed to start single scan on " + ifaceName);
+                        mStatusPerImpl.put(ifaceName, STATUS_FAILED);
                         continue;
                     }
                     mStatusPerImpl.put(ifaceName, STATUS_PENDING);
@@ -759,6 +763,10 @@ public class WifiScanningServiceImpl extends IWifiScanner.Stub {
             public @Nullable ScanData getLatestSingleScanResults() {
                 ScanData consolidatedScanData = null;
                 for (WifiScannerImpl impl : mScannerImpls.values()) {
+                    Integer ifaceStatus = mStatusPerImpl.get(impl.getIfaceName());
+                    if (ifaceStatus == null || ifaceStatus != STATUS_SUCCEEDED) {
+                        continue;
+                    }
                     ScanData scanData = impl.getLatestSingleScanResults();
                     if (consolidatedScanData == null) {
                         consolidatedScanData = new ScanData(scanData);
@@ -1084,7 +1092,7 @@ public class WifiScanningServiceImpl extends IWifiScanner.Stub {
                 case WifiScanner.SCAN_TYPE_HIGH_ACCURACY:
                     return true;
                 default:
-                    // This should never happen becuase we've validated the incoming type in
+                    // This should never happen because we've validated the incoming type in
                     // |validateScanType|.
                     throw new IllegalArgumentException("Invalid scan type "
                         + mActiveScanSettings.scanType);
@@ -1101,7 +1109,7 @@ public class WifiScanningServiceImpl extends IWifiScanner.Stub {
                 case WifiScanner.SCAN_TYPE_HIGH_ACCURACY:
                     return existingScanType;
                 default:
-                    // This should never happen becuase we've validated the incoming type in
+                    // This should never happen because we've validated the incoming type in
                     // |validateScanType|.
                     throw new IllegalArgumentException("Invalid scan type " + existingScanType);
             }
@@ -1552,11 +1560,11 @@ public class WifiScanningServiceImpl extends IWifiScanner.Stub {
 
         private boolean addBackgroundScanRequest(ClientInfo ci, int handler,
                 ScanSettings settings, WorkSource workSource) {
-            // sanity check the input
             if (ci == null) {
                 Log.d(TAG, "Failing scan request ClientInfo not found " + handler);
                 return false;
             }
+
             if (settings.periodInMs < WifiScanner.MIN_SCAN_PERIOD_MS) {
                 loge("Failing scan request because periodInMs is " + settings.periodInMs
                         + ", min scan period is: " + WifiScanner.MIN_SCAN_PERIOD_MS);
@@ -2551,9 +2559,10 @@ public class WifiScanningServiceImpl extends IWifiScanner.Stub {
         if (mSingleScanStateMachine != null) {
             mSingleScanStateMachine.dump(fd, pw, args);
             pw.println();
-            pw.println("Latest scan results:");
             List<ScanResult> scanResults = mSingleScanStateMachine.getCachedScanResultsAsList();
             long nowMs = mClock.getElapsedSinceBootMillis();
+            Log.d(TAG, "Latest scan results nowMs = " + nowMs);
+            pw.println("Latest scan results:");
             ScanResultUtil.dumpScanResults(pw, scanResults, nowMs);
             pw.println();
         }
@@ -2620,7 +2629,7 @@ public class WifiScanningServiceImpl extends IWifiScanner.Stub {
             case WifiScanner.SCAN_TYPE_HIGH_ACCURACY:
                 return "HIGH ACCURACY";
             default:
-                // This should never happen becuase we've validated the incoming type in
+                // This should never happen because we've validated the incoming type in
                 // |validateScanType|.
                 throw new IllegalArgumentException("Invalid scan type " + type);
         }

@@ -173,6 +173,19 @@ public class WifiAwareDataPathStateManager {
         mDbg = verbose | VDBG;
     }
 
+    /**
+     * Get the number of the NDPs is already set up.
+     */
+    public int getNumOfNdps() {
+        int numOfNdps = 0;
+        for (AwareNetworkRequestInformation requestInformation : mNetworkRequestsCache.values()) {
+            if (requestInformation.ndpId != 0) {
+                numOfNdps++;
+            }
+        }
+        return numOfNdps;
+    }
+
     private Map.Entry<WifiAwareNetworkSpecifier, AwareNetworkRequestInformation>
                 getNetworkRequestByNdpId(int ndpId) {
         for (Map.Entry<WifiAwareNetworkSpecifier, AwareNetworkRequestInformation> entry :
@@ -654,16 +667,9 @@ public class WifiAwareDataPathStateManager {
                 sNetworkCapabilitiesFilter);
         LinkProperties linkProperties = new LinkProperties();
         getInet6Address(nnri, mac);
-        if (nnri.peerIpv6 != null) {
-            final WifiAwareNetworkInfo ni = new WifiAwareNetworkInfo(
-                    nnri.peerIpv6, nnri.peerPort, nnri.peerTransportProtocol);
-            ncBuilder.setTransportInfo(ni);
-            if (mDbg) {
-                Log.v(TAG, "onDataPathConfirm: AwareNetworkInfo=" + ni);
-            }
-        }
-        if (!(mNiWrapper.configureAgentProperties(nnri, nnri.equivalentRequests, ndpId,
-                ncBuilder, linkProperties) && mNiWrapper.isAddressUsable(linkProperties))) {
+        if (!(nnri.peerIpv6 != null && mNiWrapper.configureAgentProperties(nnri,
+                nnri.equivalentRequests, ndpId, ncBuilder, linkProperties)
+                && mNiWrapper.isAddressUsable(linkProperties))) {
             if (VDBG) {
                 Log.d(TAG, "Failed address validation");
             }
@@ -673,6 +679,12 @@ public class WifiAwareDataPathStateManager {
                 }, ADDRESS_VALIDATION_RETRY_INTERVAL_MS);
             }
             return;
+        }
+        final WifiAwareNetworkInfo ni = new WifiAwareNetworkInfo(
+                nnri.peerIpv6, nnri.peerPort, nnri.peerTransportProtocol);
+        ncBuilder.setTransportInfo(ni);
+        if (VDBG) {
+            Log.v(TAG, "onDataPathConfirm: AwareNetworkInfo=" + ni);
         }
         final NetworkAgentConfig naConfig = new NetworkAgentConfig.Builder()
                 .setLegacyType(ConnectivityManager.TYPE_NONE)
@@ -691,6 +703,8 @@ public class WifiAwareDataPathStateManager {
         if (mClock.getElapsedSinceBootMillis() - nnri.startValidationTimestamp
                 > ADDRESS_VALIDATION_TIMEOUT_MS) {
             Log.e(TAG, "Timed-out while waiting for IPv6 address to be usable");
+            mMgr.endDataPath(ndpId);
+            nnri.state = AwareNetworkRequestInformation.STATE_TERMINATING;
             declareUnfullfillableAndEndDp(nnri, ndpId);
             return true;
         }
@@ -1488,17 +1502,13 @@ public class WifiAwareDataPathStateManager {
             try {
                 ni = NetworkInterface.getByName(nnri.interfaceName);
             } catch (SocketException e) {
-                Log.e(TAG, "onDataPathConfirm: ACCEPT nnri=" + nnri
+                Log.v(TAG, "onDataPathConfirm: ACCEPT nnri=" + nnri
                         + ": can't get network interface - " + e);
-                mMgr.endDataPath(ndpId);
-                nnri.state = AwareNetworkRequestInformation.STATE_TERMINATING;
                 return false;
             }
             if (ni == null) {
-                Log.e(TAG, "onDataPathConfirm: ACCEPT nnri=" + nnri
+                Log.v(TAG, "onDataPathConfirm: ACCEPT nnri=" + nnri
                         + ": can't get network interface (null)");
-                mMgr.endDataPath(ndpId);
-                nnri.state = AwareNetworkRequestInformation.STATE_TERMINATING;
                 return false;
             }
             Enumeration<InetAddress> addresses = ni.getInetAddresses();
@@ -1511,9 +1521,7 @@ public class WifiAwareDataPathStateManager {
             }
 
             if (linkLocal == null) {
-                Log.e(TAG, "onDataPathConfirm: ACCEPT nnri=" + nnri + ": no link local addresses");
-                mMgr.endDataPath(ndpId);
-                nnri.state = AwareNetworkRequestInformation.STATE_TERMINATING;
+                Log.v(TAG, "onDataPathConfirm: ACCEPT nnri=" + nnri + ": no link local addresses");
                 return false;
             }
 

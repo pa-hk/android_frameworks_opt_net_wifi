@@ -26,6 +26,8 @@
     <string name="wifitrackerlib_wifi_disabled_network_failure" msgid="3046956554224277166">"IP 設定エラー"</string>
     <string name="wifitrackerlib_wifi_disabled_generic" msgid="4278806060337007814">"無効"</string>
     <string name="wifitrackerlib_wifi_ap_unable_to_handle_new_sta" msgid="931922372010639716">"アクセス ポイントが一時的にいっぱいです"</string>
+    <!-- no translation found for wifitrackerlib_wifi_poor_channel_conditions (26484680900376236) -->
+    <skip />
     <string name="wifitrackerlib_wifi_disconnected" msgid="3320414360982942679">"未接続"</string>
     <string name="wifitrackerlib_wifi_remembered" msgid="2406091442008343041">"保存済み"</string>
     <string name="wifitrackerlib_wifi_metered_label" msgid="8818508951778620385">"従量制"</string>
@@ -37,6 +39,7 @@
     <string name="wifitrackerlib_wifi_limited_connection" msgid="4234326409980991740">"接続が制限されています"</string>
     <string name="wifitrackerlib_private_dns_broken" msgid="6049401148262718707">"プライベート DNS サーバーにアクセスできません"</string>
     <string name="wifitrackerlib_wifi_connected_no_internet" msgid="2329345148045635995">"インターネットに接続されていません"</string>
+    <string name="wifi_connected_low_quality" msgid="4478331645458058445">"低品質"</string>
     <string name="wifitrackerlib_wifi_security_none" msgid="2686062484642847280">"なし"</string>
     <string name="wifitrackerlib_wifi_passpoint_expired" msgid="7974960573887452566">"期限切れ"</string>
     <string name="wifitrackerlib_tap_to_sign_up" msgid="3897017015910817402">"タップして登録してください"</string>
@@ -46,7 +49,7 @@
     <string name="wifitrackerlib_osu_completing_sign_up" msgid="4359503050543182480">"登録を完了しています…"</string>
     <string name="wifitrackerlib_osu_sign_up_failed" msgid="3964140125523395898">"登録を完了できませんでした。タップしてもう一度お試しください。"</string>
     <string name="wifitrackerlib_osu_sign_up_complete" msgid="3279606633343124580">"登録が完了しました。接続しています…"</string>
-    <string name="wifitrackerlib_imsi_protection_warning" msgid="5177588159471032092">"このネットワークは一意の ID を受信します。この ID を使ってデバイスの位置情報が追跡される可能性があります。"<annotation id="url">"詳細"</annotation></string>
+    <string name="wifitrackerlib_imsi_protection_warning" msgid="7202210931586169466">"このネットワークは SIM ID を受信します。この ID を使ってデバイスの位置情報が追跡される可能性があります。"<annotation id="url">"詳細"</annotation></string>
     <string name="wifitrackerlib_speed_label_very_slow" msgid="6606409259798814244">"非常に遅い"</string>
     <string name="wifitrackerlib_speed_label_slow" msgid="7327906382011957760">"遅い"</string>
     <string name="wifitrackerlib_speed_label_okay" msgid="6656684124654881956">"OK"</string>

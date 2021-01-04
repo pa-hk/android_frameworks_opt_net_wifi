@@ -54,13 +54,13 @@ public class DeviceConfigFacade {
     // Default threshold of CCA level above which to trigger a data stall
     public static final int DEFAULT_DATA_STALL_CCA_LEVEL_THR = CHANNEL_UTILIZATION_SCALE;
     // Default low threshold of L2 sufficient Tx throughput in Kbps
-    public static final int DEFAULT_TX_TPUT_SUFFICIENT_THR_LOW_KBPS = 1000;
+    public static final int DEFAULT_TX_TPUT_SUFFICIENT_THR_LOW_KBPS = 2000;
     // Default high threshold of L2 sufficient Tx throughput in Kbps
-    public static final int DEFAULT_TX_TPUT_SUFFICIENT_THR_HIGH_KBPS = 4000;
+    public static final int DEFAULT_TX_TPUT_SUFFICIENT_THR_HIGH_KBPS = 8000;
     // Default low threshold of L2 sufficient Rx throughput in Kbps
-    public static final int DEFAULT_RX_TPUT_SUFFICIENT_THR_LOW_KBPS = 1000;
+    public static final int DEFAULT_RX_TPUT_SUFFICIENT_THR_LOW_KBPS = 2000;
     // Default high threshold of L2 sufficient Rx throughput in Kbps
-    public static final int DEFAULT_RX_TPUT_SUFFICIENT_THR_HIGH_KBPS = 4000;
+    public static final int DEFAULT_RX_TPUT_SUFFICIENT_THR_HIGH_KBPS = 8000;
     // Numerator part of default threshold of L2 throughput over L3 throughput ratio
     public static final int DEFAULT_TPUT_SUFFICIENT_RATIO_THR_NUM = 2;
     // Denominator part of default threshold of L2 throughput over L3 throughput ratio
@@ -68,7 +68,7 @@ public class DeviceConfigFacade {
     // Default threshold of Tx packet per second
     public static final int DEFAULT_TX_PACKET_PER_SECOND_THR = 2;
     // Default threshold of Rx packet per second
-    public static final int DEFAULT_RX_PACKET_PER_SECOND_THR = 1;
+    public static final int DEFAULT_RX_PACKET_PER_SECOND_THR = 2;
     // Default high threshold values for various connection/disconnection cases
     // All of them are in percent with respect to connection attempts
     static final int DEFAULT_CONNECTION_FAILURE_HIGH_THR_PERCENT = 40;
@@ -129,6 +129,19 @@ public class DeviceConfigFacade {
     // Default health monitor firmware alert valid time.
     // -1 disables firmware alert time check
     static final int DEFAULT_HEALTH_MONITOR_FW_ALERT_VALID_TIME_MS = -1;
+    // Default minimum confirmation duration for sending network score to connectivity service
+    // when score breaches low. The actual confirmation duration is longer in general and it
+    // depends on the score evaluation period normally controlled by
+    // 'com.android.wifi.resources.R' config_wifiPollRssiIntervalMilliseconds.
+    static final int DEFAULT_MIN_CONFIRMATION_DURATION_SEND_LOW_SCORE_MS = 5000;
+    // Default minimum confirmation duration for sending network score to connectivity service
+    // when score breaches high. The actual confirmation duration is longer in general and it
+    // depends on the score evaluation period normally controlled by
+    // 'com.android.wifi.resources.R' config_wifiPollRssiIntervalMilliseconds.
+    static final int DEFAULT_MIN_CONFIRMATION_DURATION_SEND_HIGH_SCORE_MS = 0;
+    // Default RSSI threshold in dBm above which low score is not sent to connectivity service
+    // when external scorer takes action.
+    static final int DEFAULT_RSSI_THRESHOLD_NOT_SEND_LOW_SCORE_TO_CS_DBM = -67;
     // Cached values of fields updated via updateDeviceConfigFlags()
     private boolean mIsAbnormalConnectionBugreportEnabled;
     private int mAbnormalConnectionDurationMs;
@@ -178,6 +191,10 @@ public class DeviceConfigFacade {
     private int mNonstationaryScanRssiValidTimeMs;
     private int mStationaryScanRssiValidTimeMs;
     private int mHealthMonitorFwAlertValidTimeMs;
+    private int mMinConfirmationDurationSendLowScoreMs;
+    private int mMinConfirmationDurationSendHighScoreMs;
+    private int mRssiThresholdNotSendLowScoreToCsDbm;
+    private boolean mAllowEnhancedMacRandomizationOnOpenSsids;
 
     public DeviceConfigFacade(Context context, Handler handler, WifiMetrics wifiMetrics) {
         mContext = context;
@@ -327,6 +344,17 @@ public class DeviceConfigFacade {
                 "health_monitor_fw_alert_valid_time_ms",
                 DEFAULT_HEALTH_MONITOR_FW_ALERT_VALID_TIME_MS);
         mWifiMetrics.setHealthMonitorRssiPollValidTimeMs(mHealthMonitorRssiPollValidTimeMs);
+        mMinConfirmationDurationSendLowScoreMs = DeviceConfig.getInt(NAMESPACE,
+                "min_confirmation_duration_send_low_score_ms",
+                DEFAULT_MIN_CONFIRMATION_DURATION_SEND_LOW_SCORE_MS);
+        mMinConfirmationDurationSendHighScoreMs = DeviceConfig.getInt(NAMESPACE,
+                "min_confirmation_duration_send_high_score_ms",
+                DEFAULT_MIN_CONFIRMATION_DURATION_SEND_HIGH_SCORE_MS);
+        mRssiThresholdNotSendLowScoreToCsDbm = DeviceConfig.getInt(NAMESPACE,
+                "rssi_threshold_not_send_low_score_to_cs_dbm",
+                DEFAULT_RSSI_THRESHOLD_NOT_SEND_LOW_SCORE_TO_CS_DBM);
+        mAllowEnhancedMacRandomizationOnOpenSsids = DeviceConfig.getBoolean(NAMESPACE,
+                "allow_enhanced_mac_randomization_on_open_ssids", false);
     }
 
     private Set<String> getUnmodifiableSetQuoted(String key) {
@@ -681,5 +709,36 @@ public class DeviceConfigFacade {
      */
     public int getHealthMonitorFwAlertValidTimeMs() {
         return mHealthMonitorFwAlertValidTimeMs;
+    }
+
+    /**
+     * Gets the minimum confirmation duration for sending network score to connectivity service
+     * when score breaches low.
+     */
+    public int getMinConfirmationDurationSendLowScoreMs() {
+        return mMinConfirmationDurationSendLowScoreMs;
+    }
+
+    /**
+     * Gets the minimum confirmation duration for sending network score to connectivity service
+     * when score breaches high.
+     */
+    public int getMinConfirmationDurationSendHighScoreMs() {
+        return mMinConfirmationDurationSendHighScoreMs;
+    }
+
+    /**
+     * Gets the RSSI threshold above which low score is not sent to connectivity service when
+     * external scorer takes action.
+     */
+    public int getRssiThresholdNotSendLowScoreToCsDbm() {
+        return mRssiThresholdNotSendLowScoreToCsDbm;
+    }
+
+    /**
+     * Gets whether enhanced MAC randomization should be allowed on open networks.
+     */
+    public boolean allowEnhancedMacRandomizationOnOpenSsids() {
+        return mAllowEnhancedMacRandomizationOnOpenSsids;
     }
 }

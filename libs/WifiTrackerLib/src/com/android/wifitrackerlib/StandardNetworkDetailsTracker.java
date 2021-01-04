@@ -21,16 +21,13 @@ import static androidx.core.util.Preconditions.checkNotNull;
 import static com.android.wifitrackerlib.NetworkRequestEntry.wifiConfigToNetworkRequestEntryKey;
 import static com.android.wifitrackerlib.StandardWifiEntry.wifiConfigToStandardWifiEntryKey;
 import static com.android.wifitrackerlib.Utils.getSecurityTypesFromScanResult;
-import static com.android.wifitrackerlib.WifiEntry.CONNECTED_STATE_CONNECTED;
 
 import static java.util.stream.Collectors.toList;
 
 import android.content.Context;
 import android.content.Intent;
 import android.net.ConnectivityManager;
-import android.net.LinkProperties;
 import android.net.Network;
-import android.net.NetworkCapabilities;
 import android.net.NetworkInfo;
 import android.net.NetworkScoreManager;
 import android.net.wifi.WifiConfiguration;
@@ -41,7 +38,6 @@ import android.text.TextUtils;
 
 import androidx.annotation.AnyThread;
 import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
 import androidx.annotation.WorkerThread;
 import androidx.lifecycle.Lifecycle;
 
@@ -81,14 +77,6 @@ class StandardNetworkDetailsTracker extends NetworkDetailsTracker {
             mChosenEntry = new StandardWifiEntry(mContext, mMainHandler, key, mWifiManager,
                     mWifiNetworkScoreCache, false /* forSavedNetworksPage */);
         }
-        cacheNewScanResults();
-        conditionallyUpdateScanResults(true /* lastScanSucceeded */);
-        conditionallyUpdateConfig();
-        final WifiInfo wifiInfo = mWifiManager.getConnectionInfo();
-        final Network currentNetwork = mWifiManager.getCurrentNetwork();
-        mCurrentNetworkInfo = mConnectivityManager.getNetworkInfo(currentNetwork);
-        mChosenEntry.updateConnectionInfo(wifiInfo, mCurrentNetworkInfo);
-        handleLinkPropertiesChanged(mConnectivityManager.getLinkProperties(currentNetwork));
     }
 
     @AnyThread
@@ -96,6 +84,22 @@ class StandardNetworkDetailsTracker extends NetworkDetailsTracker {
     @NonNull
     public WifiEntry getWifiEntry() {
         return mChosenEntry;
+    }
+
+    @WorkerThread
+    @Override
+    protected void handleOnStart() {
+        conditionallyUpdateScanResults(true /* lastScanSucceeded */);
+        conditionallyUpdateConfig();
+        final WifiInfo wifiInfo = mWifiManager.getConnectionInfo();
+        final Network currentNetwork = mWifiManager.getCurrentNetwork();
+        mCurrentNetworkInfo = mConnectivityManager.getNetworkInfo(currentNetwork);
+        mChosenEntry.updateConnectionInfo(wifiInfo, mCurrentNetworkInfo);
+        handleNetworkCapabilitiesChanged(
+                mConnectivityManager.getNetworkCapabilities(currentNetwork));
+        handleLinkPropertiesChanged(mConnectivityManager.getLinkProperties(currentNetwork));
+        mChosenEntry.setIsDefaultNetwork(mIsWifiDefaultRoute);
+        mChosenEntry.setIsLowQuality(mIsWifiValidated && mIsCellDefaultRoute);
     }
 
     @WorkerThread
@@ -116,50 +120,7 @@ class StandardNetworkDetailsTracker extends NetworkDetailsTracker {
     @Override
     protected void handleConfiguredNetworksChangedAction(@NonNull Intent intent) {
         checkNotNull(intent, "Intent cannot be null!");
-        final WifiConfiguration updatedConfig =
-                (WifiConfiguration) intent.getExtra(WifiManager.EXTRA_WIFI_CONFIGURATION);
-        if (updatedConfig != null && configMatches(updatedConfig)) {
-            final int changeReason = intent.getIntExtra(WifiManager.EXTRA_CHANGE_REASON,
-                    -1 /* defaultValue*/);
-            if (changeReason == WifiManager.CHANGE_REASON_ADDED
-                    || changeReason == WifiManager.CHANGE_REASON_CONFIG_CHANGE) {
-                mChosenEntry.updateConfig(updatedConfig);
-            } else if (changeReason == WifiManager.CHANGE_REASON_REMOVED) {
-                mChosenEntry.updateConfig(null);
-            }
-        } else {
-            conditionallyUpdateConfig();
-        }
-    }
-
-    @WorkerThread
-    @Override
-    protected void handleNetworkStateChangedAction(@NonNull Intent intent) {
-        checkNotNull(intent, "Intent cannot be null!");
-        mCurrentNetworkInfo = (NetworkInfo) intent.getExtra(WifiManager.EXTRA_NETWORK_INFO);
-        mChosenEntry.updateConnectionInfo(mWifiManager.getConnectionInfo(), mCurrentNetworkInfo);
-    }
-
-    @WorkerThread
-    @Override
-    protected void handleRssiChangedAction() {
-        mChosenEntry.updateConnectionInfo(mWifiManager.getConnectionInfo(), mCurrentNetworkInfo);
-    }
-
-    @WorkerThread
-    @Override
-    protected void handleLinkPropertiesChanged(@Nullable LinkProperties linkProperties) {
-        if (mChosenEntry.getConnectedState() == CONNECTED_STATE_CONNECTED) {
-            mChosenEntry.updateLinkProperties(linkProperties);
-        }
-    }
-
-    @WorkerThread
-    @Override
-    protected void handleNetworkCapabilitiesChanged(@Nullable NetworkCapabilities capabilities) {
-        if (mChosenEntry.getConnectedState() == CONNECTED_STATE_CONNECTED) {
-            mChosenEntry.updateNetworkCapabilities(capabilities);
-        }
+        conditionallyUpdateConfig();
     }
 
     @WorkerThread

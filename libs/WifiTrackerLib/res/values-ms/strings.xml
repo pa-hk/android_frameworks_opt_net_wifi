@@ -26,6 +26,8 @@
     <string name="wifitrackerlib_wifi_disabled_network_failure" msgid="3046956554224277166">"Kegagalan konfigurasi IP"</string>
     <string name="wifitrackerlib_wifi_disabled_generic" msgid="4278806060337007814">"Dilumpuhkan"</string>
     <string name="wifitrackerlib_wifi_ap_unable_to_handle_new_sta" msgid="931922372010639716">"Titik akses penuh buat sementara waktu"</string>
+    <!-- no translation found for wifitrackerlib_wifi_poor_channel_conditions (26484680900376236) -->
+    <skip />
     <string name="wifitrackerlib_wifi_disconnected" msgid="3320414360982942679">"Diputuskan sambungan"</string>
     <string name="wifitrackerlib_wifi_remembered" msgid="2406091442008343041">"Disimpan"</string>
     <string name="wifitrackerlib_wifi_metered_label" msgid="8818508951778620385">"Bermeter"</string>
@@ -37,6 +39,7 @@
     <string name="wifitrackerlib_wifi_limited_connection" msgid="4234326409980991740">"Sambungan terhad"</string>
     <string name="wifitrackerlib_private_dns_broken" msgid="6049401148262718707">"Pelayan DNS peribadi tidak boleh diakses"</string>
     <string name="wifitrackerlib_wifi_connected_no_internet" msgid="2329345148045635995">"Tiada Internet"</string>
+    <string name="wifi_connected_low_quality" msgid="4478331645458058445">"Kualiti rendah"</string>
     <string name="wifitrackerlib_wifi_security_none" msgid="2686062484642847280">"Tiada"</string>
     <string name="wifitrackerlib_wifi_passpoint_expired" msgid="7974960573887452566">"Tamat tempoh"</string>
     <string name="wifitrackerlib_tap_to_sign_up" msgid="3897017015910817402">"Ketik untuk daftar"</string>
@@ -46,7 +49,7 @@
     <string name="wifitrackerlib_osu_completing_sign_up" msgid="4359503050543182480">"Menyelesaikan pendaftaran…"</string>
     <string name="wifitrackerlib_osu_sign_up_failed" msgid="3964140125523395898">"Tidak dapat menyelesaikan pendaftaran. Ketik untuk mencuba lagi."</string>
     <string name="wifitrackerlib_osu_sign_up_complete" msgid="3279606633343124580">"Pendaftaran selesai. Menyambung…"</string>
-    <string name="wifitrackerlib_imsi_protection_warning" msgid="5177588159471032092">"Rangkaian ini menerima ID unik yang boleh digunakan untuk menjejaki lokasi peranti. "<annotation id="url">"Ketahui lebih lanjut"</annotation></string>
+    <string name="wifitrackerlib_imsi_protection_warning" msgid="7202210931586169466">"Rangkaian ini menerima ID SIM yang boleh digunakan untuk menjejaki lokasi peranti. "<annotation id="url">"Ketahui lebih lanjut"</annotation></string>
     <string name="wifitrackerlib_speed_label_very_slow" msgid="6606409259798814244">"Sangat Perlahan"</string>
     <string name="wifitrackerlib_speed_label_slow" msgid="7327906382011957760">"Perlahan"</string>
     <string name="wifitrackerlib_speed_label_okay" msgid="6656684124654881956">"OK"</string>
