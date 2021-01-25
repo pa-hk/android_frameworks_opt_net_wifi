@@ -83,7 +83,7 @@ import java.util.stream.Collectors;
  */
 @VisibleForTesting
 public class StandardWifiEntry extends WifiEntry {
-    static final String KEY_PREFIX = "StandardWifiEntry:";
+    public static final String KEY_PREFIX = "StandardWifiEntry:";
 
     @Retention(RetentionPolicy.SOURCE)
     @IntDef(value = {
@@ -354,11 +354,6 @@ public class StandardWifiEntry extends WifiEntry {
     }
 
     @Override
-    public boolean isSubscription() {
-        return false;
-    }
-
-    @Override
     public WifiConfiguration getWifiConfiguration() {
         if (!isSaved()) {
             return null;
@@ -410,7 +405,7 @@ public class StandardWifiEntry extends WifiEntry {
         // We should flag this network to auto-open captive portal since this method represents
         // the user manually connecting to a network (i.e. not auto-join).
         mShouldAutoOpenCaptivePortal = true;
-
+        mWifiManager.stopTemporarilyDisablingAllNonCarrierMergedWifi();
         if (isSaved() || isSuggestion()) {
             // Saved/suggested network
             mWifiManager.connect(mWifiConfig.networkId, new ConnectActionListener());
@@ -683,11 +678,6 @@ public class StandardWifiEntry extends WifiEntry {
     }
 
     @Override
-    public boolean isExpired() {
-        return false;
-    }
-
-    @Override
     public boolean shouldEditBeforeConnect() {
         WifiConfiguration wifiConfig = getWifiConfiguration();
         if (wifiConfig == null) {
@@ -882,7 +872,7 @@ public class StandardWifiEntry extends WifiEntry {
     }
 
     @Override
-    String getScanResultDescription() {
+    protected String getScanResultDescription() {
         synchronized (mLock) {
             if (mCurrentScanResults.size() == 0) {
                 return "";
