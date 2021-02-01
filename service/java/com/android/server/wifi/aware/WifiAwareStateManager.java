@@ -37,7 +37,6 @@ import android.net.wifi.aware.SubscribeConfig;
 import android.net.wifi.aware.WifiAwareManager;
 import android.net.wifi.aware.WifiAwareNetworkSpecifier;
 import android.net.wifi.util.HexEncoding;
-import android.os.BasicShellCommandHandler;
 import android.os.Bundle;
 import android.os.Looper;
 import android.os.Message;
@@ -58,6 +57,8 @@ import com.android.internal.util.MessageUtils;
 import com.android.internal.util.State;
 import com.android.internal.util.StateMachine;
 import com.android.internal.util.WakeupMessage;
+import com.android.modules.utils.BasicShellCommandHandler;
+import com.android.modules.utils.build.SdkLevel;
 import com.android.server.wifi.Clock;
 import com.android.server.wifi.util.NetdWrapper;
 import com.android.server.wifi.util.WifiPermissionsUtil;
@@ -338,6 +339,9 @@ public class WifiAwareStateManager implements WifiAwareShellCommand.DelegatedShe
                 return 0;
             }
             case "get_aware_resources": {
+                if (!SdkLevel.isAtLeastS()) {
+                    return -1;
+                }
                 JSONObject j = new JSONObject();
                 AwareResources resources = getAvailableAwareResources();
                 if (resources != null) {

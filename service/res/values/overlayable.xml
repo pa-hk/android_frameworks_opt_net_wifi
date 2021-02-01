@@ -95,9 +95,12 @@
           <item type="bool" name="config_wifiAllowEnhancedMacRandomizationOnOpenSsids" />
           <item type="bool" name="config_wifi_p2p_mac_randomization_supported" />
           <item type="bool" name="config_wifi_ap_mac_randomization_supported" />
+          <item type="bool" name="config_wifiBridgedSoftApSupported" />
+          <item type="bool" name="config_wifiStaWithBridgedSoftApConcurrencySupported" />
           <item type="array" name="config_wifi_aggressive_randomization_ssid_allowlist" />
           <item type="array" name="config_wifi_aggressive_randomization_ssid_blocklist" />
           <item type="integer" name="config_wifiRecentFailureReasonExpirationMinutes" />
+          <item type="integer" name="config_wifiAllNonCarrierMergedWifiDisableDurationMinutes" />
           <item type="bool" name="config_wifi_link_probing_supported" />
           <item type="string" name="config_wifi_tcp_buffers" />
           <item type="string" name="wifi_tether_configure_ssid_default" />
@@ -123,6 +126,7 @@
           <item type="integer" name="config_wifiBssidBlocklistMonitorAuthenticationFailureThreshold" />
           <item type="integer" name="config_wifiBssidBlocklistMonitorDhcpFailureThreshold" />
           <item type="integer" name="config_wifiBssidBlocklistMonitorAbnormalDisconnectThreshold" />
+          <item type="integer" name="config_wifiBssidBlocklistMonitorNonlocalDisconnectConnectingThreshold" />
           <item type="integer" name="config_wifiBssidBlocklistMonitorBaseBlockDurationMs" />
           <item type="integer" name="config_wifiBssidBlocklistMonitorConnectedScoreBaseBlockDurationMs" />
           <item type="integer" name="config_wifiBssidBlocklistMonitorFailureStreakCap" />
@@ -136,6 +140,7 @@
           <item type="bool" name="config_wifiPnoFrequencyCullingEnabled" />
           <item type="bool" name="config_wifiPnoRecencySortingEnabled" />
           <item type="integer" name="config_wifiMaxPnoSsidCount" />
+          <item type="integer" name="config_wifiPnoWatchdogIntervalMs" />
           <item type="bool" name="config_wifiSuspendOptimizationsEnabled" />
           <item type="bool" name="config_wifiHighMovementNetworkSelectionOptimizationEnabled" />
           <item type="integer" name="config_wifiHighMovementNetworkSelectionOptimizationScanDelayMs" />
@@ -159,6 +164,7 @@
           <item type="bool" name="config_wifiMultiStaNetworkSwitchingMakeBeforeBreakEnabled" />
           <item type="bool" name="config_wifiMultiStaLocalOnlyConcurrencyEnabled" />
           <item type="bool" name="config_wifiMultiStaRestrictedConcurrencyEnabled" />
+          <item type="bool" name="config_wifiDefaultCoexAlgorithmEnabled"/>
           <!-- Params from config.xml that can be overlayed -->
 
           <!-- Params from strings.xml that can be overlayed -->

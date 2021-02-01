@@ -32,6 +32,8 @@ import static com.android.server.wifi.ClientModeImpl.RESET_SIM_REASON_SIM_INSERT
 import static com.android.server.wifi.ClientModeImpl.RESET_SIM_REASON_SIM_REMOVED;
 import static com.android.server.wifi.WifiSettingsConfigStore.WIFI_VERBOSE_LOGGING_ENABLED;
 import static com.android.server.wifi.WifiSettingsConfigStore.WIFI_COVERAGE_EXTEND_FEATURE_ENABLED;
+
+import android.Manifest;
 import android.annotation.CheckResult;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
@@ -54,7 +56,9 @@ import android.net.Network;
 import android.net.NetworkStack;
 import android.net.Uri;
 import android.net.ip.IpClientUtil;
+import android.net.wifi.CoexUnsafeChannel;
 import android.net.wifi.IActionListener;
+import android.net.wifi.ICoexCallback;
 import android.net.wifi.IDppCallback;
 import android.net.wifi.ILocalOnlyHotspotCallback;
 import android.net.wifi.INetworkRequestMatchCallback;
@@ -74,6 +78,7 @@ import android.net.wifi.WifiClient;
 import android.net.wifi.WifiConfiguration;
 import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
+import android.net.wifi.WifiManager.CoexRestriction;
 import android.net.wifi.WifiManager.DeviceMobilityState;
 import android.net.wifi.WifiManager.LocalOnlyHotspotCallback;
 import android.net.wifi.WifiManager.SuggestionConnectionStatusListener;
@@ -114,6 +119,7 @@ import com.android.internal.annotations.GuardedBy;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.Inet4AddressUtils;
+import com.android.server.wifi.coex.CoexManager;
 import com.android.server.wifi.hotspot2.PasspointManager;
 import com.android.server.wifi.hotspot2.PasspointProvider;
 import com.android.server.wifi.proto.nano.WifiMetricsProto.UserActionEvent;
@@ -144,10 +150,12 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
@@ -188,6 +196,7 @@ public class WifiServiceImpl extends BaseWifiService {
     /** Backup/Restore Module */
     private final WifiBackupRestore mWifiBackupRestore;
     private final SoftApBackupRestore mSoftApBackupRestore;
+    private final CoexManager mCoexManager;
     private final WifiNetworkSuggestionsManager mWifiNetworkSuggestionsManager;
     private final WifiConfigManager mWifiConfigManager;
     private final PasspointManager mPasspointManager;
@@ -195,6 +204,7 @@ public class WifiServiceImpl extends BaseWifiService {
     private final WifiConnectivityManager mWifiConnectivityManager;
     private final ConnectHelper mConnectHelper;
     private final WifiGlobals mWifiGlobals;
+    private final WifiCarrierInfoManager mWifiCarrierInfoManager;
     /**
      * Verbose logging flag. Toggled by developer options.
      */
@@ -333,9 +343,11 @@ public class WifiServiceImpl extends BaseWifiService {
         mWifiConnectivityManager = wifiInjector.getWifiConnectivityManager();
         mWifiDataStall = wifiInjector.getWifiDataStall();
         mWifiNative = wifiInjector.getWifiNative();
+        mCoexManager = wifiInjector.getCoexManager();
         mConnectHelper = wifiInjector.getConnectHelper();
         mWifiGlobals = wifiInjector.getWifiGlobals();
         mSimRequiredNotifier = wifiInjector.getSimRequiredNotifier();
+        mWifiCarrierInfoManager = wifiInjector.getWifiCarrierInfoManager();
     }
 
     /**
@@ -923,6 +935,81 @@ public class WifiServiceImpl extends BaseWifiService {
 
         // hand off the work to our handler thread
         mWifiThreadRunner.post(() -> mLohsSoftApTracker.updateInterfaceIpState(ifaceName, mode));
+    }
+
+    /**
+     * see {@link android.net.wifi.WifiManager#setCoexUnsafeChannels(Set, int)}
+     * @param unsafeChannels List of {@link CoexUnsafeChannel} to avoid.
+     * @param restrictions Bitmap of {@link CoexRestriction} specifying the mandatory
+     *                     uses of the specified channels.
+     */
+    @Override
+    public void setCoexUnsafeChannels(
+            @NonNull List<CoexUnsafeChannel> unsafeChannels, int restrictions) {
+        mContext.enforceCallingOrSelfPermission(
+                Manifest.permission.WIFI_UPDATE_COEX_UNSAFE_CHANNELS, "WifiService");
+        if (unsafeChannels == null) {
+            throw new IllegalArgumentException("unsafeChannels cannot be null");
+        }
+        if (mContext.getResources().getBoolean(R.bool.config_wifiDefaultCoexAlgorithmEnabled)) {
+            Log.e(TAG, "setCoexUnsafeChannels called but default coex algorithm is enabled");
+            return;
+        }
+        mWifiThreadRunner.post(() -> mCoexManager.setCoexUnsafeChannels(
+                new HashSet<>(unsafeChannels), restrictions));
+    }
+
+    /**
+     * see {@link android.net.wifi.WifiManager#getCoexUnsafeChannels()}
+     * @return List of current CoexUnsafeChannels.
+     */
+    @Override
+    public List<CoexUnsafeChannel> getCoexUnsafeChannels() {
+        mContext.enforceCallingOrSelfPermission(
+                Manifest.permission.WIFI_ACCESS_COEX_UNSAFE_CHANNELS, "WifiService");
+        return mWifiThreadRunner.call(() -> new ArrayList<>(mCoexManager.getCoexUnsafeChannels()),
+                Collections.emptyList());
+    }
+
+    /**
+     * see {@link android.net.wifi.WifiManager#getCoexRestrictions()}
+     * @return Bitmask of current coex restrictions.
+     */
+    @Override
+    public int getCoexRestrictions() {
+        mContext.enforceCallingOrSelfPermission(
+                Manifest.permission.WIFI_ACCESS_COEX_UNSAFE_CHANNELS, "WifiService");
+        return mWifiThreadRunner.call(mCoexManager::getCoexRestrictions, 0);
+    }
+
+    /**
+     * See {@link WifiManager#registerCoexCallback(WifiManager.CoexCallback)}
+     */
+    public void registerCoexCallback(@NonNull ICoexCallback callback) {
+        mContext.enforceCallingOrSelfPermission(
+                Manifest.permission.WIFI_ACCESS_COEX_UNSAFE_CHANNELS, "WifiService");
+        if (callback == null) {
+            throw new IllegalArgumentException("callback must not be null");
+        }
+        if (mVerboseLoggingEnabled) {
+            mLog.info("registerCoexCallback uid=%").c(Binder.getCallingUid()).flush();
+        }
+        mWifiThreadRunner.post(() -> mCoexManager.registerRemoteCoexCallback(callback));
+    }
+
+    /**
+     * See {@link WifiManager#unregisterCoexCallback(WifiManager.CoexCallback)}
+     */
+    public void unregisterCoexCallback(@NonNull ICoexCallback callback) {
+        mContext.enforceCallingOrSelfPermission(
+                Manifest.permission.WIFI_ACCESS_COEX_UNSAFE_CHANNELS, "WifiService");
+        if (callback == null) {
+            throw new IllegalArgumentException("callback must not be null");
+        }
+        if (mVerboseLoggingEnabled) {
+            mLog.info("unregisterCoexCallback uid=%").c(Binder.getCallingUid()).flush();
+        }
+        mWifiThreadRunner.post(() -> mCoexManager.unregisterRemoteCoexCallback(callback));
     }
 
     /**
@@ -1885,7 +1972,7 @@ public class WifiServiceImpl extends BaseWifiService {
 
         mLog.info("start uid=% pid=%").c(uid).c(pid).flush();
 
-        WorkSource requestorWs;
+        final WorkSource requestorWs;
         // Permission requirements are different with/without custom config.
         if (customConfig == null) {
             if (enforceChangePermission(packageName) != MODE_ALLOWED) {
@@ -1898,20 +1985,20 @@ public class WifiServiceImpl extends BaseWifiService {
                 if (!mWifiPermissionsUtil.isLocationModeEnabled()) {
                     throw new SecurityException("Location mode is not enabled.");
                 }
+                // TODO(b/162344695): Exception added for LOHS. This exception is need to avoid
+                // breaking existing LOHS behavior: LOHS AP iface is allowed to delete STA iface
+                // (even if LOHS app has lower priority than user toggled on STA iface). This does
+                // not fit in with the new context based concurrency priority in HalDeviceManager,
+                // but we cannot break existing API's. So, we artificially boost the priority of
+                // the request by "faking" the requestor context as settings app.
+                // We probably need some UI dialog to allow the user to grant the app's LOHS
+                // request. Once that UI dialog is added, we can get rid of this hack and use the UI
+                // to elevate the priority of LOHS request only if user approves the request to
+                // toggle wifi off for LOHS.
+                requestorWs = mFrameworkFacade.getSettingsWorkSource(mContext);
             } finally {
                 Binder.restoreCallingIdentity(ident);
             }
-            // TODO(b/162344695): Exception added for LOHS. This exception is need to avoid breaking
-            // existing LOHS behavior: LOHS AP iface is allowed to delete STA iface (even if LOHS
-            // app has lower priority than user toggled on STA iface). This does not
-            // fit in with the new context based concurrency priority in HalDeviceManager, but we
-            // cannot break existing API's. So, we artificially boost the priority of the
-            // request by "faking" the requestor context as settings app.
-            // We probably need some UI dialog to allow the user to grant the app's LOHS request.
-            // Once that UI dialog is added, we can get rid of this hack and use the UI to elevate
-            // the priority of LOHS request only if user approves the request to toggle wifi off for
-            // LOHS.
-            requestorWs = mFrameworkFacade.getSettingsWorkSource(mContext);
         } else {
             if (!isSettingsOrSuw(Binder.getCallingPid(), Binder.getCallingUid())) {
                 throw new SecurityException(TAG + ": Permission denied");
@@ -2721,6 +2808,48 @@ public class WifiServiceImpl extends BaseWifiService {
         mLog.info("disableNetwork uid=%").c(callingUid).flush();
         return mWifiThreadRunner.call(
                 () -> mWifiConfigManager.disableNetwork(netId, callingUid, packageName), false);
+    }
+
+    /**
+     * See
+     * {@link android.net.wifi.WifiManager#startTemporarilyDisablingAllNonCarrierMergedWifi(int)}
+     * @param subscriptionId the subscription ID of the carrier whose merged wifi networks won't be
+     *                       disabled.
+     */
+    @Override
+    public void startTemporarilyDisablingAllNonCarrierMergedWifi(int subscriptionId) {
+        if (!SdkLevel.isAtLeastS()) {
+            throw new UnsupportedOperationException();
+        }
+        enforceNetworkSettingsPermission();
+
+        mLog.info("startTemporarilyDisablingAllNonCarrierMergedWifi=% uid=%").c(subscriptionId)
+                .c(Binder.getCallingUid()).flush();
+        mWifiThreadRunner.post(() -> {
+            mWifiConfigManager
+                    .startTemporarilyDisablingAllNonCarrierMergedWifi(subscriptionId);
+            // always disconnect here and rely on auto-join to find the appropriate carrier network
+            // to join. Even if we are currently connected to the carrier-merged wifi, it's still
+            // better to disconnect here because it's possible that carrier wifi offload is
+            // disabled.
+            mActiveModeWarden.getPrimaryClientModeManager().disconnect();
+        });
+    }
+
+    /**
+     * See {@link android.net.wifi.WifiManager#stopTemporarilyDisablingAllNonCarrierMergedWifi()}
+     */
+    @Override
+    public void stopTemporarilyDisablingAllNonCarrierMergedWifi() {
+        if (!SdkLevel.isAtLeastS()) {
+            throw new UnsupportedOperationException();
+        }
+        enforceNetworkSettingsPermission();
+
+        mLog.info("stopTemporarilyDisablingAllNonCarrierMergedWifi uid=%")
+                .c(Binder.getCallingUid()).flush();
+        mWifiThreadRunner.post(() ->
+                mWifiConfigManager.stopTemporarilyDisablingAllNonCarrierMergedWifi());
     }
 
     /**
@@ -3738,7 +3867,7 @@ public class WifiServiceImpl extends BaseWifiService {
                                 mWifiConfigManager.addOrUpdateNetwork(configuration, callingUid)
                                         .getNetworkId();
                         if (networkId == WifiConfiguration.INVALID_NETWORK_ID) {
-                            Log.e(TAG, "Restore network failed: " + configuration.getKey());
+                            Log.e(TAG, "Restore network failed: " + configuration.getProfileKey());
                             continue;
                         }
                         // Enable all networks restored.
@@ -3925,6 +4054,20 @@ public class WifiServiceImpl extends BaseWifiService {
                 R.bool.config_wifi_ap_mac_randomization_supported)) {
             // no corresponding flags in vendor HAL, set if overlay enables it.
             supportedFeatureSet |= WifiManager.WIFI_FEATURE_AP_RAND_MAC;
+        }
+        if (SdkLevel.isAtLeastS()) {
+            if (mContext.getResources().getBoolean(
+                    R.bool.config_wifiBridgedSoftApSupported)) {
+                // The bridged mode requires the kernel network modules support.
+                // It doesn't relate the vendor HAL, set if overlay enables it.
+                supportedFeatureSet |= WifiManager.WIFI_FEATURE_BRIDGED_AP;
+            }
+            if (mContext.getResources().getBoolean(
+                    R.bool.config_wifiStaWithBridgedSoftApConcurrencySupported)) {
+                // The bridged mode requires the kernel network modules support.
+                // It doesn't relate the vendor HAL, set if overlay enables it.
+                supportedFeatureSet |= WifiManager.WIFI_FEATURE_STA_BRIDGED_AP;
+            }
         }
         supportedFeatureSet |= mWifiThreadRunner.call(
                 () -> {
@@ -4218,6 +4361,57 @@ public class WifiServiceImpl extends BaseWifiService {
 
         mWifiThreadRunner.post(() ->
                 mDppManager.startDppAsEnrolleeInitiator(uid, binder, configuratorUri, callback));
+    }
+
+    /**
+     * Start DPP in Enrollee-Responder role. The current device will generate the
+     * bootstrap code and wait for the peer device to start the DPP authentication process.
+     *
+     * @param binder Caller's binder context
+     * @param deviceInfo Device specific info to display in QR code(e.g. Easy_connect_demo)
+     * @param curve Elliptic curve cryptography type used to generate DPP public/private key pair.
+     * @param callback Callback for status updates
+     */
+    @Override
+    public void startDppAsEnrolleeResponder(IBinder binder, @Nullable String deviceInfo,
+            @WifiManager.EasyConnectCryptographyCurve int curve, IDppCallback callback) {
+        if (!SdkLevel.isAtLeastS()) {
+            throw new UnsupportedOperationException();
+        }
+        // verify arguments
+        if (binder == null) {
+            throw new IllegalArgumentException("Binder must not be null");
+        }
+        if (callback == null) {
+            throw new IllegalArgumentException("Callback must not be null");
+        }
+
+        final int uid = getMockableCallingUid();
+
+        if (!isSettingsOrSuw(Binder.getCallingPid(), Binder.getCallingUid())) {
+            throw new SecurityException(TAG + ": Permission denied");
+        }
+
+        if (deviceInfo != null) {
+            int deviceInfoLen = deviceInfo.length();
+            if (deviceInfoLen > WifiManager.EASY_CONNECT_DEVICE_INFO_MAXIMUM_LENGTH) {
+                throw new IllegalArgumentException("Device info length: " + deviceInfoLen
+                        + " must be less than "
+                        + WifiManager.EASY_CONNECT_DEVICE_INFO_MAXIMUM_LENGTH);
+            }
+            char c;
+            for (int i = 0; i < deviceInfoLen; i++) {
+                c = deviceInfo.charAt(i);
+                if (c < '!' || c > '~' || c == ';') {
+                    throw new IllegalArgumentException("Allowed Range of ASCII characters in"
+                            + "deviceInfo - %x20-7E; semicolon and space are not allowed!"
+                            + "Found c: " + c);
+                }
+            }
+        }
+
+        mWifiThreadRunner.post(() ->
+                mDppManager.startDppAsEnrolleeResponder(uid, binder, deviceInfo, curve, callback));
     }
 
     /**
@@ -4805,6 +4999,38 @@ public class WifiServiceImpl extends BaseWifiService {
             mLog.info("isAutoWakeupEnabled uid=%").c(Binder.getCallingUid()).flush();
         }
         return mWifiThreadRunner.call(()-> mWifiInjector.getWakeupController().isEnabled(), false);
+    }
+
+    /**
+     * See {@link android.net.wifi.WifiManager#setCarrierNetworkOffloadEnabled(int, boolean, boolean)}
+     */
+    @Override
+    public void setCarrierNetworkOffloadEnabled(int subscriptionId, boolean merged,
+            boolean enabled) {
+        if (!isSettingsOrSuw(Binder.getCallingPid(), Binder.getCallingUid())) {
+            throw new SecurityException(TAG + ": Permission denied");
+        }
+        if (mVerboseLoggingEnabled) {
+            mLog.info("setCarrierNetworkOffloadEnabled uid=%").c(Binder.getCallingUid()).flush();
+        }
+        mWifiThreadRunner.post(() ->
+                mWifiCarrierInfoManager.setCarrierNetworkOffloadEnabled(subscriptionId, merged, enabled));
+    }
+
+    /**
+     * See {@link android.net.wifi.WifiManager#isCarrierNetworkOffloadEnabled(int, boolean)}
+     */
+    @Override
+    public boolean isCarrierNetworkOffloadEnabled(int subId, boolean merged) {
+        if (!isSettingsOrSuw(Binder.getCallingPid(), Binder.getCallingUid())) {
+            throw new SecurityException(TAG + ": Permission denied");
+        }
+        if (mVerboseLoggingEnabled) {
+            mLog.info("isCarrierNetworkOffload uid=%").c(Binder.getCallingUid()).flush();
+        }
+
+        return mWifiThreadRunner.call(()->
+                mWifiCarrierInfoManager.isCarrierNetworkOffloadEnabled(subId, merged), true);
     }
 
     /*

@@ -19,7 +19,6 @@ package com.android.server.wifi;
 import android.net.DhcpResultsParcelable;
 import android.net.Network;
 import android.net.wifi.IWifiConnectedNetworkScorer;
-import android.net.wifi.ScanResult;
 import android.net.wifi.WifiAnnotations;
 import android.net.wifi.WifiConfiguration;
 import android.net.wifi.WifiDppConfig;
@@ -27,14 +26,20 @@ import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
 import android.net.wifi.hotspot2.IProvisioningCallback;
 import android.net.wifi.hotspot2.OsuProvider;
+import android.net.wifi.nl80211.DeviceWiphyCapabilities;
 import android.os.IBinder;
 import android.os.Message;
 import android.os.WorkSource;
 
+import com.android.server.wifi.WifiNative.RxFateReport;
+import com.android.server.wifi.WifiNative.TxFateReport;
 import com.android.server.wifi.util.ActionListenerWrapper;
 
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Set;
 
 /**
  * Used to respond to calls to ClientMode interface when ClientModeImpl is not up
@@ -76,7 +81,7 @@ public class ScanOnlyModeImpl implements ClientMode {
     public void startConnectToNetwork(int networkId, int uid, String bssid) { }
 
     @Override
-    public void startRoamToNetwork(int networkId, ScanResult scanResult) { }
+    public void startRoamToNetwork(int networkId, String bssid) { }
 
     @Override
     public boolean setWifiConnectedNetworkScorer(
@@ -230,6 +235,54 @@ public class ScanOnlyModeImpl implements ClientMode {
     @Override
     public long getId() {
         return ID;
+    }
+
+    @Override
+    public void setMboCellularDataStatus(boolean available) { }
+
+    @Override
+    public WifiNative.RoamingCapabilities getRoamingCapabilities() {
+        return null;
+    }
+
+    @Override
+    public boolean configureRoaming(WifiNative.RoamingConfig config) {
+        return false;
+    }
+
+    @Override
+    public boolean setCountryCode(String countryCode) {
+        return false;
+    }
+
+    @Override
+    public List<TxFateReport> getTxPktFates() {
+        return new ArrayList<>();
+    }
+
+    @Override
+    public List<RxFateReport> getRxPktFates() {
+        return new ArrayList<>();
+    }
+
+    @Override
+    public DeviceWiphyCapabilities getDeviceWiphyCapabilities() {
+        return null;
+    }
+
+    @Override
+    public boolean requestAnqp(String bssid, Set<Integer> anqpIds, Set<Integer> hs20Subtypes) {
+        return false;
+    }
+
+    @Override
+    public boolean requestVenueUrlAnqp(String bssid) {
+        return false;
+    }
+
+    @Override
+    public boolean requestIcon(String bssid, String fileName) {
+        return false;
     }
 
     @Override

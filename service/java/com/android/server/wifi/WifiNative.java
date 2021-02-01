@@ -20,6 +20,7 @@ import static android.net.wifi.WifiManager.WIFI_FEATURE_OWE;
 
 import android.annotation.IntDef;
 import android.annotation.NonNull;
+import android.annotation.Nullable;
 import android.net.MacAddress;
 import android.net.TrafficStats;
 import android.net.apf.ApfCapabilities;
@@ -45,6 +46,7 @@ import android.util.Log;
 
 import com.android.internal.annotations.Immutable;
 import com.android.internal.util.HexDump;
+import com.android.modules.utils.build.SdkLevel;
 import com.android.server.wifi.hotspot2.NetworkDetail;
 import com.android.server.wifi.util.FrameParser;
 import com.android.server.wifi.util.InformationElementUtil;
@@ -936,11 +938,12 @@ public class WifiNative {
      * For devices which do not the support the HAL, this will bypass HalDeviceManager &
      * teardown any existing iface.
      */
-    private String createApIface(@NonNull Iface iface, @NonNull WorkSource requestorWs) {
+    private String createApIface(@NonNull Iface iface, @NonNull WorkSource requestorWs,
+            boolean isBridged) {
         synchronized (mLock) {
             if (mWifiVendorHal.isVendorHalSupported()) {
                 return mWifiVendorHal.createApIface(
-                        new InterfaceDestoyedListenerInternal(iface.id), requestorWs);
+                        new InterfaceDestoyedListenerInternal(iface.id), requestorWs, isBridged);
             } else {
                 Log.i(TAG, "Vendor Hal not supported, ignoring createApIface.");
                 return handleIfaceCreationWhenVendorHalNotSupported(iface);
@@ -1292,10 +1295,12 @@ public class WifiNative {
      *
      * @param interfaceCallback Associated callback for notifying status changes for the iface.
      * @param requestorWs Requestor worksource.
+     * @param isBridged Whether or not AP interface is a bridge interface.
      * @return Returns the name of the allocated interface, will be null on failure.
      */
     public String setupInterfaceForSoftApMode(
-            @NonNull InterfaceCallback interfaceCallback, @NonNull WorkSource requestorWs) {
+            @NonNull InterfaceCallback interfaceCallback, @NonNull WorkSource requestorWs,
+            boolean isBridged) {
         synchronized (mLock) {
             if (!startHal()) {
                 Log.e(TAG, "Failed to start Hal");
@@ -1313,7 +1318,7 @@ public class WifiNative {
                 return null;
             }
             iface.externalListener = interfaceCallback;
-            iface.name = createApIface(iface, requestorWs);
+            iface.name = createApIface(iface, requestorWs, isBridged);
             if (TextUtils.isEmpty(iface.name)) {
                 Log.e(TAG, "Failed to create AP iface in vendor HAL");
                 mIfaceMgr.removeIface(iface.id);
@@ -1655,6 +1660,10 @@ public class WifiNative {
      * @throws IllegalArgumentException if band is not recognized.
      */
     public int [] getChannelsForBand(@WifiAnnotations.WifiBandBasic int band) {
+        if (!SdkLevel.isAtLeastS() && band == WifiScanner.WIFI_BAND_60_GHZ) {
+            // 60 GHz band is new in Android S, return empty array on older SDK versions
+            return new int[0];
+        }
         return mWifiCondManager.getChannelsMhzForBand(band);
     }
 
@@ -2063,7 +2072,6 @@ public class WifiNative {
         return mWifiVendorHal.getStaFactoryMacAddress(interfaceName);
     }
 
-
     /**
      * Get the factory MAC address of the given interface
      * @param interfaceName Name of the interface.
@@ -2072,6 +2080,17 @@ public class WifiNative {
     public MacAddress getApFactoryMacAddress(@NonNull String interfaceName) {
         return mWifiVendorHal.getApFactoryMacAddress(interfaceName);
     }
+
+    /**
+     * Reset MAC address to factory MAC address on the given interface
+     *
+     * @param interfaceName Name of the interface
+     * @return true for success
+     */
+    public boolean resetApMacToFactoryMacAddress(@NonNull String interfaceName) {
+        return mWifiVendorHal.resetApMacToFactoryMacAddress(interfaceName);
+    }
+
 
     /********************************************************
      * Hostapd operations
@@ -2857,6 +2876,57 @@ public class WifiNative {
          */
         void onFailure(int dppStatusCode, String ssid, String channelList, int[] bandList);
     }
+
+    /**
+     * Class to get generated bootstrap info for DPP responder operation.
+     */
+    public static class DppBootstrapQrCodeInfo {
+        public int bootstrapId;
+        public int listenChannel;
+        public String uri = new String();
+        DppBootstrapQrCodeInfo() {
+            bootstrapId = -1;
+            listenChannel = -1;
+        }
+    }
+
+    /**
+     * Generate DPP bootstrap Information:Bootstrap ID, DPP URI and the listen channel.
+     *
+     * @param ifaceName Interface name
+     * @param deviceInfo Device specific info to attach in DPP URI.
+     * @param dppCurve Elliptic curve cryptography type used to generate DPP
+     *                 public/private key pair.
+     * @return ID, or -1 for failure
+     */
+    public DppBootstrapQrCodeInfo generateDppBootstrapInfoForResponder(@NonNull String ifaceName,
+            String deviceInfo, int dppCurve) {
+        return mSupplicantStaIfaceHal.generateDppBootstrapInfoForResponder(ifaceName,
+                getMacAddress(ifaceName), deviceInfo, dppCurve);
+    }
+
+    /**
+     * start DPP Enrollee responder mode.
+     *
+     * @param ifaceName Interface name
+     * @param listenChannel Listen channel to wait for DPP authentication request.
+     * @return ID, or -1 for failure
+     */
+    public boolean startDppEnrolleeResponder(@NonNull String ifaceName, int listenChannel) {
+        return mSupplicantStaIfaceHal.startDppEnrolleeResponder(ifaceName, listenChannel);
+    }
+
+    /**
+     * Stops/aborts DPP Responder request
+     *
+     * @param ifaceName Interface name
+     * @param ownBootstrapId Bootstrap (URI) ID
+     * @return true when operation is successful, or false for failure
+     */
+    public boolean stopDppResponder(@NonNull String ifaceName, int ownBootstrapId)  {
+        return mSupplicantStaIfaceHal.stopDppResponder(ifaceName, ownBootstrapId);
+    }
+
 
     /**
      * Registers DPP event callbacks.
@@ -3716,18 +3786,21 @@ public class WifiNative {
      * Fetch the most recent TX packet fates from the HAL. Fails unless HAL is started.
      *
      * @param ifaceName Name of the interface.
-     * @return true for success, false otherwise.
+     * @return TxFateReport list on success, empty list on failure. Never returns null.
      */
-    public boolean getTxPktFates(@NonNull String ifaceName, TxFateReport[] reportBufs) {
-        return mWifiVendorHal.getTxPktFates(ifaceName, reportBufs);
+    @NonNull
+    public List<TxFateReport> getTxPktFates(@NonNull String ifaceName) {
+        return mWifiVendorHal.getTxPktFates(ifaceName);
     }
 
     /**
      * Fetch the most recent RX packet fates from the HAL. Fails unless HAL is started.
      * @param ifaceName Name of the interface.
+     * @return RxFateReport list on success, empty list on failure. Never returns null.
      */
-    public boolean getRxPktFates(@NonNull String ifaceName, RxFateReport[] reportBufs) {
-        return mWifiVendorHal.getRxPktFates(ifaceName, reportBufs);
+    @NonNull
+    public List<RxFateReport> getRxPktFates(@NonNull String ifaceName) {
+        return mWifiVendorHal.getRxPktFates(ifaceName);
     }
 
     /**
@@ -3842,11 +3915,11 @@ public class WifiNative {
     /**
      * Query the firmware roaming capabilities.
      * @param ifaceName Name of the interface.
-     * @return true for success, false otherwise.
+     * @return capabilities object on success, null otherwise.
      */
-    public boolean getRoamingCapabilities(
-            @NonNull String ifaceName, RoamingCapabilities capabilities) {
-        return mWifiVendorHal.getRoamingCapabilities(ifaceName, capabilities);
+    @Nullable
+    public RoamingCapabilities getRoamingCapabilities(@NonNull String ifaceName) {
+        return mWifiVendorHal.getRoamingCapabilities(ifaceName);
     }
 
     /**
@@ -3916,7 +3989,6 @@ public class WifiNative {
      */
     public void setMboCellularDataStatus(@NonNull String ifaceName, boolean available) {
         mSupplicantStaIfaceHal.setMboCellularDataStatus(ifaceName, available);
-        return;
     }
 
     /**

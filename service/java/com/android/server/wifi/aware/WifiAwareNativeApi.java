@@ -37,13 +37,13 @@ import android.net.wifi.aware.ConfigRequest;
 import android.net.wifi.aware.PublishConfig;
 import android.net.wifi.aware.SubscribeConfig;
 import android.net.wifi.util.HexEncoding;
-import android.os.BasicShellCommandHandler;
 import android.os.RemoteException;
 import android.text.TextUtils;
 import android.util.Log;
 import android.util.SparseIntArray;
 
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.modules.utils.BasicShellCommandHandler;
 
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
@@ -715,7 +715,7 @@ public class WifiAwareNativeApi implements WifiAwareShellCommand.DelegatedShellC
         req.baseConfigs.useRssiThreshold = false;
         req.baseConfigs.disableDiscoveryTerminationIndication =
                 !publishConfig.mEnableTerminateNotification;
-        req.baseConfigs.disableMatchExpirationIndication = false;
+        req.baseConfigs.disableMatchExpirationIndication = true;
         req.baseConfigs.disableFollowupReceivedIndication = false;
 
         req.autoAcceptDataPathRequests = false;
@@ -781,7 +781,7 @@ public class WifiAwareNativeApi implements WifiAwareShellCommand.DelegatedShellC
         req.baseConfigs.useRssiThreshold = false;
         req.baseConfigs.disableDiscoveryTerminationIndication =
                 !subscribeConfig.mEnableTerminateNotification;
-        req.baseConfigs.disableMatchExpirationIndication = true;
+        req.baseConfigs.disableMatchExpirationIndication = false;
         req.baseConfigs.disableFollowupReceivedIndication = false;
 
         req.baseConfigs.rangingRequired =

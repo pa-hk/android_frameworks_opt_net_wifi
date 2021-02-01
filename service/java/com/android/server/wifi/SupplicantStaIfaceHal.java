@@ -1253,7 +1253,7 @@ public class SupplicantStaIfaceHal {
                 Log.e(TAG, "Exception while saving config params: " + config, e);
             }
             if (!saveSuccess) {
-                loge("Failed to save variables for: " + config.getKey());
+                loge("Failed to save variables for: " + config.getProfileKey());
                 if (!removeAllNetworks(ifaceName)) {
                     loge("Failed to remove all networks on failure.");
                 }
@@ -1277,7 +1277,7 @@ public class SupplicantStaIfaceHal {
     public boolean connectToNetwork(@NonNull String ifaceName, @NonNull WifiConfiguration config) {
         synchronized (mLock) {
             boolean isAscii = WifiGbk.isAllAscii(WifiGbk.getSsidBytes(config.SSID, "UTF-8")); // wifigbk++
-            logd("connectToNetwork " + config.getKey() + " isAscii=" + isAscii);
+            logd("connectToNetwork " + config.getProfileKey() + " isAscii=" + isAscii);
             WifiConfiguration currentConfig = getCurrentNetworkLocalConfig(ifaceName);
             if (WifiConfigurationUtil.isSameNetwork(config, currentConfig) && isAscii) {
                 String networkSelectionBSSID = config.getNetworkSelectionStatus()
@@ -1307,7 +1307,7 @@ public class SupplicantStaIfaceHal {
                 Pair<SupplicantStaNetworkHal, WifiConfiguration> pair =
                         addNetworkAndSaveConfig(ifaceName, config);
                 if (pair == null) {
-                    loge("Failed to add/save network configuration: " + config.getKey());
+                    loge("Failed to add/save network configuration: " + config.getProfileKey());
                     return false;
                 }
                 mCurrentNetworkRemoteHandles.put(ifaceName, pair.first);
@@ -1317,7 +1317,7 @@ public class SupplicantStaIfaceHal {
                     checkSupplicantStaNetworkAndLogFailure(ifaceName, "connectToNetwork");
             if (networkHandle == null) {
                 loge("No valid remote network handle for network configuration: "
-                        + config.getKey());
+                        + config.getProfileKey());
                 return false;
             }
 
@@ -1332,7 +1332,7 @@ public class SupplicantStaIfaceHal {
             }
 
             if (!networkHandle.select()) {
-                loge("Failed to select network configuration: " + config.getKey());
+                loge("Failed to select network configuration: " + config.getProfileKey());
                 return false;
             }
             return true;
@@ -1360,12 +1360,12 @@ public class SupplicantStaIfaceHal {
                 return connectToNetwork(ifaceName, config);
             }
             String bssid = config.getNetworkSelectionStatus().getNetworkSelectionBSSID();
-            logd("roamToNetwork" + config.getKey() + " (bssid " + bssid + ")");
+            logd("roamToNetwork" + config.getProfileKey() + " (bssid " + bssid + ")");
 
             SupplicantStaNetworkHal networkHandle =
                     checkSupplicantStaNetworkAndLogFailure(ifaceName, "roamToNetwork");
             if (networkHandle == null || !networkHandle.setBssid(bssid)) {
-                loge("Failed to set new bssid on network: " + config.getKey());
+                loge("Failed to set new bssid on network: " + config.getProfileKey());
                 return false;
             }
             if (!reassociate(ifaceName)) {
@@ -3833,6 +3833,11 @@ public class SupplicantStaIfaceHal {
             final String methodStr = "dppBootstrapGenerate";
             final MutableInt handle = new MutableInt(-1);
 
+            if (config == null) {
+                logd(methodStr + ": null config received.");
+                return -1;
+            }
+
             String chan_list = (TextUtils.isEmpty(config.chan_list)) ? "" : config.chan_list;
             String mac_addr = (TextUtils.isEmpty(config.mac_addr)) ? "00:00:00:00:00:00" : config.mac_addr;
             String info = (TextUtils.isEmpty(config.info)) ? "" : config.info;
@@ -4052,6 +4057,12 @@ public class SupplicantStaIfaceHal {
         synchronized (mLock) {
             final String methodStr = "dppStartAuth";
             final MutableInt Status = new MutableInt(-1);
+
+            if (config == null) {
+                logd(methodStr + ": null config received.");
+                return -1;
+            }
+
             ISupplicantVendorStaIface iface =
                    checkSupplicantVendorStaIfaceAndLogFailure(ifaceName, methodStr);
             if (iface == null) return -1;
@@ -4319,6 +4330,132 @@ public class SupplicantStaIfaceHal {
 
         return false;
     }
+
+    /**
+     * Generate a DPP QR code based boot strap info
+     *
+     *  This is a v1.4+ HAL feature.
+     *  Returns DppResponderBootstrapInfo;
+     */
+    public WifiNative.DppBootstrapQrCodeInfo generateDppBootstrapInfoForResponder(
+            @NonNull String ifaceName, String macAddress, @NonNull String deviceInfo,
+            int dppCurve) {
+        final String methodStr = "generateDppBootstrapInfoForResponder";
+        MutableBoolean status = new MutableBoolean(false);
+        WifiNative.DppBootstrapQrCodeInfo bootstrapInfoOut =
+                new WifiNative.DppBootstrapQrCodeInfo();
+
+        ISupplicantStaIface iface = checkSupplicantStaIfaceAndLogFailure(ifaceName, methodStr);
+        if (iface == null) {
+            return bootstrapInfoOut;
+        }
+
+        // Get a v1.4 supplicant STA Interface
+        android.hardware.wifi.supplicant.V1_4.ISupplicantStaIface staIfaceV14 =
+                getStaIfaceMockableV1_4(iface);
+
+        if (staIfaceV14 == null) {
+            Log.e(TAG, methodStr + ": SupplicantStaIface V1.4 is null");
+            return bootstrapInfoOut;
+        }
+
+        try {
+            // Support for DPP Responder
+            // Requires HAL v1.4 or higher
+            staIfaceV14.generateDppBootstrapInfoForResponder(
+                    NativeUtil.macAddressToByteArray(macAddress), deviceInfo, dppCurve,
+                    (android.hardware.wifi.supplicant.V1_4.SupplicantStatus statusInternal,
+                            android.hardware.wifi.supplicant.V1_4
+                            .DppResponderBootstrapInfo info) -> {
+                        if (statusInternal.code == SupplicantStatusCode.SUCCESS) {
+                            bootstrapInfoOut.bootstrapId = info.bootstrapId;
+                            bootstrapInfoOut.listenChannel = info.listenChannel;
+                            bootstrapInfoOut.uri = info.uri;
+                        }
+                        checkStatusAndLogFailure(statusInternal, methodStr);
+                    });
+        } catch (RemoteException e) {
+            handleRemoteException(e, methodStr);
+            return bootstrapInfoOut;
+        }
+
+        return bootstrapInfoOut;
+    }
+
+    /**
+     * Starts DPP Enrollee-Responder request
+     *
+     *  This is a v1.4+ HAL feature.
+     *  Returns true when operation is successful
+     *  On error, or if these features are not supported, false is returned.
+     */
+    public boolean startDppEnrolleeResponder(@NonNull String ifaceName, int listenChannel) {
+        final String methodStr = "startDppEnrolleeResponder";
+
+        ISupplicantStaIface iface = checkSupplicantStaIfaceAndLogFailure(ifaceName, methodStr);
+        if (iface == null) {
+            return false;
+        }
+
+        // Get a v1.4 supplicant STA Interface
+        android.hardware.wifi.supplicant.V1_4.ISupplicantStaIface staIfaceV14 =
+                getStaIfaceMockableV1_4(iface);
+
+        if (staIfaceV14 == null) {
+            Log.e(TAG, methodStr + ": ISupplicantStaIface V1.4 is null");
+            return false;
+        }
+
+        try {
+            // Support for DPP Responder
+            // Requires HAL v1.4 or higher
+            android.hardware.wifi.supplicant.V1_4.SupplicantStatus status =
+                    staIfaceV14.startDppEnrolleeResponder(listenChannel);
+            return checkStatusAndLogFailure(status, methodStr);
+        } catch (RemoteException e) {
+            handleRemoteException(e, methodStr);
+        }
+
+        return false;
+    }
+
+    /**
+     * Stops/aborts DPP Responder request.
+     *
+     *  This is a v1.4+ HAL feature.
+     *  Returns true when operation is successful
+     *  On error, or if these features are not supported, false is returned.
+     */
+    public boolean stopDppResponder(@NonNull String ifaceName, int ownBootstrapId)  {
+        final String methodStr = "stopDppResponder";
+
+        ISupplicantStaIface iface = checkSupplicantStaIfaceAndLogFailure(ifaceName, methodStr);
+        if (iface == null) {
+            return false;
+        }
+
+        // Get a v1.4 supplicant STA Interface
+        android.hardware.wifi.supplicant.V1_4.ISupplicantStaIface staIfaceV14 =
+                getStaIfaceMockableV1_4(iface);
+
+        if (staIfaceV14 == null) {
+            Log.e(TAG, methodStr + ": ISupplicantStaIface V1.4 is null");
+            return false;
+        }
+
+        try {
+            // Support for DPP Responder
+            // Requires HAL v1.4 or higher
+            android.hardware.wifi.supplicant.V1_4.SupplicantStatus status =
+                    staIfaceV14.stopDppResponder(ownBootstrapId);
+            return checkStatusAndLogFailure(status, methodStr);
+        } catch (RemoteException e) {
+            handleRemoteException(e, methodStr);
+        }
+
+        return false;
+    }
+
 
     /**
      * Register callbacks for DPP events.

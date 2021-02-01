@@ -19,6 +19,7 @@ package com.android.server.wifi;
 import static android.content.Intent.ACTION_SCREEN_OFF;
 import static android.content.Intent.ACTION_SCREEN_ON;
 
+import static com.android.server.wifi.ActiveModeManager.ROLE_CLIENT_SECONDARY_LONG_LIVED;
 import static com.android.server.wifi.ActiveModeManager.ROLE_CLIENT_SECONDARY_TRANSIENT;
 import static com.android.server.wifi.ClientModeImpl.WIFI_WORK_SOURCE;
 import static com.android.server.wifi.WifiConfigurationTestUtil.generateWifiConfig;
@@ -128,6 +129,7 @@ public class WifiConnectivityManagerTest extends WifiBaseTest {
         when(mContext.getSystemService(PowerManager.class)).thenReturn(powerManager);
         when(powerManager.isInteractive()).thenReturn(false);
         when(mPrimaryClientModeManager.getRole()).thenReturn(ActiveModeManager.ROLE_CLIENT_PRIMARY);
+        when(mPrimaryClientModeManager.syncRequestConnectionInfo()).thenReturn(mWifiInfo);
         when(mActiveModeWarden.getPrimaryClientModeManager()).thenReturn(mPrimaryClientModeManager);
         doAnswer(new AnswerWithArguments() {
             public void answer(ExternalClientModeManagerRequestListener listener,
@@ -136,6 +138,13 @@ public class WifiConnectivityManagerTest extends WifiBaseTest {
             }
         }).when(mActiveModeWarden).requestSecondaryTransientClientModeManager(
                 any(), eq(ActiveModeWarden.INTERNAL_REQUESTOR_WS), any(), any());
+        doAnswer(new AnswerWithArguments() {
+            public void answer(ExternalClientModeManagerRequestListener listener,
+                    WorkSource requestorWs, String ssid, String bssid) {
+                listener.onAnswer(mPrimaryClientModeManager);
+            }
+        }).when(mActiveModeWarden).requestSecondaryLongLivedClientModeManager(
+                any(), any(), any(), any());
 
         mWifiConnectivityManager = createConnectivityManager();
         mWifiConnectivityManager.setTrustedConnectionAllowed(true);
@@ -224,10 +233,13 @@ public class WifiConnectivityManagerTest extends WifiBaseTest {
     @Mock private DeviceConfigFacade mDeviceConfigFacade;
     @Mock private ActiveModeWarden mActiveModeWarden;
     @Mock private ClientModeManager mPrimaryClientModeManager;
+    @Mock private ClientModeManager mSecondaryClientModeManager;
     @Mock WifiCandidates.Candidate mCandidate1;
     @Mock WifiCandidates.Candidate mCandidate2;
+    private WifiConfiguration mCandidateWifiConfig1;
+    private WifiConfiguration mCandidateWifiConfig2;
     private List<WifiCandidates.Candidate> mCandidateList;
-    @Captor ArgumentCaptor<ScanResult> mCandidateScanResultCaptor;
+    @Captor ArgumentCaptor<String> mCandidateBssidCaptor;
     @Captor ArgumentCaptor<WifiConfigManager.OnNetworkUpdateListener>
             mNetworkUpdateListenerCaptor;
     @Captor ArgumentCaptor<WifiNetworkSuggestionsManager.OnSuggestionUpdateListener>
@@ -375,6 +387,9 @@ public class WifiConnectivityManagerTest extends WifiBaseTest {
         candidateScanResult.SSID = CANDIDATE_SSID;
         candidateScanResult.BSSID = CANDIDATE_BSSID;
         candidate.getNetworkSelectionStatus().setCandidate(candidateScanResult);
+        mCandidateWifiConfig1 = candidate;
+        mCandidateWifiConfig2 = new WifiConfiguration(candidate);
+        mCandidateWifiConfig2.networkId = CANDIDATE_NETWORK_ID_2;
 
         when(mWifiConfigManager.getConfiguredNetwork(CANDIDATE_NETWORK_ID)).thenReturn(candidate);
         MacAddress macAddress = MacAddress.fromString(CANDIDATE_BSSID);
@@ -425,7 +440,7 @@ public class WifiConnectivityManagerTest extends WifiBaseTest {
     WifiConnectivityManager createConnectivityManager() {
         WifiConnectivityManager wCm = new WifiConnectivityManager(mContext, mScoringParams,
                 mWifiConfigManager, mWifiNetworkSuggestionsManager,
-                mWifiInfo, mWifiNS, mWifiConnectivityHelper,
+                mWifiNS, mWifiConnectivityHelper,
                 mWifiLastResortWatchdog, mOpenNetworkNotifier,
                 mWifiMetrics, new Handler(mLooper.getLooper()), mClock,
                 mLocalLog, mWifiScoreCard, mBssidBlocklistMonitor, mWifiChannelUtilization,
@@ -579,11 +594,352 @@ public class WifiConnectivityManagerTest extends WifiBaseTest {
                 any(),
                 eq(ActiveModeWarden.INTERNAL_REQUESTOR_WS),
                 eq(CANDIDATE_SSID),
-                eq("any"));
+                eq(null));
 
         // already connected, don't connect again
         verify(alreadyConnectedCmm, never()).startConnectToNetwork(
                 anyInt(), anyInt(), any());
+    }
+
+    /**
+     * Setup all the mocks for the positive case, individual negative test cases below override
+     * specific params.
+     */
+    private void setupMocksForSecondaryLongLivedTests() {
+        when(mWifiConnectivityHelper.isFirmwareRoamingSupported()).thenReturn(true);
+        when(mCandidate1.isOemPaid()).thenReturn(true);
+        when(mCandidate1.isOemPrivate()).thenReturn(true);
+        mCandidateWifiConfig1.oemPaid = true;
+        mCandidateWifiConfig1.oemPrivate = true;
+        when(mWifiNS.selectNetwork(argThat(
+                candidates -> (candidates != null && candidates.size() == 1
+                        && (candidates.get(0).isOemPaid() || candidates.get(0).isOemPrivate()))
+        ))).thenReturn(mCandidateWifiConfig1);
+        when(mActiveModeWarden.isStaStaConcurrencySupported()).thenReturn(true);
+        when(mActiveModeWarden.canRequestMoreClientModeManagers(any())).thenReturn(true);
+        doAnswer(new AnswerWithArguments() {
+            public void answer(ExternalClientModeManagerRequestListener listener,
+                    WorkSource requestorWs, String ssid, String bssid) {
+                listener.onAnswer(mSecondaryClientModeManager);
+            }
+        }).when(mActiveModeWarden).requestSecondaryLongLivedClientModeManager(
+                any(), any(), any(), any());
+        when(mSecondaryClientModeManager.getRole()).thenReturn(ROLE_CLIENT_SECONDARY_LONG_LIVED);
+    }
+
+    @Test
+    public void secondaryLongLived_noOemPaidOrOemPrivateConnectionAllowed() {
+        setupMocksForSecondaryLongLivedTests();
+
+        // Set screen to on
+        setScreenState(true);
+
+        // OEM paid/OEM private connection disallowed.
+        mWifiConnectivityManager.setOemPaidConnectionAllowed(false, null);
+        mWifiConnectivityManager.setOemPrivateConnectionAllowed(false, null);
+
+        // Set WiFi to disconnected state
+        mWifiConnectivityManager.handleConnectionStateChanged(
+                mPrimaryClientModeManager,
+                WifiConnectivityManager.WIFI_STATE_DISCONNECTED);
+
+        verify(mPrimaryClientModeManager).startConnectToNetwork(
+                CANDIDATE_NETWORK_ID, Process.WIFI_UID, "any");
+        verify(mActiveModeWarden, never()).requestSecondaryLongLivedClientModeManager(
+                any(), any(), any(), any());
+    }
+
+    @Test
+    public void secondaryLongLived_oemPaidConnectionAllowedWithOemPrivateCandidate() {
+        setupMocksForSecondaryLongLivedTests();
+
+        // Set screen to on
+        setScreenState(true);
+
+        // OEM paid connection allowed.
+        mWifiConnectivityManager.setOemPaidConnectionAllowed(true, new WorkSource());
+
+        // Mark the candidate oem private only
+        when(mCandidate1.isOemPaid()).thenReturn(false);
+        when(mCandidate1.isOemPrivate()).thenReturn(true);
+        mCandidateWifiConfig1.oemPaid = false;
+        mCandidateWifiConfig1.oemPrivate = true;
+
+        // Set WiFi to disconnected state
+        mWifiConnectivityManager.handleConnectionStateChanged(
+                mPrimaryClientModeManager,
+                WifiConnectivityManager.WIFI_STATE_DISCONNECTED);
+
+        verify(mPrimaryClientModeManager).startConnectToNetwork(
+                CANDIDATE_NETWORK_ID, Process.WIFI_UID, "any");
+        verify(mActiveModeWarden, never()).requestSecondaryLongLivedClientModeManager(
+                any(), any(), any(), any());
+    }
+
+    @Test
+    public void secondaryLongLived_oemPrivateConnectionAllowedWithOemPaidCandidate() {
+        setupMocksForSecondaryLongLivedTests();
+
+        // Set screen to on
+        setScreenState(true);
+
+        // OEM private connection allowed.
+        mWifiConnectivityManager.setOemPrivateConnectionAllowed(true, new WorkSource());
+
+        // Mark the candidate oem paid only
+        when(mCandidate1.isOemPaid()).thenReturn(true);
+        when(mCandidate1.isOemPrivate()).thenReturn(false);
+        mCandidateWifiConfig1.oemPaid = true;
+        mCandidateWifiConfig1.oemPrivate = false;
+
+        // Set WiFi to disconnected state
+        mWifiConnectivityManager.handleConnectionStateChanged(
+                mPrimaryClientModeManager,
+                WifiConnectivityManager.WIFI_STATE_DISCONNECTED);
+
+        verify(mPrimaryClientModeManager).startConnectToNetwork(
+                CANDIDATE_NETWORK_ID, Process.WIFI_UID, "any");
+        verify(mActiveModeWarden, never()).requestSecondaryLongLivedClientModeManager(
+                any(), any(), any(), any());
+    }
+
+    @Test
+    public void secondaryLongLived_noSecondaryStaSupport() {
+        setupMocksForSecondaryLongLivedTests();
+
+        // Set screen to on
+        setScreenState(true);
+
+        // OEM paid connection allowed.
+        mWifiConnectivityManager.setOemPaidConnectionAllowed(true, new WorkSource());
+
+        // STA + STA is not supported.
+        when(mActiveModeWarden.isStaStaConcurrencySupported()).thenReturn(false);
+
+        // Set WiFi to disconnected state
+        mWifiConnectivityManager.handleConnectionStateChanged(
+                mPrimaryClientModeManager,
+                WifiConnectivityManager.WIFI_STATE_DISCONNECTED);
+
+        verify(mPrimaryClientModeManager).startConnectToNetwork(
+                CANDIDATE_NETWORK_ID, Process.WIFI_UID, "any");
+        verify(mActiveModeWarden, never()).requestSecondaryLongLivedClientModeManager(
+                any(), any(), any(), any());
+    }
+
+    @Test
+    public void secondaryLongLived_noSecondaryCandidateSelected() {
+        setupMocksForSecondaryLongLivedTests();
+
+        // Set screen to on
+        setScreenState(true);
+
+        // OEM paid connection allowed.
+        mWifiConnectivityManager.setOemPaidConnectionAllowed(true, new WorkSource());
+
+        // Network selection does not select a secondary candidate.
+        when(mWifiNS.selectNetwork(argThat(
+                candidates -> (candidates != null && candidates.size() == 1
+                        && (candidates.get(0).isOemPaid() || candidates.get(0).isOemPrivate()))
+        ))).thenReturn(null) // first for secondary returns null.
+                .thenReturn(mCandidateWifiConfig1); // second for primary returns something.
+
+        // Set WiFi to disconnected state
+        mWifiConnectivityManager.handleConnectionStateChanged(
+                mPrimaryClientModeManager,
+                WifiConnectivityManager.WIFI_STATE_DISCONNECTED);
+
+        verify(mPrimaryClientModeManager).startConnectToNetwork(
+                CANDIDATE_NETWORK_ID, Process.WIFI_UID, "any");
+        verify(mActiveModeWarden, never()).requestSecondaryLongLivedClientModeManager(
+                any(), any(), any(), any());
+    }
+
+    @Test
+    public void secondaryLongLived_noSecondaryStaAvailable() {
+        setupMocksForSecondaryLongLivedTests();
+
+        // Set screen to on
+        setScreenState(true);
+
+        // OEM paid connection allowed.
+        mWifiConnectivityManager.setOemPaidConnectionAllowed(true, new WorkSource());
+
+        // STA + STA is supported, but not available.
+        when(mActiveModeWarden.canRequestMoreClientModeManagers(any())).thenReturn(false);
+
+        // Set WiFi to disconnected state
+        mWifiConnectivityManager.handleConnectionStateChanged(
+                mPrimaryClientModeManager,
+                WifiConnectivityManager.WIFI_STATE_DISCONNECTED);
+
+        verify(mPrimaryClientModeManager).startConnectToNetwork(
+                CANDIDATE_NETWORK_ID, Process.WIFI_UID, "any");
+        verify(mActiveModeWarden, never()).requestSecondaryLongLivedClientModeManager(
+                any(), any(), any(), any());
+    }
+
+    @Test
+    public void secondaryLongLived_secondaryStaRequestReturnsNull() {
+        setupMocksForSecondaryLongLivedTests();
+
+        // Set screen to on
+        setScreenState(true);
+
+        // OEM paid connection allowed.
+        mWifiConnectivityManager.setOemPaidConnectionAllowed(true, new WorkSource());
+
+        // STA + STA is supported, but secondary STA request returns null
+        doAnswer(new AnswerWithArguments() {
+            public void answer(ExternalClientModeManagerRequestListener listener,
+                    WorkSource requestorWs, String ssid, String bssid) {
+                listener.onAnswer(null);
+            }
+        }).when(mActiveModeWarden).requestSecondaryLongLivedClientModeManager(
+                any(), any(), any(), any());
+
+        // Set WiFi to disconnected state
+        mWifiConnectivityManager.handleConnectionStateChanged(
+                mPrimaryClientModeManager,
+                WifiConnectivityManager.WIFI_STATE_DISCONNECTED);
+
+        // No connection triggered (even on primary since wifi is off).
+        verify(mPrimaryClientModeManager, never()).startConnectToNetwork(
+                CANDIDATE_NETWORK_ID, Process.WIFI_UID, "any");
+        verify(mActiveModeWarden).requestSecondaryLongLivedClientModeManager(
+                any(), any(), any(), any());
+    }
+
+    @Test
+    public void secondaryLongLived_secondaryStaRequestReturnsPrimary() {
+        setupMocksForSecondaryLongLivedTests();
+
+        // Set screen to on
+        setScreenState(true);
+
+        // OEM paid connection allowed.
+        mWifiConnectivityManager.setOemPaidConnectionAllowed(true, new WorkSource());
+
+        // STA + STA is supported, but secondary STA request returns null
+        doAnswer(new AnswerWithArguments() {
+            public void answer(ExternalClientModeManagerRequestListener listener,
+                    WorkSource requestorWs, String ssid, String bssid) {
+                listener.onAnswer(mPrimaryClientModeManager);
+            }
+        }).when(mActiveModeWarden).requestSecondaryLongLivedClientModeManager(
+                any(), any(), any(), any());
+
+        // Set WiFi to disconnected state
+        mWifiConnectivityManager.handleConnectionStateChanged(
+                mPrimaryClientModeManager,
+                WifiConnectivityManager.WIFI_STATE_DISCONNECTED);
+
+        // connection triggered on primary
+        verify(mPrimaryClientModeManager).startConnectToNetwork(
+                CANDIDATE_NETWORK_ID, Process.WIFI_UID, "any");
+        verify(mActiveModeWarden).requestSecondaryLongLivedClientModeManager(
+                any(), any(), any(), any());
+    }
+
+    @Test
+    public void secondaryLongLived_secondaryStaRequestSucceedsWithOemPaidConnectionAllowed() {
+        setupMocksForSecondaryLongLivedTests();
+
+        // Set screen to on
+        setScreenState(true);
+
+        // OEM paid connection allowed.
+        mWifiConnectivityManager.setOemPaidConnectionAllowed(true, new WorkSource());
+
+        // Mark the candidate oem paid only
+        when(mCandidate1.isOemPaid()).thenReturn(true);
+        when(mCandidate1.isOemPrivate()).thenReturn(false);
+        mCandidateWifiConfig1.oemPaid = true;
+        mCandidateWifiConfig1.oemPrivate = false;
+
+        // Set WiFi to disconnected state
+        mWifiConnectivityManager.handleConnectionStateChanged(
+                mPrimaryClientModeManager,
+                WifiConnectivityManager.WIFI_STATE_DISCONNECTED);
+
+        // connection triggered on secondary
+        verify(mPrimaryClientModeManager, never()).startConnectToNetwork(
+                CANDIDATE_NETWORK_ID, Process.WIFI_UID, "any");
+        verify(mSecondaryClientModeManager).startConnectToNetwork(
+                CANDIDATE_NETWORK_ID, Process.WIFI_UID, "any");
+        verify(mActiveModeWarden).requestSecondaryLongLivedClientModeManager(
+                any(), any(), any(), any());
+    }
+
+    @Test
+    public void secondaryLongLived_secondaryStaRequestSucceedsWithOemPrivateConnectionAllowed() {
+        setupMocksForSecondaryLongLivedTests();
+
+        // Set screen to on
+        setScreenState(true);
+
+        // OEM paid connection allowed.
+        mWifiConnectivityManager.setOemPrivateConnectionAllowed(true, new WorkSource());
+
+        // Mark the candidate oem private only
+        when(mCandidate1.isOemPaid()).thenReturn(false);
+        when(mCandidate1.isOemPrivate()).thenReturn(true);
+        mCandidateWifiConfig1.oemPaid = false;
+        mCandidateWifiConfig1.oemPrivate = true;
+
+        // Set WiFi to disconnected state
+        mWifiConnectivityManager.handleConnectionStateChanged(
+                mPrimaryClientModeManager,
+                WifiConnectivityManager.WIFI_STATE_DISCONNECTED);
+
+        // connection triggered on secondary
+        verify(mPrimaryClientModeManager, never()).startConnectToNetwork(
+                CANDIDATE_NETWORK_ID, Process.WIFI_UID, "any");
+        verify(mSecondaryClientModeManager).startConnectToNetwork(
+                CANDIDATE_NETWORK_ID, Process.WIFI_UID, "any");
+        verify(mActiveModeWarden).requestSecondaryLongLivedClientModeManager(
+                any(), any(), any(), any());
+    }
+
+    @Test
+    public void secondaryLongLived_secondaryStaRequestSucceedsAlongWithPrimary() {
+        setupMocksForSecondaryLongLivedTests();
+
+        // 2 candidates - 1 oem paid, other regular.
+        // Mark the first candidate oem private only
+        when(mCandidate1.isOemPaid()).thenReturn(false);
+        when(mCandidate1.isOemPrivate()).thenReturn(true);
+        mCandidateWifiConfig1.oemPaid = false;
+        mCandidateWifiConfig1.oemPrivate = true;
+
+        // Add the second regular candidate.
+        mCandidateList.add(mCandidate2);
+
+        // Set screen to on
+        setScreenState(true);
+
+        // OEM paid connection allowed.
+        mWifiConnectivityManager.setOemPrivateConnectionAllowed(true, new WorkSource());
+
+        // Network selection setup for primary.
+        when(mWifiNS.selectNetwork(argThat(
+                candidates -> (candidates != null && candidates.size() == 1
+                        // not oem paid or oem private.
+                        && !(candidates.get(0).isOemPaid() || candidates.get(0).isOemPrivate()))
+        ))).thenReturn(mCandidateWifiConfig2);
+
+        // Set WiFi to disconnected state
+        mWifiConnectivityManager.handleConnectionStateChanged(
+                mPrimaryClientModeManager,
+                WifiConnectivityManager.WIFI_STATE_DISCONNECTED);
+
+        // connection triggered on primary & secondary
+        verify(mPrimaryClientModeManager).startConnectToNetwork(
+                CANDIDATE_NETWORK_ID_2, Process.WIFI_UID, "any");
+        verify(mSecondaryClientModeManager).startConnectToNetwork(
+                CANDIDATE_NETWORK_ID, Process.WIFI_UID, "any");
+        verify(mActiveModeWarden).requestSecondaryLongLivedClientModeManager(
+                any(), any(), any(), any());
     }
 
     /**
@@ -1204,9 +1560,38 @@ public class WifiConnectivityManagerTest extends WifiBaseTest {
      * Expected behavior: ONA handles scan results
      */
     @Test
-    public void wifiDisconnected_noConnectionCandidate_openNetworkNotifierScanResultsHandled() {
+    public void wifiDisconnected_noCandidateInSelect_openNetworkNotifierScanResultsHandled() {
         // no connection candidate selected
         when(mWifiNS.selectNetwork(any())).thenReturn(null);
+
+        List<ScanDetail> expectedOpenNetworks = new ArrayList<>();
+        expectedOpenNetworks.add(
+                new ScanDetail(
+                        new ScanResult(WifiSsid.createFromAsciiEncoded(CANDIDATE_SSID),
+                                CANDIDATE_SSID, CANDIDATE_BSSID, 1245, 0, "some caps", -78, 2450,
+                                1025, 22, 33, 20, 0, 0, true), null));
+
+        when(mWifiNS.getFilteredScanDetailsForOpenUnsavedNetworks())
+                .thenReturn(expectedOpenNetworks);
+
+        // Set WiFi to disconnected state to trigger PNO scan
+        mWifiConnectivityManager.handleConnectionStateChanged(
+                mPrimaryClientModeManager,
+                WifiConnectivityManager.WIFI_STATE_DISCONNECTED);
+
+        verify(mOpenNetworkNotifier).handleScanResults(expectedOpenNetworks);
+    }
+
+    /**
+     * {@link OpenNetworkNotifier} handles scan results on network selection.
+     *
+     * Expected behavior: ONA handles scan results
+     */
+    @Test
+    public void wifiDisconnected_noCandidatesInScan_openNetworkNotifierScanResultsHandled() {
+        // no connection candidates from scan.
+        when(mWifiNS.getCandidatesFromScan(any(), any(), any(), anyBoolean(), anyBoolean(),
+                anyBoolean(), anyBoolean(), anyBoolean())).thenReturn(null);
 
         List<ScanDetail> expectedOpenNetworks = new ArrayList<>();
         expectedOpenNetworks.add(
@@ -1774,7 +2159,7 @@ public class WifiConnectivityManagerTest extends WifiBaseTest {
         config.networkId = TEST_CONNECTED_NETWORK_ID;
         String networkKey = "NETWORK_KEY";
         when(mWifiConfigManager.getConfiguredNetwork(networkKey)).thenReturn(config);
-        when(mSuggestionConfig.getKey()).thenReturn(networkKey);
+        when(mSuggestionConfig.getProfileKey()).thenReturn(networkKey);
         when(mWifiNetworkSuggestion.getWifiConfiguration()).thenReturn(mSuggestionConfig);
         Set<WifiNetworkSuggestion> suggestionNetworks = new HashSet<WifiNetworkSuggestion>();
         suggestionNetworks.add(mWifiNetworkSuggestion);
@@ -1825,7 +2210,7 @@ public class WifiConnectivityManagerTest extends WifiBaseTest {
         config.networkId = TEST_CONNECTED_NETWORK_ID;
         String networkKey = "NETWORK_KEY";
         when(mWifiConfigManager.getConfiguredNetwork(networkKey)).thenReturn(config);
-        when(mSuggestionConfig.getKey()).thenReturn(networkKey);
+        when(mSuggestionConfig.getProfileKey()).thenReturn(networkKey);
         when(mWifiNetworkSuggestion.getWifiConfiguration()).thenReturn(mSuggestionConfig);
         Set<WifiNetworkSuggestion> suggestionNetworks = new HashSet<WifiNetworkSuggestion>();
         suggestionNetworks.add(mWifiNetworkSuggestion);
@@ -2477,15 +2862,13 @@ public class WifiConnectivityManagerTest extends WifiBaseTest {
     public void clearBssidBlocklistWhenExitingWifiClientMode() {
         when(mWifiConnectivityHelper.isFirmwareRoamingSupported()).thenReturn(true);
 
-        // Verify the BSSID blocklist is cleared at start up.
-        verify(mBssidBlocklistMonitor).clearBssidBlocklist();
-        verify(mWifiConfigManager).enableTemporaryDisabledNetworks();
         // Exit Wifi client mode.
         setWifiEnabled(false);
 
         // Verify the BSSID blocklist is cleared again.
-        verify(mBssidBlocklistMonitor, times(2)).clearBssidBlocklist();
-        verify(mWifiConfigManager, times(2)).enableTemporaryDisabledNetworks();
+        verify(mBssidBlocklistMonitor).clearBssidBlocklist();
+        verify(mWifiConfigManager).enableTemporaryDisabledNetworks();
+        verify(mWifiConfigManager).stopTemporarilyDisablingAllNonCarrierMergedWifi();
         // Verify WifiNetworkSelector is informed of the disable.
         verify(mWifiNS).resetOnDisable();
     }
@@ -2670,8 +3053,8 @@ public class WifiConnectivityManagerTest extends WifiBaseTest {
         setScreenState(true);
 
         verify(mPrimaryClientModeManager).startRoamToNetwork(eq(CANDIDATE_NETWORK_ID),
-                mCandidateScanResultCaptor.capture());
-        assertEquals(mCandidateScanResultCaptor.getValue().BSSID, CANDIDATE_BSSID);
+                mCandidateBssidCaptor.capture());
+        assertEquals(mCandidateBssidCaptor.getValue(), CANDIDATE_BSSID);
         verify(mPrimaryClientModeManager, never()).startConnectToNetwork(
                 anyInt(), anyInt(), anyObject());
     }

@@ -17,8 +17,14 @@
 package com.android.server.wifi;
 
 import static android.Manifest.permission.ACCESS_WIFI_STATE;
+import static android.Manifest.permission.WIFI_ACCESS_COEX_UNSAFE_CHANNELS;
+import static android.Manifest.permission.WIFI_UPDATE_COEX_UNSAFE_CHANNELS;
 import static android.net.wifi.WifiConfiguration.METERED_OVERRIDE_METERED;
+import static android.net.wifi.WifiManager.COEX_RESTRICTION_SOFTAP;
+import static android.net.wifi.WifiManager.COEX_RESTRICTION_WIFI_AWARE;
+import static android.net.wifi.WifiManager.COEX_RESTRICTION_WIFI_DIRECT;
 import static android.net.wifi.WifiManager.DEVICE_MOBILITY_STATE_STATIONARY;
+import static android.net.wifi.WifiManager.EASY_CONNECT_CRYPTOGRAPHY_CURVE_PRIME256V1;
 import static android.net.wifi.WifiManager.IFACE_IP_MODE_CONFIGURATION_ERROR;
 import static android.net.wifi.WifiManager.IFACE_IP_MODE_LOCAL_ONLY;
 import static android.net.wifi.WifiManager.IFACE_IP_MODE_TETHERED;
@@ -34,6 +40,8 @@ import static android.net.wifi.WifiManager.WIFI_AP_STATE_DISABLING;
 import static android.net.wifi.WifiManager.WIFI_AP_STATE_ENABLED;
 import static android.net.wifi.WifiManager.WIFI_AP_STATE_FAILED;
 import static android.net.wifi.WifiManager.WIFI_STATE_DISABLED;
+import static android.net.wifi.WifiScanner.WIFI_BAND_24_GHZ;
+import static android.net.wifi.WifiScanner.WIFI_BAND_5_GHZ;
 
 import static com.android.dx.mockito.inline.extended.ExtendedMockito.mockitoSession;
 import static com.android.server.wifi.LocalOnlyHotspotRequestInfo.HOTSPOT_NO_ERROR;
@@ -98,7 +106,9 @@ import android.content.res.Resources;
 import android.net.MacAddress;
 import android.net.NetworkStack;
 import android.net.Uri;
+import android.net.wifi.CoexUnsafeChannel;
 import android.net.wifi.IActionListener;
+import android.net.wifi.ICoexCallback;
 import android.net.wifi.IDppCallback;
 import android.net.wifi.ILocalOnlyHotspotCallback;
 import android.net.wifi.INetworkRequestMatchCallback;
@@ -154,6 +164,7 @@ import androidx.test.filters.SmallTest;
 import com.android.internal.os.PowerProfile;
 import com.android.modules.utils.build.SdkLevel;
 import com.android.server.wifi.WifiServiceImpl.LocalOnlyRequestorCallback;
+import com.android.server.wifi.coex.CoexManager;
 import com.android.server.wifi.hotspot2.PasspointManager;
 import com.android.server.wifi.hotspot2.PasspointProvisioningTestUtil;
 import com.android.server.wifi.proto.nano.WifiMetricsProto.UserActionEvent;
@@ -162,6 +173,8 @@ import com.android.server.wifi.util.ApConfigUtil;
 import com.android.server.wifi.util.WifiPermissionsUtil;
 import com.android.server.wifi.util.WifiPermissionsWrapper;
 import com.android.wifi.resources.R;
+
+import com.google.common.base.Strings;
 
 import org.junit.After;
 import org.junit.Before;
@@ -182,6 +195,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 
@@ -255,6 +269,7 @@ public class WifiServiceImplTest extends WifiBaseTest {
     private ApplicationInfo mApplicationInfo;
     private List<ClientModeManager> mClientModeManagers;
     private static final String DPP_URI = "DPP:some_dpp_uri";
+    private static final String DPP_PRODUCT_INFO = "DPP:some_dpp_uri_info";
 
     private final ArgumentCaptor<BroadcastReceiver> mBroadcastReceiverCaptor =
             ArgumentCaptor.forClass(BroadcastReceiver.class);
@@ -304,6 +319,7 @@ public class WifiServiceImplTest extends WifiBaseTest {
     @Mock INetworkRequestMatchCallback mNetworkRequestMatchCallback;
     @Mock WifiNetworkSuggestionsManager mWifiNetworkSuggestionsManager;
     @Mock TelephonyManager mTelephonyManager;
+    @Mock CoexManager mCoexManager;
     @Mock IOnWifiUsabilityStatsListener mOnWifiUsabilityStatsListener;
     @Mock WifiConfigManager mWifiConfigManager;
     @Mock WifiScoreCard mWifiScoreCard;
@@ -311,6 +327,7 @@ public class WifiServiceImplTest extends WifiBaseTest {
     @Mock PasspointManager mPasspointManager;
     @Mock IDppCallback mDppCallback;
     @Mock ILocalOnlyHotspotCallback mLohsCallback;
+    @Mock ICoexCallback mCoexCallback;
     @Mock IScanResultsCallback mScanResultsCallback;
     @Mock ISuggestionConnectionStatusListener mSuggestionConnectionStatusListener;
     @Mock IOnWifiActivityEnergyInfoListener mOnWifiActivityEnergyInfoListener;
@@ -402,6 +419,7 @@ public class WifiServiceImplTest extends WifiBaseTest {
                 .thenReturn(mWifiNetworkSuggestionsManager);
         when(mWifiInjector.makeTelephonyManager()).thenReturn(mTelephonyManager);
         when(mContext.getSystemService(TelephonyManager.class)).thenReturn(mTelephonyManager);
+        when(mWifiInjector.getCoexManager()).thenReturn(mCoexManager);
         when(mWifiInjector.getWifiConfigManager()).thenReturn(mWifiConfigManager);
         when(mWifiInjector.getPasspointManager()).thenReturn(mPasspointManager);
         when(mActiveModeWarden.getPrimaryClientModeManager()).thenReturn(mClientModeManager);
@@ -469,6 +487,11 @@ public class WifiServiceImplTest extends WifiBaseTest {
 
             @Override
             public void onProgress(int status) throws RemoteException {
+
+            }
+
+            @Override
+            public void onBootstrapUriGenerated(String uri) throws RemoteException {
 
             }
 
@@ -1295,6 +1318,177 @@ public class WifiServiceImplTest extends WifiBaseTest {
         mLooper.dispatchAll();
         verify(mWifiConfigManager).loadFromStore();
         verify(mActiveModeWarden).start();
+    }
+
+    /**
+     * Verify that the setCoexUnsafeChannels calls the corresponding CoexManager API if
+     * the config_wifiDefaultCoexAlgorithmEnabled is false.
+     */
+    @Test
+    public void testSetCoexUnsafeChannelsDefaultAlgorithmDisabled() {
+        when(mResources.getBoolean(R.bool.config_wifiDefaultCoexAlgorithmEnabled))
+                .thenReturn(false);
+        List<CoexUnsafeChannel> unsafeChannels = new ArrayList<>();
+        unsafeChannels.addAll(Arrays.asList(new CoexUnsafeChannel(WIFI_BAND_24_GHZ, 6),
+                new CoexUnsafeChannel(WIFI_BAND_5_GHZ, 36)));
+        int coexRestrictions = COEX_RESTRICTION_SOFTAP
+                & COEX_RESTRICTION_WIFI_AWARE & COEX_RESTRICTION_WIFI_DIRECT;
+        mWifiServiceImpl.setCoexUnsafeChannels(unsafeChannels, coexRestrictions);
+        mLooper.dispatchAll();
+        verify(mCoexManager, times(1)).setCoexUnsafeChannels(any(), anyInt());
+    }
+
+    /**
+     * Verify that the setCoexUnsafeChannels does not call the corresponding CoexManager API if
+     * the config_wifiDefaultCoexAlgorithmEnabled is true.
+     */
+    @Test
+    public void testSetCoexUnsafeChannelsDefaultAlgorithmEnabled() {
+        when(mResources.getBoolean(R.bool.config_wifiDefaultCoexAlgorithmEnabled))
+                .thenReturn(true);
+        List<CoexUnsafeChannel> unsafeChannels = new ArrayList<>();
+        unsafeChannels.add(new CoexUnsafeChannel(WIFI_BAND_24_GHZ, 6));
+        unsafeChannels.add(new CoexUnsafeChannel(WIFI_BAND_5_GHZ, 36));
+        int coexRestrictions = COEX_RESTRICTION_SOFTAP
+                & COEX_RESTRICTION_WIFI_AWARE & COEX_RESTRICTION_WIFI_DIRECT;
+        mWifiServiceImpl.setCoexUnsafeChannels(unsafeChannels, coexRestrictions);
+        mLooper.dispatchAll();
+        verify(mCoexManager, never()).setCoexUnsafeChannels(any(), anyInt());
+    }
+
+    /**
+     * Verify that setCoexUnsafeChannels throws an IllegalArgumentException if passed a null set.
+     */
+    @Test
+    public void testSetCoexUnsafeChannelsNullSet() {
+        try {
+            mWifiServiceImpl.setCoexUnsafeChannels(null, 0);
+            fail("Expected IllegalArgumentException");
+        } catch (IllegalArgumentException e) {
+        }
+    }
+
+    /**
+     * Verifies that getCoexUnsafeChannels returns the value from
+     * {@link CoexManager#getCoexUnsafeChannels()}.
+     */
+    @Test
+    public void testGetCoexUnsafeChannelsReturnsValueFromCoexManager() {
+        List<CoexUnsafeChannel> unsafeChannels = new ArrayList<>();
+        unsafeChannels.add(new CoexUnsafeChannel(WIFI_BAND_24_GHZ, 6));
+        unsafeChannels.add(new CoexUnsafeChannel(WIFI_BAND_5_GHZ, 36));
+        when(mCoexManager.getCoexUnsafeChannels()).thenReturn(new HashSet<>(unsafeChannels));
+        mWifiThreadRunner.prepareForAutoDispatch();
+        mLooper.startAutoDispatch();
+        assertThat(mWifiServiceImpl.getCoexUnsafeChannels())
+                .containsExactlyElementsIn(unsafeChannels);
+        mLooper.stopAutoDispatch();
+        verify(mCoexManager).getCoexUnsafeChannels();
+    }
+
+    /**
+     * Verifies that getCoexRestrictions returns the value from
+     * {@link CoexManager#getCoexRestrictions()}.
+     */
+    @Test
+    public void testGetCoexRestrictionsReturnsValueFromCoexManager() {
+        final int restrictions = COEX_RESTRICTION_WIFI_DIRECT | COEX_RESTRICTION_SOFTAP
+                | COEX_RESTRICTION_WIFI_AWARE;
+        when(mCoexManager.getCoexRestrictions()).thenReturn(restrictions);
+        mWifiThreadRunner.prepareForAutoDispatch();
+        mLooper.startAutoDispatch();
+        assertThat(mWifiServiceImpl.getCoexRestrictions()).isEqualTo(restrictions);
+        mLooper.stopAutoDispatch();
+        verify(mCoexManager).getCoexRestrictions();
+    }
+
+    /**
+     * Test register and unregister callback will go to CoexManager;
+     */
+    @Test
+    public void testRegisterUnregisterCoexCallback() throws Exception {
+        when(mCoexCallback.asBinder()).thenReturn(mAppBinder);
+        mWifiServiceImpl.registerCoexCallback(mCoexCallback);
+        mLooper.dispatchAll();
+        verify(mCoexManager).registerRemoteCoexCallback(mCoexCallback);
+        mWifiServiceImpl.unregisterCoexCallback(mCoexCallback);
+        mLooper.dispatchAll();
+        verify(mCoexManager).unregisterRemoteCoexCallback(mCoexCallback);
+    }
+
+    /**
+     * Verify that a call to setCoexUnsafeChannels throws a SecurityException if the caller does
+     * not have the WIFI_UPDATE_COEX_UNSAFE_CHANNELS permission.
+     */
+    @Test
+    public void testSetCoexUnsafeChannelsThrowsSecurityExceptionOnMissingPermissions() {
+        doThrow(new SecurityException()).when(mContext)
+                .enforceCallingOrSelfPermission(eq(WIFI_UPDATE_COEX_UNSAFE_CHANNELS),
+                        eq("WifiService"));
+        try {
+            mWifiServiceImpl.setCoexUnsafeChannels(new ArrayList<>(), 0);
+            fail("expected SecurityException");
+        } catch (SecurityException expected) { }
+    }
+
+    /**
+     * Verify that a call to getCoexUnsafeChannels throws a SecurityException if the caller does
+     * not have the WIFI_ACCESS_COEX_UNSAFE_CHANNELS permission.
+     */
+    @Test
+    public void testGetCoexUnsafeChannelsThrowsSecurityExceptionOnMissingPermissions() {
+        doThrow(new SecurityException()).when(mContext)
+                .enforceCallingOrSelfPermission(eq(WIFI_ACCESS_COEX_UNSAFE_CHANNELS),
+                        eq("WifiService"));
+        try {
+            mWifiServiceImpl.getCoexUnsafeChannels();
+            fail("expected SecurityException");
+        } catch (SecurityException expected) { }
+    }
+
+    /**
+     * Verify that a call to getCoexRestrictions throws a SecurityException if the caller does
+     * not have the WIFI_ACCESS_COEX_UNSAFE_CHANNELS permission.
+     */
+    @Test
+    public void testGetCoexRestrictionsThrowsSecurityExceptionOnMissingPermissions() {
+        doThrow(new SecurityException()).when(mContext)
+                .enforceCallingOrSelfPermission(eq(WIFI_ACCESS_COEX_UNSAFE_CHANNELS),
+                        eq("WifiService"));
+        try {
+            mWifiServiceImpl.getCoexRestrictions();
+            fail("expected SecurityException");
+        } catch (SecurityException expected) { }
+    }
+
+    /**
+     * Verify that a call to registerCoexCallback throws a SecurityException if the caller does
+     * not have the WIFI_ACCESS_COEX_UNSAFE_CHANNELS permission.
+     */
+    @Test
+    public void testRegisterCoexCallbackThrowsSecurityExceptionOnMissingPermissions() {
+        doThrow(new SecurityException()).when(mContext)
+                .enforceCallingOrSelfPermission(eq(WIFI_ACCESS_COEX_UNSAFE_CHANNELS),
+                        eq("WifiService"));
+        try {
+            mWifiServiceImpl.registerCoexCallback(mCoexCallback);
+            fail("expected SecurityException");
+        } catch (SecurityException expected) { }
+    }
+
+    /**
+     * Verify that a call to unregisterCoexCallback throws a SecurityException if the caller does
+     * not have the WIFI_ACCESS_COEX_UNSAFE_CHANNELS permission.
+     */
+    @Test
+    public void testUnregisterCoexCallbackThrowsSecurityExceptionOnMissingPermissions() {
+        doThrow(new SecurityException()).when(mContext)
+                .enforceCallingOrSelfPermission(eq(WIFI_ACCESS_COEX_UNSAFE_CHANNELS),
+                        eq("WifiService"));
+        try {
+            mWifiServiceImpl.unregisterCoexCallback(mCoexCallback);
+            fail("expected SecurityException");
+        } catch (SecurityException expected) { }
     }
 
     /**
@@ -5433,6 +5627,49 @@ public class WifiServiceImplTest extends WifiBaseTest {
     }
 
     /**
+     * Verify that the call to startDppAsEnrolleeResponder throws a security exception when the
+     * caller doesn't have NETWORK_SETTINGS permissions or NETWORK_SETUP_WIZARD.
+     */
+    @Test(expected = SecurityException.class)
+    public void testStartDppAsEnrolleeResponderWithoutPermissions() {
+        mWifiServiceImpl.startDppAsEnrolleeResponder(mAppBinder, DPP_PRODUCT_INFO,
+                EASY_CONNECT_CRYPTOGRAPHY_CURVE_PRIME256V1, mDppCallback);
+    }
+
+    /**
+     * Verify that a call to StartDppAsEnrolleeResponder throws an IllegalArgumentException
+     * if the deviceInfo length exceeds the max allowed length.
+     */
+    @Test(expected = SecurityException.class)
+    public void testStartDppAsEnrolleeResponderThrowsIllegalArgumentExceptionOnDeviceInfoMaxLen() {
+        try {
+            StringBuilder sb = new StringBuilder();
+            sb.append(Strings.repeat("a",
+                    WifiManager.EASY_CONNECT_DEVICE_INFO_MAXIMUM_LENGTH + 2));
+            String deviceInfo = sb.toString();
+            mWifiServiceImpl.startDppAsEnrolleeResponder(mAppBinder, deviceInfo,
+                    EASY_CONNECT_CRYPTOGRAPHY_CURVE_PRIME256V1, mDppCallback);
+            fail("expected IllegalArgumentException");
+        } catch (IllegalArgumentException expected) {
+        }
+    }
+
+    /**
+     * Verify that a call to StartDppAsEnrolleeResponder throws an IllegalArgumentException
+     * if the deviceInfo contains characters which are not allowed as per spec (For example
+     * semicolon)
+     */
+    @Test(expected = SecurityException.class)
+    public void testStartDppAsEnrolleeResponderThrowsIllegalArgumentExceptionOnWrongDeviceInfo() {
+        try {
+            mWifiServiceImpl.startDppAsEnrolleeResponder(mAppBinder, "DPP;TESTER",
+                    EASY_CONNECT_CRYPTOGRAPHY_CURVE_PRIME256V1, mDppCallback);
+            fail("expected IllegalArgumentException");
+        } catch (IllegalArgumentException expected) {
+        }
+    }
+
+    /**
      * Verify that the call to stopDppSession throws a security exception when the
      * caller doesn't have NETWORK_SETTINGS permissions or NETWORK_SETUP_WIZARD.
      */
@@ -6318,6 +6555,71 @@ public class WifiServiceImplTest extends WifiBaseTest {
         assertEquals(supportedFeaturesFromClientModeManager | WifiManager.WIFI_FEATURE_AP_STA,
                 mWifiServiceImpl.getSupportedFeatures());
         mLooper.stopAutoDispatchAndIgnoreExceptions();
+    }
+
+    /**
+     * Verify startTemporarilyDisablingAllNonCarrierMergedWifi is guarded by NETWORK_SETTINGS
+     * permission.
+     */
+    @Test
+    public void testStartTemporarilyDisablingAllNonCarrierMergedWifiPermission() {
+        assumeTrue(SdkLevel.isAtLeastS());
+        doThrow(new SecurityException()).when(mContext)
+                .enforceCallingOrSelfPermission(eq(android.Manifest.permission.NETWORK_SETTINGS),
+                        eq("WifiService"));
+        try {
+            mWifiServiceImpl.startTemporarilyDisablingAllNonCarrierMergedWifi(1);
+            fail();
+        } catch (SecurityException e) {
+            // pass
+        }
+    }
+
+    /**
+     * Verify startTemporarilyDisablingAllNonCarrierMergedWifi works properly with permission.
+     */
+    @Test
+    public void testStartTemporarilyDisablingAllNonCarrierMergedWifi() {
+        assumeTrue(SdkLevel.isAtLeastS());
+        doNothing().when(mContext)
+                .enforceCallingOrSelfPermission(eq(android.Manifest.permission.NETWORK_SETTINGS),
+                        eq("WifiService"));
+        mWifiServiceImpl.startTemporarilyDisablingAllNonCarrierMergedWifi(1);
+        mLooper.dispatchAll();
+        verify(mWifiConfigManager).startTemporarilyDisablingAllNonCarrierMergedWifi(1);
+        verify(mClientModeManager).disconnect();
+    }
+
+    /**
+     * Verify stopTemporarilyDisablingAllNonCarrierMergedWifi is guarded by NETWORK_SETTINGS
+     * permission.
+     */
+    @Test
+    public void testStopTemporarilyDisablingAllNonCarrierMergedWifiPermission() {
+        assumeTrue(SdkLevel.isAtLeastS());
+        doThrow(new SecurityException()).when(mContext)
+                .enforceCallingOrSelfPermission(eq(android.Manifest.permission.NETWORK_SETTINGS),
+                        eq("WifiService"));
+        try {
+            mWifiServiceImpl.stopTemporarilyDisablingAllNonCarrierMergedWifi();
+            fail();
+        } catch (SecurityException e) {
+            // pass
+        }
+    }
+
+    /**
+     * Verify stopTemporarilyDisablingAllNonCarrierMergedWifi works properly with permission.
+     */
+    @Test
+    public void testStopTemporarilyDisablingAllNonCarrierMergedWifi() {
+        assumeTrue(SdkLevel.isAtLeastS());
+        doNothing().when(mContext)
+                .enforceCallingOrSelfPermission(eq(android.Manifest.permission.NETWORK_SETTINGS),
+                        eq("WifiService"));
+        mWifiServiceImpl.stopTemporarilyDisablingAllNonCarrierMergedWifi();
+        mLooper.dispatchAll();
+        verify(mWifiConfigManager).stopTemporarilyDisablingAllNonCarrierMergedWifi();
     }
 
     /**

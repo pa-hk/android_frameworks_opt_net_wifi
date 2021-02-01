@@ -125,6 +125,7 @@ import com.android.server.wifi.ClientMode.LinkProbeCallback;
 import com.android.server.wifi.hotspot2.NetworkDetail;
 import com.android.server.wifi.hotspot2.PasspointManager;
 import com.android.server.wifi.hotspot2.PasspointProvisioningTestUtil;
+import com.android.server.wifi.hotspot2.WnmData;
 import com.android.server.wifi.proto.nano.WifiMetricsProto;
 import com.android.server.wifi.proto.nano.WifiMetricsProto.StaEvent;
 import com.android.server.wifi.proto.nano.WifiMetricsProto.WifiIsUnusableEvent;
@@ -200,6 +201,9 @@ public class ClientModeImplTest extends WifiBaseTest {
 
     private static final int DATA_SUBID = 1;
     private static final int CARRIER_ID_1 = 100;
+
+    private static final long TEST_BSSID = 0x112233445566L;
+    private static final int TEST_DELAY_IN_SECONDS = 300;
 
     private long mBinderToken;
     private MockitoSession mSession;
@@ -886,7 +890,7 @@ public class ClientModeImplTest extends WifiBaseTest {
         verify(mWifiStateTracker).updateState(eq(WifiStateTracker.CONNECTED));
         assertEquals("L3ConnectedState", getCurrentState().getName());
         verify(mWifiMetrics).incrementNumOfCarrierWifiConnectionSuccess();
-        verify(mWifiLockManager).updateWifiClientConnected(true);
+        verify(mWifiLockManager).updateWifiClientConnected(mClientModeManager, true);
         verify(mWifiNative).getConnectionCapabilities(any());
         verify(mThroughputPredictor).predictMaxTxThroughput(any());
         verify(mWifiMetrics).setConnectionMaxSupportedLinkSpeedMbps(WIFI_IFACE_NAME, 90, 80);
@@ -1871,7 +1875,8 @@ public class ClientModeImplTest extends WifiBaseTest {
                 .thenReturn(WifiHealthMonitor.REASON_SHORT_CONNECTION_NONLOCAL);
         InOrder inOrderWifiLockManager = inOrder(mWifiLockManager);
         connect();
-        inOrderWifiLockManager.verify(mWifiLockManager).updateWifiClientConnected(true);
+        inOrderWifiLockManager.verify(mWifiLockManager)
+                .updateWifiClientConnected(mClientModeManager, true);
 
         DisconnectEventInfo disconnectEventInfo =
                 new DisconnectEventInfo(mConnectedNetwork.SSID, sBSSID, 0, false);
@@ -1885,7 +1890,8 @@ public class ClientModeImplTest extends WifiBaseTest {
         verify(mWifiStateTracker).updateState(eq(WifiStateTracker.DISCONNECTED));
         verify(mWifiNetworkSuggestionsManager).handleDisconnect(any(), any());
         assertEquals("DisconnectedState", getCurrentState().getName());
-        inOrderWifiLockManager.verify(mWifiLockManager).updateWifiClientConnected(false);
+        inOrderWifiLockManager.verify(mWifiLockManager)
+                .updateWifiClientConnected(mClientModeManager, false);
         verify(mWifiScoreCard).detectAbnormalDisconnection();
         verify(mWifiDiagnostics).takeBugReport(anyString(), anyString());
         verify(mWifiNative).disableNetwork(WIFI_IFACE_NAME);
@@ -3001,6 +3007,26 @@ public class ClientModeImplTest extends WifiBaseTest {
     }
 
     /**
+     * Verify that WifiScoreCard and BssidBlocklistMonitor are notified properly when
+     * disconnection occurs in middle of connection states.
+     */
+    @Test
+    public void testDisconnectConnecting()
+            throws Exception {
+        initializeAndAddNetworkAndVerifySuccess();
+        mCmi.sendMessage(ClientModeImpl.CMD_START_CONNECT, 0, 0, sBSSID);
+        mCmi.sendMessage(WifiMonitor.NETWORK_DISCONNECTION_EVENT,
+                new DisconnectEventInfo(sSSID, sBSSID,
+                        ISupplicantStaIfaceCallback.ReasonCode.FOURWAY_HANDSHAKE_TIMEOUT,
+                        false));
+        mLooper.dispatchAll();
+        verify(mWifiScoreCard).noteConnectionFailure(any(), anyInt(), anyString(), anyInt());
+        verify(mWifiScoreCard).resetConnectionState();
+        verify(mBssidBlocklistMonitor, never()).handleBssidConnectionFailure(anyString(),
+                anyString(), anyInt(), anyInt());
+    }
+
+    /**
      * Verify that the recent failure association status is updated properly when
      * DENIED_POOR_CHANNEL_CONDITIONS occurs.
      */
@@ -3026,6 +3052,26 @@ public class ClientModeImplTest extends WifiBaseTest {
     public void testNetworkDisconnectionApBusyUpdatesRecentAssociationFailureStatus()
             throws Exception {
         connect();
+        // Disconnection with reason = DISASSOC_AP_BUSY
+        DisconnectEventInfo disconnectEventInfo =
+                new DisconnectEventInfo(sSSID, sBSSID, 5, false);
+        mCmi.sendMessage(WifiMonitor.NETWORK_DISCONNECTION_EVENT, disconnectEventInfo);
+        mLooper.dispatchAll();
+        verify(mWifiConfigManager).setRecentFailureAssociationStatus(anyInt(),
+                eq(WifiConfiguration.RECENT_FAILURE_DISCONNECTION_AP_BUSY));
+    }
+
+    /**
+     * Verify that the recent failure association status is updated properly when a disconnection
+     * with reason code DISASSOC_AP_BUSY occurs.
+     */
+    @Test
+    public void testMidConnectionDisconnectionApBusyUpdatesRecentAssociationFailureStatus()
+            throws Exception {
+        initializeAndAddNetworkAndVerifySuccess();
+        startConnectSuccess();
+        assertEquals("L2ConnectingState", getCurrentState().getName());
+
         // Disconnection with reason = DISASSOC_AP_BUSY
         DisconnectEventInfo disconnectEventInfo =
                 new DisconnectEventInfo(sSSID, sBSSID, 5, false);
@@ -4101,7 +4147,6 @@ public class ClientModeImplTest extends WifiBaseTest {
                 .registerHandler(eq(WIFI_IFACE_NAME), anyInt(), any());
         verify(mWifiMetrics).registerForWifiMonitorEvents(WIFI_IFACE_NAME);
         verify(mWifiLastResortWatchdog).registerForWifiMonitorEvents(WIFI_IFACE_NAME);
-        verify(mSupplicantStateTracker).registerForWifiMonitorEvents(WIFI_IFACE_NAME);
 
         mCmi.stop();
         mLooper.dispatchAll();
@@ -4110,7 +4155,6 @@ public class ClientModeImplTest extends WifiBaseTest {
                 .deregisterHandler(eq(WIFI_IFACE_NAME), anyInt(), any());
         verify(mWifiMetrics).deregisterForWifiMonitorEvents(WIFI_IFACE_NAME);
         verify(mWifiLastResortWatchdog).deregisterForWifiMonitorEvents(WIFI_IFACE_NAME);
-        verify(mSupplicantStateTracker).deregisterForWifiMonitorEvents(WIFI_IFACE_NAME);
     }
 
     @Test
@@ -4971,7 +5015,8 @@ public class ClientModeImplTest extends WifiBaseTest {
                 .thenReturn(WifiHealthMonitor.REASON_SHORT_CONNECTION_NONLOCAL);
         InOrder inOrderWifiLockManager = inOrder(mWifiLockManager);
         connect();
-        inOrderWifiLockManager.verify(mWifiLockManager).updateWifiClientConnected(true);
+        inOrderWifiLockManager.verify(mWifiLockManager)
+                .updateWifiClientConnected(mClientModeManager, true);
 
         // got 4WAY_HANDSHAKE_TIMEOUT
         DisconnectEventInfo disconnectEventInfo =
@@ -5230,10 +5275,7 @@ public class ClientModeImplTest extends WifiBaseTest {
         when(mWifiNative.roamToNetwork(any(), any())).thenReturn(true);
 
         // Trigger roam to a BSSID.
-        ScanResult scanResult = new ScanResult();
-        scanResult.SSID = WifiInfo.sanitizeSsid(mConnectedNetwork.SSID);
-        scanResult.BSSID = sBSSID1;
-        mCmi.startRoamToNetwork(FRAMEWORK_NETWORK_ID, scanResult);
+        mCmi.startRoamToNetwork(FRAMEWORK_NETWORK_ID, sBSSID1);
         mLooper.dispatchAll();
 
 
@@ -5384,5 +5426,20 @@ public class ClientModeImplTest extends WifiBaseTest {
 
         verify(mContext, times(2)).sendStickyBroadcastAsUser(
                 argThat(new NetworkStateChangedIntentMatcher(CONNECTED)), any());
+    }
+
+    /**
+     * Verify that the Deauth-Imminent WNM-Notification is handled by relaying to the Passpoint
+     * Manager.
+     */
+    @Test
+    public void testHandlePasspointDeauthImminentWnmNotification() throws Exception {
+        setupEapSimConnection();
+        WnmData wnmData = WnmData.createDeauthImminentEvent(TEST_BSSID, "", false,
+                TEST_DELAY_IN_SECONDS);
+        mCmi.sendMessage(WifiMonitor.HS20_DEAUTH_IMMINENT_EVENT, 0, 0, wnmData);
+        mLooper.dispatchAll();
+        verify(mPasspointManager).handleDeauthImminentEvent(eq(wnmData),
+                any(WifiConfiguration.class));
     }
 }
