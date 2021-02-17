@@ -64,7 +64,7 @@ import java.util.StringJoiner;
  */
 @VisibleForTesting
 public class PasspointWifiEntry extends WifiEntry implements WifiEntry.WifiEntryCallback {
-    static final String KEY_PREFIX = "PasspointWifiEntry:";
+    public static final String KEY_PREFIX = "PasspointWifiEntry:";
 
     private final Object mLock = new Object();
     // Scan result list must be thread safe for generating the verbose scan summary
@@ -306,11 +306,6 @@ public class PasspointWifiEntry extends WifiEntry implements WifiEntry.WifiEntry
     }
 
     @Override
-    public boolean isSaved() {
-        return false;
-    }
-
-    @Override
     public boolean isSuggestion() {
         return mWifiConfig != null && mWifiConfig.fromWifiNetworkSuggestion;
     }
@@ -318,11 +313,6 @@ public class PasspointWifiEntry extends WifiEntry implements WifiEntry.WifiEntry
     @Override
     public boolean isSubscription() {
         return mPasspointConfig != null;
-    }
-
-    @Override
-    public WifiConfiguration getWifiConfiguration() {
-        return null;
     }
 
     @Override
@@ -350,6 +340,7 @@ public class PasspointWifiEntry extends WifiEntry implements WifiEntry.WifiEntry
             // We should not be able to call connect() if mWifiConfig is null
             new ConnectActionListener().onFailure(0);
         }
+        mWifiManager.stopTemporarilyDisablingAllNonCarrierMergedWifi();
         mWifiManager.connect(mWifiConfig, new ConnectActionListener());
     }
 
@@ -388,26 +379,6 @@ public class PasspointWifiEntry extends WifiEntry implements WifiEntry.WifiEntry
         mForgetCallback = callback;
         mWifiManager.removePasspointConfiguration(mPasspointConfig.getHomeSp().getFqdn());
         new ForgetActionListener().onSuccess();
-    }
-
-    @Override
-    public boolean canSignIn() {
-        return false;
-    }
-
-    @Override
-    public void signIn(@Nullable SignInCallback callback) {
-        return;
-    }
-
-    @Override
-    public boolean canShare() {
-        return false;
-    }
-
-    @Override
-    public boolean canEasyConnect() {
-        return false;
     }
 
     @Override
@@ -615,7 +586,7 @@ public class PasspointWifiEntry extends WifiEntry implements WifiEntry.WifiEntry
     }
 
     @Override
-    String getScanResultDescription() {
+    protected String getScanResultDescription() {
         // TODO(b/70983952): Fill this method in.
         return "";
     }
@@ -637,5 +608,10 @@ public class PasspointWifiEntry extends WifiEntry implements WifiEntry.WifiEntry
     @Override
     public void onUpdated() {
         notifyOnUpdated();
+    }
+
+    /** Get the PasspointConfiguration instance of the entry. */
+    public PasspointConfiguration getPasspointConfig() {
+        return mPasspointConfig;
     }
 }
