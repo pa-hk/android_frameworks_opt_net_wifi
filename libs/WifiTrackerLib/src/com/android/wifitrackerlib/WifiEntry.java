@@ -77,6 +77,7 @@ public class WifiEntry implements Comparable<WifiEntry> {
             SECURITY_SAE,
             SECURITY_EAP,
             SECURITY_EAP_SUITE_B,
+            SECURITY_EAP_WPA3_ENTERPRISE,
     })
 
     public @interface Security {}
@@ -88,8 +89,9 @@ public class WifiEntry implements Comparable<WifiEntry> {
     public static final int SECURITY_OWE = 4;
     public static final int SECURITY_SAE = 5;
     public static final int SECURITY_EAP_SUITE_B = 6;
+    public static final int SECURITY_EAP_WPA3_ENTERPRISE = 7;
 
-    public static final int NUM_SECURITY_TYPES = 7;
+    public static final int NUM_SECURITY_TYPES = 8;
 
     @Retention(RetentionPolicy.SOURCE)
     @IntDef(value = {
@@ -428,6 +430,7 @@ public class WifiEntry implements Comparable<WifiEntry> {
         public List<String> ipv6Addresses = new ArrayList<>();
         public String gateway;
         public String subnetMask;
+        public int wifiStandard = ScanResult.WIFI_STANDARD_UNKNOWN;
     }
 
     // User actions on a network
@@ -781,6 +784,7 @@ public class WifiEntry implements Comparable<WifiEntry> {
                 }
                 mConnectedInfo.frequencyMhz = wifiInfo.getFrequency();
                 mConnectedInfo.linkSpeedMbps = wifiInfo.getLinkSpeed();
+                mConnectedInfo.wifiStandard = wifiInfo.getWifiStandard();
             }
         } else { // Connection info doesn't matched, so this network is disconnected
             mNetworkInfo = null;
