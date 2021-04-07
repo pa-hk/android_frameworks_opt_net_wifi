@@ -27,13 +27,17 @@
     <string name="wifitrackerlib_wifi_disabled_generic" msgid="4278806060337007814">"מושבתת"</string>
     <string name="wifitrackerlib_wifi_ap_unable_to_handle_new_sta" msgid="931922372010639716">"נקודת הגישה מלאה באופן זמני"</string>
     <string name="wifitrackerlib_wifi_poor_channel_conditions" msgid="26484680900376236">"החיבור לאינטרנט חלש באופן זמני"</string>
+    <string name="wifitrackerlib_wifi_mbo_oce_assoc_disallowed_insufficient_rssi" msgid="5078611817423181773">"אות חלש. צריך לנסות להתקרב לנתב."</string>
+    <string name="wifitrackerlib_wifi_mbo_assoc_disallowed_max_num_sta_associated" msgid="4418848919914618807">"הרשת בקיבולת יתר. יש לנסות שוב מאוחר יותר."</string>
+    <string name="wifitrackerlib_wifi_mbo_assoc_disallowed_cannot_connect" msgid="2692286425448897083">"לא ניתן להתחבר. יש לנסות שוב מאוחר יותר."</string>
+    <string name="wifitrackerlib_wifi_network_not_found" msgid="2208793323700267293">"הרשת לא תואמת למכשיר הזה"</string>
     <string name="wifitrackerlib_wifi_disconnected" msgid="3320414360982942679">"מנותקת"</string>
     <string name="wifitrackerlib_wifi_remembered" msgid="2406091442008343041">"נשמרה"</string>
     <string name="wifitrackerlib_wifi_metered_label" msgid="8818508951778620385">"חיוב לפי שימוש בנתונים"</string>
     <string name="wifitrackerlib_wifi_unmetered_label" msgid="1902150402929678469">"שימוש חופשי"</string>
-    <string name="wifitrackerlib_connected_via_app" msgid="7823921840931347560">"מחובר באמצעות <xliff:g id="NAME">%1$s</xliff:g>"</string>
+    <string name="wifitrackerlib_connected_via_app" msgid="7823921840931347560">"מחובר דרך <xliff:g id="NAME">%1$s</xliff:g>"</string>
     <string name="wifitrackerlib_available_via_app" msgid="8556844256194837469">"זמינה דרך <xliff:g id="NAME">%1$s</xliff:g>"</string>
-    <string name="wifitrackerlib_connected_via_network_scorer" msgid="6306655070903763086">"מחובר אוטומטית באמצעות <xliff:g id="NAME">%1$s</xliff:g>"</string>
+    <string name="wifitrackerlib_connected_via_network_scorer" msgid="6306655070903763086">"מחובר אוטומטית דרך <xliff:g id="NAME">%1$s</xliff:g>"</string>
     <string name="wifitrackerlib_connected_via_network_scorer_default" msgid="3436792128688839692">"מחובר אוטומטית דרך ספק של דירוג רשת"</string>
     <string name="wifitrackerlib_wifi_limited_connection" msgid="4234326409980991740">"חיבור מוגבל"</string>
     <string name="wifitrackerlib_private_dns_broken" msgid="6049401148262718707">"‏לא ניתן לגשת לשרת DNS הפרטי"</string>
