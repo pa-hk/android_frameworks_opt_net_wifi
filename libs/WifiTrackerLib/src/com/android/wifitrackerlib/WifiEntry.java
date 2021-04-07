@@ -26,7 +26,6 @@ import android.net.LinkAddress;
 import android.net.LinkProperties;
 import android.net.NetworkCapabilities;
 import android.net.NetworkInfo;
-import android.net.NetworkUtils;
 import android.net.RouteInfo;
 import android.net.wifi.ScanResult;
 import android.net.wifi.WifiConfiguration;
@@ -42,6 +41,8 @@ import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.annotation.VisibleForTesting;
 import androidx.annotation.WorkerThread;
+
+import com.android.net.module.util.NetUtils;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -652,7 +653,8 @@ public class WifiEntry implements Comparable<WifiEntry> {
         @IntDef(value = {
                 CONNECT_STATUS_SUCCESS,
                 CONNECT_STATUS_FAILURE_NO_CONFIG,
-                CONNECT_STATUS_FAILURE_UNKNOWN
+                CONNECT_STATUS_FAILURE_UNKNOWN,
+                CONNECT_STATUS_FAILURE_SIM_ABSENT
         })
 
         public @interface ConnectStatus {}
@@ -660,6 +662,7 @@ public class WifiEntry implements Comparable<WifiEntry> {
         int CONNECT_STATUS_SUCCESS = 0;
         int CONNECT_STATUS_FAILURE_NO_CONFIG = 1;
         int CONNECT_STATUS_FAILURE_UNKNOWN = 2;
+        int CONNECT_STATUS_FAILURE_SIM_ABSENT = 3;
 
         /**
          * Result of the connect request indicated by the CONNECT_STATUS constants.
@@ -819,7 +822,7 @@ public class WifiEntry implements Comparable<WifiEntry> {
                 try {
                     InetAddress all = InetAddress.getByAddress(
                             new byte[]{(byte) 255, (byte) 255, (byte) 255, (byte) 255});
-                    mConnectedInfo.subnetMask = NetworkUtils.getNetworkPart(
+                    mConnectedInfo.subnetMask = NetUtils.getNetworkPart(
                             all, addr.getPrefixLength()).getHostAddress();
                 } catch (UnknownHostException e) {
                     // Leave subnet null;
