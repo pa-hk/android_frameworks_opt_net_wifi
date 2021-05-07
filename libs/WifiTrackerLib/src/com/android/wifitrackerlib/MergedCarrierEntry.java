@@ -27,6 +27,7 @@ import android.net.wifi.WifiManager;
 import android.net.wifi.WifiNetworkScoreCache;
 import android.os.Handler;
 import android.text.TextUtils;
+import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -43,6 +44,7 @@ public class MergedCarrierEntry extends WifiEntry {
     private final int mSubscriptionId;
     @NonNull private final String mKey;
     @NonNull private final Context mContext;
+    boolean mIsCellDefaultRoute;
 
     MergedCarrierEntry(@NonNull Handler callbackHandler,
             @NonNull WifiManager wifiManager,
@@ -96,13 +98,15 @@ public class MergedCarrierEntry extends WifiEntry {
 
     @Override
     public boolean canConnect() {
-        return getConnectedState() == CONNECTED_STATE_DISCONNECTED;
+        return getConnectedState() == CONNECTED_STATE_DISCONNECTED && !mIsCellDefaultRoute;
     }
 
     @Override
     public void connect(@Nullable ConnectCallback callback) {
         mConnectCallback = callback;
         mWifiManager.startRestrictingAutoJoinToSubscriptionId(mSubscriptionId);
+        Toast.makeText(mContext,
+                R.string.wifitrackerlib_wifi_wont_autoconnect_for_now, Toast.LENGTH_SHORT).show();
         if (mConnectCallback != null) {
             mCallbackHandler.post(() ->
                     mConnectCallback.onConnectResult(
@@ -119,6 +123,7 @@ public class MergedCarrierEntry extends WifiEntry {
     public void disconnect(@Nullable DisconnectCallback callback) {
         mDisconnectCallback = callback;
         mWifiManager.stopRestrictingAutoJoinToSubscriptionId();
+        mWifiManager.startScan();
         if (mDisconnectCallback != null) {
             mCallbackHandler.post(() ->
                     mDisconnectCallback.onDisconnectResult(
@@ -137,10 +142,16 @@ public class MergedCarrierEntry extends WifiEntry {
         mWifiManager.setCarrierNetworkOffloadEnabled(mSubscriptionId, true, enabled);
         if (!enabled) {
             mWifiManager.stopRestrictingAutoJoinToSubscriptionId();
+            mWifiManager.startScan();
         }
     }
 
     /* package */ int getSubscriptionId() {
         return mSubscriptionId;
+    }
+
+    /* package */ void updateIsCellDefaultRoute(boolean isCellDefaultRoute) {
+        mIsCellDefaultRoute = isCellDefaultRoute;
+        notifyOnUpdated();
     }
 }
