@@ -34,10 +34,14 @@ import android.net.NetworkKey;
 import android.net.NetworkRequest;
 import android.net.NetworkScoreManager;
 import android.net.ScoredNetwork;
+import android.net.TransportInfo;
+import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
 import android.net.wifi.WifiNetworkScoreCache;
 import android.os.Handler;
 import android.os.Looper;
+import android.telephony.SubscriptionManager;
+import android.telephony.TelephonyManager;
 import android.util.Log;
 
 import androidx.annotation.AnyThread;
@@ -119,6 +123,9 @@ public class BaseWifiTracker implements LifecycleObserver {
                 handleNetworkStateChangedAction(intent);
             } else if (WifiManager.RSSI_CHANGED_ACTION.equals(action)) {
                 handleRssiChangedAction();
+            } else if (TelephonyManager.ACTION_DEFAULT_DATA_SUBSCRIPTION_CHANGED.equals(action)) {
+                handleDefaultSubscriptionChanged(intent.getIntExtra(
+                        "subscription", SubscriptionManager.INVALID_SUBSCRIPTION_ID));
             }
         }
     };
@@ -150,12 +157,19 @@ public class BaseWifiTracker implements LifecycleObserver {
                 @Override
                 public void onLinkPropertiesChanged(@NonNull Network network,
                         @NonNull LinkProperties lp) {
+                    if (!isPrimaryWifiNetwork(
+                            mConnectivityManager.getNetworkCapabilities(network))) {
+                        return;
+                    }
                     handleLinkPropertiesChanged(lp);
                 }
 
                 @Override
                 public void onCapabilitiesChanged(@NonNull Network network,
                         @NonNull NetworkCapabilities networkCapabilities) {
+                    if (!isPrimaryWifiNetwork(networkCapabilities)) {
+                        return;
+                    }
                     final boolean oldWifiValidated = mIsWifiValidated;
                     mIsWifiValidated = networkCapabilities.hasCapability(NET_CAPABILITY_VALIDATED);
                     if (isVerboseLoggingEnabled() && mIsWifiValidated != oldWifiValidated) {
@@ -166,6 +180,10 @@ public class BaseWifiTracker implements LifecycleObserver {
 
                 @Override
                 public void onLost(@NonNull Network network) {
+                    if (!isPrimaryWifiNetwork(
+                            mConnectivityManager.getNetworkCapabilities(network))) {
+                        return;
+                    }
                     mIsWifiValidated = false;
                 }
             };
@@ -177,7 +195,7 @@ public class BaseWifiTracker implements LifecycleObserver {
                         @NonNull NetworkCapabilities networkCapabilities) {
                     final boolean oldWifiDefault = mIsWifiDefaultRoute;
                     final boolean oldCellDefault = mIsCellDefaultRoute;
-                    mIsWifiDefaultRoute = networkCapabilities.hasTransport(TRANSPORT_WIFI);
+                    mIsWifiDefaultRoute = isPrimaryWifiNetwork(networkCapabilities);
                     mIsCellDefaultRoute = networkCapabilities.hasTransport(TRANSPORT_CELLULAR);
                     if (mIsWifiDefaultRoute != oldWifiDefault
                             || mIsCellDefaultRoute != oldCellDefault) {
@@ -199,6 +217,17 @@ public class BaseWifiTracker implements LifecycleObserver {
                     handleDefaultRouteChanged();
                 }
             };
+
+    private boolean isPrimaryWifiNetwork(@Nullable NetworkCapabilities networkCapabilities) {
+        if (networkCapabilities == null) {
+            return false;
+        }
+        final TransportInfo transportInfo = networkCapabilities.getTransportInfo();
+        if (!(transportInfo instanceof WifiInfo)) {
+            return false;
+        }
+        return ((WifiInfo) transportInfo).isPrimary();
+    }
 
     /**
      * Constructor for BaseWifiTracker.
@@ -262,6 +291,7 @@ public class BaseWifiTracker implements LifecycleObserver {
         filter.addAction(WifiManager.CONFIGURED_NETWORKS_CHANGED_ACTION);
         filter.addAction(WifiManager.NETWORK_STATE_CHANGED_ACTION);
         filter.addAction(WifiManager.RSSI_CHANGED_ACTION);
+        filter.addAction(TelephonyManager.ACTION_DEFAULT_DATA_SUBSCRIPTION_CHANGED);
         mContext.registerReceiver(mBroadcastReceiver, filter,
                 /* broadcastPermission */ null, mWorkerHandler);
         mConnectivityManager.registerNetworkCallback(mNetworkRequest, mNetworkCallback,
@@ -397,6 +427,14 @@ public class BaseWifiTracker implements LifecycleObserver {
      */
     @WorkerThread
     protected void handleNetworkScoreCacheUpdated() {
+        // Do nothing.
+    }
+
+    /**
+     * Handle updates to the default data subscription id from SubscriptionManager.
+     */
+    @WorkerThread
+    protected void handleDefaultSubscriptionChanged(int defaultSubId) {
         // Do nothing.
     }
 

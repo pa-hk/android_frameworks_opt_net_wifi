@@ -22,6 +22,7 @@ import static com.google.common.truth.Truth.assertThat;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
@@ -66,7 +67,6 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.Executor;
 
 public class WifiPickerTrackerTest {
 
@@ -110,9 +110,6 @@ public class WifiPickerTrackerTest {
     private final ArgumentCaptor<ConnectivityManager.NetworkCallback>
             mDefaultNetworkCallbackCaptor =
                 ArgumentCaptor.forClass(ConnectivityManager.NetworkCallback.class);
-    private final ArgumentCaptor<WifiPickerTracker.ActiveDataSubIdListener>
-            mActiveDataSubIdListenerCaptor =
-                ArgumentCaptor.forClass(WifiPickerTracker.ActiveDataSubIdListener.class);
 
     private WifiPickerTracker createTestWifiPickerTracker() {
         final Handler testHandler = new Handler(mTestLooper.getLooper());
@@ -565,6 +562,7 @@ public class WifiPickerTrackerTest {
         final String lowQuality = "Low quality";
         when(mMockResources.getString(anyInt())).thenReturn("");
         when(mMockResources.getString(R.string.wifi_connected_low_quality)).thenReturn(lowQuality);
+        when(mMockResources.getStringArray(anyInt())).thenReturn(new String[0]);
         final WifiPickerTracker wifiPickerTracker = createTestWifiPickerTracker();
         final WifiConfiguration config = new WifiConfiguration();
         config.SSID = "\"ssid\"";
@@ -584,13 +582,37 @@ public class WifiPickerTrackerTest {
                 .registerDefaultNetworkCallback(mDefaultNetworkCallbackCaptor.capture(), any());
         mTestLooper.dispatchAll();
 
-        mNetworkCallbackCaptor.getValue().onCapabilitiesChanged(mMockNetwork,
-                new NetworkCapabilities.Builder()
-                        .addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED).build());
+        // Set cellular to be the default network
         mDefaultNetworkCallbackCaptor.getValue().onCapabilitiesChanged(mMockNetwork,
                 new NetworkCapabilities.Builder()
-                .addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR).build());
+                        .addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR).build());
 
+        // Trigger a validation callback for the non-primary Wifi network.
+        WifiInfo nonPrimaryWifiInfo = Mockito.mock(WifiInfo.class);
+        when(nonPrimaryWifiInfo.isPrimary()).thenReturn(false);
+        when(nonPrimaryWifiInfo.makeCopy(anyLong())).thenReturn(nonPrimaryWifiInfo);
+        NetworkCapabilities nonPrimaryCap = new NetworkCapabilities.Builder()
+                .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                .setTransportInfo(nonPrimaryWifiInfo)
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+                .build();
+        mNetworkCallbackCaptor.getValue().onCapabilitiesChanged(mMockNetwork, nonPrimaryCap);
+
+        // Non-primary Wifi network validation should be ignored.
+        assertThat(wifiPickerTracker.getConnectedWifiEntry().getSummary()).isNotEqualTo(lowQuality);
+
+        // Trigger a validation callback for the primary Wifi network.
+        WifiInfo primaryWifiInfo = Mockito.mock(WifiInfo.class);
+        when(primaryWifiInfo.isPrimary()).thenReturn(true);
+        when(primaryWifiInfo.makeCopy(anyLong())).thenReturn(primaryWifiInfo);
+        NetworkCapabilities primaryCap = new NetworkCapabilities.Builder()
+                .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                .setTransportInfo(primaryWifiInfo)
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+                .build();
+        mNetworkCallbackCaptor.getValue().onCapabilitiesChanged(mMockNetwork, primaryCap);
+
+        // Cell default + primary network validation should trigger low quality
         assertThat(wifiPickerTracker.getConnectedWifiEntry().getSummary()).isEqualTo(lowQuality);
     }
 
@@ -785,11 +807,12 @@ public class WifiPickerTrackerTest {
         final WifiPickerTracker wifiPickerTracker = createTestWifiPickerTracker();
         wifiPickerTracker.onStart();
         mTestLooper.dispatchAll();
-        verify(mMockTelephonyManager).registerTelephonyCallback(any(Executor.class),
-                mActiveDataSubIdListenerCaptor.capture());
+        verify(mMockContext).registerReceiver(mBroadcastReceiverCaptor.capture(),
+                any(), any(), any());
 
-        mActiveDataSubIdListenerCaptor.getValue().onActiveDataSubscriptionIdChanged(subId);
-        mTestLooper.dispatchAll();
+        final Intent intent = new Intent(TelephonyManager.ACTION_DEFAULT_DATA_SUBSCRIPTION_CHANGED);
+        intent.putExtra("subscription", subId);
+        mBroadcastReceiverCaptor.getValue().onReceive(mMockContext, intent);
 
         assertThat(wifiPickerTracker.getMergedCarrierEntry().getConnectedState())
                 .isEqualTo(WifiEntry.CONNECTED_STATE_CONNECTED);
@@ -797,20 +820,26 @@ public class WifiPickerTrackerTest {
 
     /**
      * Tests that getMergedCarrierEntry returns a new MergedCarrierEntry with the correct
-     * subscription ID if the active data subscription ID changes.
+     * subscription ID if the default subscription ID changes.
      */
     @Test
     public void testGetMergedCarrierEntry_subscriptionIdChanges_entryChanges() {
         final int subId1 = 1;
-        final int subId2 = 1;
+        final int subId2 = 2;
         final WifiPickerTracker wifiPickerTracker = createTestWifiPickerTracker();
         wifiPickerTracker.onStart();
         mTestLooper.dispatchAll();
-        verify(mMockTelephonyManager).registerTelephonyCallback(any(Executor.class),
-                mActiveDataSubIdListenerCaptor.capture());
-        mActiveDataSubIdListenerCaptor.getValue().onActiveDataSubscriptionIdChanged(subId1);
+        verify(mMockContext).registerReceiver(mBroadcastReceiverCaptor.capture(),
+                any(), any(), any());
+        final Intent intent1 =
+                new Intent(TelephonyManager.ACTION_DEFAULT_DATA_SUBSCRIPTION_CHANGED);
+        intent1.putExtra("subscription", subId1);
+        mBroadcastReceiverCaptor.getValue().onReceive(mMockContext, intent1);
 
-        mActiveDataSubIdListenerCaptor.getValue().onActiveDataSubscriptionIdChanged(subId2);
+        final Intent intent2 =
+                new Intent(TelephonyManager.ACTION_DEFAULT_DATA_SUBSCRIPTION_CHANGED);
+        intent2.putExtra("subscription", subId2);
+        mBroadcastReceiverCaptor.getValue().onReceive(mMockContext, intent2);
 
         assertThat(wifiPickerTracker.getMergedCarrierEntry().getSubscriptionId())
                 .isEqualTo(subId2);
