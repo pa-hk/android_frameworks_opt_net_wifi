@@ -226,7 +226,7 @@ public class WifiEntry implements Comparable<WifiEntry> {
 
     // Callback associated with this WifiEntry. Subclasses should call its methods appropriately.
     private WifiEntryCallback mListener;
-    protected Handler mCallbackHandler;
+    protected final Handler mCallbackHandler;
 
     protected int mLevel = WIFI_LEVEL_UNREACHABLE;
     protected int mSpeed = SPEED_NONE;
@@ -278,7 +278,7 @@ public class WifiEntry implements Comparable<WifiEntry> {
 
     /** Returns connection state of the network defined by the CONNECTED_STATE constants */
     @ConnectedState
-    public int getConnectedState() {
+    public synchronized int getConnectedState() {
         if (mNetworkInfo == null) {
             return CONNECTED_STATE_DISCONNECTED;
         }
@@ -455,12 +455,12 @@ public class WifiEntry implements Comparable<WifiEntry> {
      * Returns null if getConnectedState() != CONNECTED_STATE_CONNECTED.
      */
     @Nullable
-    public ConnectedInfo getConnectedInfo() {
+    public synchronized ConnectedInfo getConnectedInfo() {
         if (getConnectedState() != CONNECTED_STATE_CONNECTED) {
             return null;
         }
 
-        return mConnectedInfo;
+        return new ConnectedInfo(mConnectedInfo);
     }
 
     /**
@@ -476,6 +476,26 @@ public class WifiEntry implements Comparable<WifiEntry> {
         public String gateway;
         public String subnetMask;
         public int wifiStandard = ScanResult.WIFI_STANDARD_UNKNOWN;
+
+        /**
+         * Creates an empty ConnectedInfo
+         */
+        public ConnectedInfo() {
+        }
+
+        /**
+         * Creates a ConnectedInfo with all fields copied from an input ConnectedInfo
+         */
+        public ConnectedInfo(@NonNull ConnectedInfo other) {
+            frequencyMhz = other.frequencyMhz;
+            dnsServers = new ArrayList<>(dnsServers);
+            linkSpeedMbps = other.linkSpeedMbps;
+            ipAddress = other.ipAddress;
+            ipv6Addresses = new ArrayList<>(other.ipv6Addresses);
+            gateway = other.gateway;
+            subnetMask = other.subnetMask;
+            wifiStandard = other.wifiStandard;
+        }
     }
 
     // User actions on a network
@@ -668,7 +688,7 @@ public class WifiEntry implements Comparable<WifiEntry> {
      * Sets the callback listener for WifiEntryCallback methods.
      * Subsequent calls will overwrite the previous listener.
      */
-    public void setListener(WifiEntryCallback listener) {
+    public synchronized void setListener(WifiEntryCallback listener) {
         mListener = listener;
     }
 
@@ -690,7 +710,6 @@ public class WifiEntry implements Comparable<WifiEntry> {
         if (mListener != null) {
             mCallbackHandler.post(() -> {
                 final WifiEntryCallback listener = mListener;
-                // Check for null again since it may change before this runnable is run
                 if (listener != null) {
                     listener.onUpdated();
                 }
@@ -807,7 +826,8 @@ public class WifiEntry implements Comparable<WifiEntry> {
      * unconnected.
      */
     @WorkerThread
-    void updateConnectionInfo(@Nullable WifiInfo wifiInfo, @Nullable NetworkInfo networkInfo) {
+    synchronized void updateConnectionInfo(
+            @Nullable WifiInfo wifiInfo, @Nullable NetworkInfo networkInfo) {
         if (wifiInfo != null && networkInfo != null
                 && connectionInfoMatches(wifiInfo, networkInfo)) {
             // Connection info matches, so the WifiInfo/NetworkInfo represent this network and
@@ -823,8 +843,9 @@ public class WifiEntry implements Comparable<WifiEntry> {
                 if (mCalledConnect) {
                     mCalledConnect = false;
                     mCallbackHandler.post(() -> {
-                        if (mConnectCallback != null) {
-                            mConnectCallback.onConnectResult(
+                        final ConnectCallback connectCallback = mConnectCallback;
+                        if (connectCallback != null) {
+                            connectCallback.onConnectResult(
                                     ConnectCallback.CONNECT_STATUS_SUCCESS);
                         }
                     });
@@ -848,8 +869,9 @@ public class WifiEntry implements Comparable<WifiEntry> {
             if (mCalledDisconnect) {
                 mCalledDisconnect = false;
                 mCallbackHandler.post(() -> {
-                    if (mDisconnectCallback != null) {
-                        mDisconnectCallback.onDisconnectResult(
+                    final DisconnectCallback disconnectCallback = mDisconnectCallback;
+                    if (disconnectCallback != null) {
+                        disconnectCallback.onDisconnectResult(
                                 DisconnectCallback.DISCONNECT_STATUS_SUCCESS);
                     }
                 });
@@ -867,7 +889,7 @@ public class WifiEntry implements Comparable<WifiEntry> {
 
     // Method for WifiTracker to update the link properties, which is valid for all WifiEntry types.
     @WorkerThread
-    void updateLinkProperties(@Nullable LinkProperties linkProperties) {
+    synchronized void updateLinkProperties(@Nullable LinkProperties linkProperties) {
         if (linkProperties == null || getConnectedState() != CONNECTED_STATE_CONNECTED) {
             mConnectedInfo = null;
             notifyOnUpdated();
@@ -913,19 +935,19 @@ public class WifiEntry implements Comparable<WifiEntry> {
     }
 
     @WorkerThread
-    void setIsDefaultNetwork(boolean isDefaultNetwork) {
+    synchronized void setIsDefaultNetwork(boolean isDefaultNetwork) {
         mIsDefaultNetwork = isDefaultNetwork;
         notifyOnUpdated();
     }
 
     @WorkerThread
-    void setIsLowQuality(boolean isLowQuality) {
+    synchronized void setIsLowQuality(boolean isLowQuality) {
         mIsLowQuality = isLowQuality;
     }
 
     // Method for WifiTracker to update a connected WifiEntry's network capabilities.
     @WorkerThread
-    void updateNetworkCapabilities(@Nullable NetworkCapabilities capabilities) {
+    synchronized void updateNetworkCapabilities(@Nullable NetworkCapabilities capabilities) {
         mNetworkCapabilities = capabilities;
         if (mConnectedInfo == null) {
             return;
@@ -935,7 +957,7 @@ public class WifiEntry implements Comparable<WifiEntry> {
         notifyOnUpdated();
     }
 
-    String getWifiInfoDescription() {
+    synchronized String getWifiInfoDescription() {
         final StringJoiner sj = new StringJoiner(" ");
         if (getConnectedState() == CONNECTED_STATE_CONNECTED && mWifiInfo != null) {
             sj.add("f = " + mWifiInfo.getFrequency());
@@ -957,12 +979,15 @@ public class WifiEntry implements Comparable<WifiEntry> {
     protected class ConnectActionListener implements WifiManager.ActionListener {
         @Override
         public void onSuccess() {
-            mCalledConnect = true;
+            synchronized (WifiEntry.this) {
+                mCalledConnect = true;
+            }
             // If we aren't connected to the network after 10 seconds, trigger the failure callback
             mCallbackHandler.postDelayed(() -> {
-                if (mConnectCallback != null && mCalledConnect
+                final ConnectCallback connectCallback = mConnectCallback;
+                if (connectCallback != null && mCalledConnect
                         && getConnectedState() == CONNECTED_STATE_DISCONNECTED) {
-                    mConnectCallback.onConnectResult(
+                    connectCallback.onConnectResult(
                             ConnectCallback.CONNECT_STATUS_FAILURE_UNKNOWN);
                     mCalledConnect = false;
                 }
@@ -972,9 +997,10 @@ public class WifiEntry implements Comparable<WifiEntry> {
         @Override
         public void onFailure(int i) {
             mCallbackHandler.post(() -> {
-                if (mConnectCallback != null) {
-                    mConnectCallback.onConnectResult(
-                            mConnectCallback.CONNECT_STATUS_FAILURE_UNKNOWN);
+                final ConnectCallback connectCallback = mConnectCallback;
+                if (connectCallback != null) {
+                    connectCallback.onConnectResult(
+                            ConnectCallback.CONNECT_STATUS_FAILURE_UNKNOWN);
                 }
             });
         }
@@ -984,8 +1010,9 @@ public class WifiEntry implements Comparable<WifiEntry> {
         @Override
         public void onSuccess() {
             mCallbackHandler.post(() -> {
-                if (mForgetCallback != null) {
-                    mForgetCallback.onForgetResult(ForgetCallback.FORGET_STATUS_SUCCESS);
+                final ForgetCallback forgetCallback = mForgetCallback;
+                if (forgetCallback != null) {
+                    forgetCallback.onForgetResult(ForgetCallback.FORGET_STATUS_SUCCESS);
                 }
             });
         }
@@ -993,8 +1020,9 @@ public class WifiEntry implements Comparable<WifiEntry> {
         @Override
         public void onFailure(int i) {
             mCallbackHandler.post(() -> {
-                if (mForgetCallback != null) {
-                    mForgetCallback.onForgetResult(ForgetCallback.FORGET_STATUS_FAILURE_UNKNOWN);
+                final ForgetCallback forgetCallback = mForgetCallback;
+                if (forgetCallback != null) {
+                    forgetCallback.onForgetResult(ForgetCallback.FORGET_STATUS_FAILURE_UNKNOWN);
                 }
             });
         }
