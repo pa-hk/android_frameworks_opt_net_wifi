@@ -76,10 +76,6 @@ public class StandardNetworkDetailsTracker extends NetworkDetailsTracker {
             mChosenEntry = new StandardWifiEntry(mContext, mMainHandler, mKey, mWifiManager,
                     mWifiNetworkScoreCache, false /* forSavedNetworksPage */);
         }
-        // It is safe to call updateStartInfo() in the main thread here since onStart() won't have
-        // a chance to post handleOnStart() on the worker thread until the main thread finishes
-        // calling this constructor.
-        updateStartInfo();
     }
 
     @AnyThread
@@ -92,7 +88,17 @@ public class StandardNetworkDetailsTracker extends NetworkDetailsTracker {
     @WorkerThread
     @Override
     protected void handleOnStart() {
-        updateStartInfo();
+        conditionallyUpdateScanResults(true /* lastScanSucceeded */);
+        conditionallyUpdateConfig();
+        final WifiInfo wifiInfo = mWifiManager.getConnectionInfo();
+        final Network currentNetwork = mWifiManager.getCurrentNetwork();
+        mCurrentNetworkInfo = mConnectivityManager.getNetworkInfo(currentNetwork);
+        mChosenEntry.updateConnectionInfo(wifiInfo, mCurrentNetworkInfo);
+        handleNetworkCapabilitiesChanged(
+                mConnectivityManager.getNetworkCapabilities(currentNetwork));
+        handleLinkPropertiesChanged(mConnectivityManager.getLinkProperties(currentNetwork));
+        mChosenEntry.setIsDefaultNetwork(mIsWifiDefaultRoute);
+        mChosenEntry.setIsLowQuality(mIsWifiValidated && mIsCellDefaultRoute);
     }
 
     @WorkerThread
@@ -120,21 +126,6 @@ public class StandardNetworkDetailsTracker extends NetworkDetailsTracker {
     @Override
     protected void handleNetworkScoreCacheUpdated() {
         mChosenEntry.onScoreCacheUpdated();
-    }
-
-    @WorkerThread
-    private void updateStartInfo() {
-        conditionallyUpdateScanResults(true /* lastScanSucceeded */);
-        conditionallyUpdateConfig();
-        final WifiInfo wifiInfo = mWifiManager.getConnectionInfo();
-        final Network currentNetwork = mWifiManager.getCurrentNetwork();
-        mCurrentNetworkInfo = mConnectivityManager.getNetworkInfo(currentNetwork);
-        mChosenEntry.updateConnectionInfo(wifiInfo, mCurrentNetworkInfo);
-        handleNetworkCapabilitiesChanged(
-                mConnectivityManager.getNetworkCapabilities(currentNetwork));
-        handleLinkPropertiesChanged(mConnectivityManager.getLinkProperties(currentNetwork));
-        mChosenEntry.setIsDefaultNetwork(mIsWifiDefaultRoute);
-        mChosenEntry.setIsLowQuality(mIsWifiValidated && mIsCellDefaultRoute);
     }
 
     /**
@@ -182,6 +173,6 @@ public class StandardNetworkDetailsTracker extends NetworkDetailsTracker {
         if (config.isPasspoint()) {
             return false;
         }
-        return mKey.equals(new StandardWifiEntryKey(config, mKey.isTargetingNewNetworks()));
+        return mKey.equals(new StandardWifiEntryKey(config));
     }
 }
