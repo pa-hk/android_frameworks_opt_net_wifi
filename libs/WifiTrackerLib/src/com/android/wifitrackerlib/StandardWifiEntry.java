@@ -21,24 +21,30 @@ import static android.net.wifi.WifiConfiguration.NetworkSelectionStatus.DISABLED
 import static android.net.wifi.WifiConfiguration.NetworkSelectionStatus.DISABLED_BY_WRONG_PASSWORD;
 import static android.net.wifi.WifiConfiguration.NetworkSelectionStatus.NETWORK_SELECTION_ENABLED;
 import static android.net.wifi.WifiInfo.DEFAULT_MAC_ADDRESS;
+import static android.net.wifi.WifiInfo.SECURITY_TYPE_EAP;
+import static android.net.wifi.WifiInfo.SECURITY_TYPE_EAP_WPA3_ENTERPRISE;
+import static android.net.wifi.WifiInfo.SECURITY_TYPE_EAP_WPA3_ENTERPRISE_192_BIT;
+import static android.net.wifi.WifiInfo.SECURITY_TYPE_OPEN;
+import static android.net.wifi.WifiInfo.SECURITY_TYPE_OWE;
+import static android.net.wifi.WifiInfo.SECURITY_TYPE_PSK;
+import static android.net.wifi.WifiInfo.SECURITY_TYPE_SAE;
+import static android.net.wifi.WifiInfo.SECURITY_TYPE_UNKNOWN;
+import static android.net.wifi.WifiInfo.SECURITY_TYPE_WEP;
 import static android.net.wifi.WifiInfo.sanitizeSsid;
 
-import static com.android.wifitrackerlib.Utils.getAppLabel;
 import static com.android.wifitrackerlib.Utils.getAutoConnectDescription;
 import static com.android.wifitrackerlib.Utils.getAverageSpeedFromScanResults;
 import static com.android.wifitrackerlib.Utils.getBestScanResultByLevel;
-import static com.android.wifitrackerlib.Utils.getCarrierNameForSubId;
-import static com.android.wifitrackerlib.Utils.getCurrentNetworkCapabilitiesInformation;
-import static com.android.wifitrackerlib.Utils.getDisconnectedStateDescription;
+import static com.android.wifitrackerlib.Utils.getConnectedDescription;
+import static com.android.wifitrackerlib.Utils.getConnectingDescription;
+import static com.android.wifitrackerlib.Utils.getDisconnectedDescription;
 import static com.android.wifitrackerlib.Utils.getImsiProtectionDescription;
 import static com.android.wifitrackerlib.Utils.getMeteredDescription;
-import static com.android.wifitrackerlib.Utils.getNetworkDetailedState;
-import static com.android.wifitrackerlib.Utils.getSecurityTypeFromWifiConfiguration;
-import static com.android.wifitrackerlib.Utils.getSecurityTypeFromWifiInfo;
 import static com.android.wifitrackerlib.Utils.getSecurityTypesFromScanResult;
+import static com.android.wifitrackerlib.Utils.getSecurityTypesFromWifiConfiguration;
+import static com.android.wifitrackerlib.Utils.getSingleSecurityTypeFromMultipleSecurityTypes;
 import static com.android.wifitrackerlib.Utils.getSpeedDescription;
 import static com.android.wifitrackerlib.Utils.getSpeedFromWifiInfo;
-import static com.android.wifitrackerlib.Utils.getSubIdForConfig;
 import static com.android.wifitrackerlib.Utils.getVerboseLoggingDescription;
 
 import android.content.Context;
@@ -59,10 +65,9 @@ import android.telephony.SubscriptionInfo;
 import android.telephony.SubscriptionManager;
 import android.telephony.TelephonyManager;
 import android.text.TextUtils;
+import android.util.ArraySet;
 import android.util.Log;
 
-import androidx.annotation.GuardedBy;
-import androidx.annotation.IntDef;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.annotation.WorkerThread;
@@ -73,20 +78,15 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-import java.lang.annotation.Retention;
-import java.lang.annotation.RetentionPolicy;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
-import java.util.SortedSet;
 import java.util.StringJoiner;
-import java.util.TreeSet;
 import java.util.stream.Collectors;
 
 /**
@@ -99,40 +99,10 @@ public class StandardWifiEntry extends WifiEntry {
     static final String TAG = "StandardWifiEntry";
     public static final String KEY_PREFIX = "StandardWifiEntry:";
 
-
-    @Retention(RetentionPolicy.SOURCE)
-    @IntDef(value = {
-            EAP_WPA,
-            EAP_WPA2_WPA3,
-            EAP_UNKNOWN
-    })
-
-    public @interface EapType {}
-
-    private static final int EAP_WPA = 0;       // WPA-EAP
-    private static final int EAP_WPA2_WPA3 = 1; // RSN-EAP
-    private static final int EAP_UNKNOWN = 2;
-
-    @Retention(RetentionPolicy.SOURCE)
-    @IntDef(value = {
-            PSK_WPA,
-            PSK_WPA2,
-            PSK_WPA_WPA2,
-            PSK_UNKNOWN
-    })
-
-    public @interface PskType {}
-
-    private static final int PSK_WPA = 0;
-    private static final int PSK_WPA2 = 1;
-    private static final int PSK_WPA_WPA2 = 2;
-    private static final int PSK_UNKNOWN = 3;
-
     @NonNull private final StandardWifiEntryKey mKey;
 
     @NonNull private final Context mContext;
 
-    private final Object mLock = new Object();
     // Map of security type to matching scan results
     @NonNull private final Map<Integer, List<ScanResult>> mMatchingScanResults = new HashMap<>();
     // Map of security type to matching WifiConfiguration
@@ -143,14 +113,10 @@ public class StandardWifiEntry extends WifiEntry {
     // security from all of the matched WifiConfigurations.
     // If no WifiConfigurations are available, then these should match the most appropriate security
     // type (e.g. PSK for an PSK/SAE entry, OWE for an Open/OWE entry).
-    // Note: Must be thread safe for generating the verbose scan summary
-    @GuardedBy("mLock")
     @NonNull private final List<ScanResult> mTargetScanResults = new ArrayList<>();
     // Target WifiConfiguration for connection and displaying WifiConfiguration info
     private WifiConfiguration mTargetWifiConfig;
-    private @Security int mTargetSecurity = SECURITY_NONE;
-    private @EapType int mEapType = EAP_UNKNOWN;
-    private @PskType int mPskType = PSK_UNKNOWN;
+    private List<Integer> mTargetSecurityTypes = new ArrayList<>();
 
     private boolean mIsUserShareable = false;
     @Nullable private String mRecommendationServiceLabel;
@@ -168,10 +134,6 @@ public class StandardWifiEntry extends WifiEntry {
         super(callbackHandler, wifiManager, scoreCache, forSavedNetworksPage);
         mContext = context;
         mKey = key;
-        mTargetSecurity = mKey.getScanResultKey().getSecurityTypes().stream()
-                .sorted()
-                .findFirst()
-                .get();
         mIsWpa3SaeSupported = wifiManager.isWpa3SaeSupported();
         mIsWpa3SuiteBSupported = wifiManager.isWpa3SuiteBSupported();
         mIsEnhancedOpenSupported = wifiManager.isEnhancedOpenSupported();
@@ -210,46 +172,36 @@ public class StandardWifiEntry extends WifiEntry {
     }
 
     @Override
-    public String getSummary(boolean concise) {
+    public synchronized String getSummary(boolean concise) {
         StringJoiner sj = new StringJoiner(mContext.getString(
                 R.string.wifitrackerlib_summary_separator));
 
-        if (!concise && mForSavedNetworksPage && mTargetWifiConfig != null) {
-            final CharSequence appLabel = getAppLabel(mContext, mTargetWifiConfig.creatorName);
-            if (!TextUtils.isEmpty(appLabel)) {
-                sj.add(mContext.getString(R.string.wifitrackerlib_saved_network, appLabel));
-            }
+        final String connectedStateDescription;
+        final @ConnectedState int connectedState = getConnectedState();
+        switch (connectedState) {
+            case CONNECTED_STATE_DISCONNECTED:
+                connectedStateDescription = getDisconnectedDescription(mContext,
+                        mTargetWifiConfig,
+                        mForSavedNetworksPage,
+                        concise);
+                break;
+            case CONNECTED_STATE_CONNECTING:
+                connectedStateDescription = getConnectingDescription(mContext, mNetworkInfo);
+                break;
+            case CONNECTED_STATE_CONNECTED:
+                connectedStateDescription = getConnectedDescription(mContext,
+                        mTargetWifiConfig,
+                        mNetworkCapabilities,
+                        mRecommendationServiceLabel,
+                        mIsDefaultNetwork,
+                        mIsLowQuality);
+                break;
+            default:
+                Log.e(TAG, "getConnectedState() returned unknown state: " + connectedState);
+                connectedStateDescription = null;
         }
-
-        if (getConnectedState() == CONNECTED_STATE_DISCONNECTED) {
-            String disconnectDescription = getDisconnectedStateDescription(mContext, this);
-            if (TextUtils.isEmpty(disconnectDescription)) {
-                if (concise) {
-                    sj.add(mContext.getString(R.string.wifitrackerlib_wifi_disconnected));
-                } else if (!mForSavedNetworksPage) {
-                    // Summary for unconnected suggested network
-                    if (isSuggestion()) {
-                        String carrierName = getCarrierNameForSubId(mContext,
-                                getSubIdForConfig(mContext, mTargetWifiConfig));
-                        String suggestorName = getAppLabel(mContext, mTargetWifiConfig.creatorName);
-                        if (TextUtils.isEmpty(suggestorName)) {
-                            // Fall-back to the package name in case the app label is missing
-                            suggestorName = mTargetWifiConfig.creatorName;
-                        }
-                        sj.add(mContext.getString(R.string.wifitrackerlib_available_via_app,
-                                carrierName != null ? carrierName : suggestorName));
-                    } else if (isSaved()) {
-                        sj.add(mContext.getString(R.string.wifitrackerlib_wifi_remembered));
-                    }
-                }
-            } else {
-                sj.add(disconnectDescription);
-            }
-        } else {
-            final String connectDescription = getConnectStateDescription();
-            if (!TextUtils.isEmpty(connectDescription)) {
-                sj.add(connectDescription);
-            }
+        if (!TextUtils.isEmpty(connectedStateDescription)) {
+            sj.add(connectedStateDescription);
         }
 
         final String speedDescription = getSpeedDescription(mContext, this);
@@ -277,50 +229,6 @@ public class StandardWifiEntry extends WifiEntry {
         return sj.toString();
     }
 
-    private String getConnectStateDescription() {
-        if (getConnectedState() == CONNECTED_STATE_CONNECTED) {
-            // For suggestion or specifier networks
-            final String suggestionOrSpecifierPackageName = mWifiInfo != null
-                    ? mWifiInfo.getRequestingPackageName() : null;
-            if (!TextUtils.isEmpty(suggestionOrSpecifierPackageName)) {
-                String carrierName = mTargetWifiConfig != null
-                        ? getCarrierNameForSubId(
-                                mContext, getSubIdForConfig(mContext, mTargetWifiConfig))
-                        : null;
-                String suggestorName = getAppLabel(mContext, suggestionOrSpecifierPackageName);
-                if (TextUtils.isEmpty(suggestorName)) {
-                    // Fall-back to the package name in case the app label is missing
-                    suggestorName = suggestionOrSpecifierPackageName;
-                }
-                return mContext.getString(R.string.wifitrackerlib_connected_via_app,
-                        carrierName != null ? carrierName : suggestorName);
-            }
-
-            if (!isSaved() && !isSuggestion()) {
-                // Special case for connected + ephemeral networks.
-                if (!TextUtils.isEmpty(mRecommendationServiceLabel)) {
-                    return String.format(mContext.getString(
-                            R.string.wifitrackerlib_connected_via_network_scorer),
-                            mRecommendationServiceLabel);
-                }
-                return mContext.getString(
-                        R.string.wifitrackerlib_connected_via_network_scorer_default);
-            }
-
-            if (mIsLowQuality) {
-                return mContext.getString(R.string.wifi_connected_low_quality);
-            }
-
-            String networkCapabilitiesinformation =
-                    getCurrentNetworkCapabilitiesInformation(mContext,  mNetworkCapabilities);
-            if (!TextUtils.isEmpty(networkCapabilitiesinformation)) {
-                return networkCapabilitiesinformation;
-            }
-        }
-
-        return getNetworkDetailedState(mContext, mNetworkInfo);
-    }
-
     @Override
     public CharSequence getSecondSummary() {
         return getConnectedState() == CONNECTED_STATE_CONNECTED
@@ -333,13 +241,12 @@ public class StandardWifiEntry extends WifiEntry {
     }
 
     @Override
-    @Security
-    public int getSecurity() {
-        return mTargetSecurity;
+    public synchronized List<Integer> getSecurityTypes() {
+        return new ArrayList<>(mTargetSecurityTypes);
     }
 
     @Override
-    public String getMacAddress() {
+    public synchronized String getMacAddress() {
         if (mWifiInfo != null) {
             final String wifiInfoMac = mWifiInfo.getMacAddress();
             if (!TextUtils.isEmpty(wifiInfoMac)
@@ -358,24 +265,24 @@ public class StandardWifiEntry extends WifiEntry {
     }
 
     @Override
-    public boolean isMetered() {
+    public synchronized boolean isMetered() {
         return getMeteredChoice() == METERED_CHOICE_METERED
                 || (mTargetWifiConfig != null && mTargetWifiConfig.meteredHint);
     }
 
     @Override
-    public boolean isSaved() {
+    public synchronized boolean isSaved() {
         return mTargetWifiConfig != null && !mTargetWifiConfig.fromWifiNetworkSuggestion
                 && !mTargetWifiConfig.isEphemeral();
     }
 
     @Override
-    public boolean isSuggestion() {
+    public synchronized boolean isSuggestion() {
         return mTargetWifiConfig != null && mTargetWifiConfig.fromWifiNetworkSuggestion;
     }
 
     @Override
-    public WifiConfiguration getWifiConfiguration() {
+    public synchronized WifiConfiguration getWifiConfiguration() {
         if (!isSaved()) {
             return null;
         }
@@ -383,19 +290,14 @@ public class StandardWifiEntry extends WifiEntry {
     }
 
     @Override
-    public ConnectedInfo getConnectedInfo() {
-        return mConnectedInfo;
-    }
-
-    @Override
-    public boolean canConnect() {
+    public synchronized boolean canConnect() {
         if (mLevel == WIFI_LEVEL_UNREACHABLE
                 || getConnectedState() != CONNECTED_STATE_DISCONNECTED) {
             return false;
         }
         // Allow connection for EAP SIM dependent methods if the SIM of specified carrier ID is
         // active in the device.
-        if (mTargetSecurity == SECURITY_EAP && mTargetWifiConfig != null
+        if (mTargetSecurityTypes.contains(SECURITY_TYPE_EAP) && mTargetWifiConfig != null
                 && mTargetWifiConfig.enterpriseConfig != null) {
             if (!mTargetWifiConfig.enterpriseConfig.isAuthenticationSimBased()) {
                 return true;
@@ -421,7 +323,7 @@ public class StandardWifiEntry extends WifiEntry {
     }
 
     @Override
-    public void connect(@Nullable ConnectCallback callback) {
+    public synchronized void connect(@Nullable ConnectCallback callback) {
         mConnectCallback = callback;
         // We should flag this network to auto-open captive portal since this method represents
         // the user manually connecting to a network (i.e. not auto-join).
@@ -440,21 +342,25 @@ public class StandardWifiEntry extends WifiEntry {
             // Saved/suggested network
             mWifiManager.connect(mTargetWifiConfig.networkId, new ConnectActionListener());
         } else {
-            // Unsaved network
-            if (mTargetSecurity == SECURITY_NONE
-                    || mTargetSecurity == SECURITY_OWE) {
-                // Open network
-                final WifiConfiguration connectConfig = new WifiConfiguration();
-                connectConfig.SSID = "\"" + mKey.getScanResultKey().getSsid() + "\"";
-
-                if (mTargetSecurity == SECURITY_OWE) {
-                    // Use OWE if possible
-                    connectConfig.allowedKeyManagement.set(WifiConfiguration.KeyMgmt.OWE);
-                    connectConfig.requirePmf = true;
-                } else {
-                    connectConfig.allowedKeyManagement.set(WifiConfiguration.KeyMgmt.NONE);
+            if (mTargetSecurityTypes.contains(SECURITY_TYPE_OWE)) {
+                // OWE network
+                final WifiConfiguration oweConfig = new WifiConfiguration();
+                oweConfig.SSID = "\"" + mKey.getScanResultKey().getSsid() + "\"";
+                oweConfig.setSecurityParams(WifiConfiguration.SECURITY_TYPE_OWE);
+                mWifiManager.connect(oweConfig, new ConnectActionListener());
+                if (mTargetSecurityTypes.contains(SECURITY_TYPE_OPEN)) {
+                    // Add an extra Open config for OWE transition networks
+                    final WifiConfiguration openConfig = new WifiConfiguration();
+                    openConfig.SSID = "\"" + mKey.getScanResultKey().getSsid() + "\"";
+                    openConfig.setSecurityParams(WifiConfiguration.SECURITY_TYPE_OPEN);
+                    mWifiManager.save(openConfig, null);
                 }
-                mWifiManager.connect(connectConfig, new ConnectActionListener());
+            } else if (mTargetSecurityTypes.contains(SECURITY_TYPE_OPEN)) {
+                // Open network
+                final WifiConfiguration openConfig = new WifiConfiguration();
+                openConfig.SSID = "\"" + mKey.getScanResultKey().getSsid() + "\"";
+                openConfig.setSecurityParams(WifiConfiguration.SECURITY_TYPE_OPEN);
+                mWifiManager.connect(openConfig, new ConnectActionListener());
             } else {
                 // Secure network
                 if (callback != null) {
@@ -472,7 +378,7 @@ public class StandardWifiEntry extends WifiEntry {
     }
 
     @Override
-    public void disconnect(@Nullable DisconnectCallback callback) {
+    public synchronized void disconnect(@Nullable DisconnectCallback callback) {
         if (canDisconnect()) {
             mCalledDisconnect = true;
             mDisconnectCallback = callback;
@@ -493,7 +399,7 @@ public class StandardWifiEntry extends WifiEntry {
     }
 
     @Override
-    public void forget(@Nullable ForgetCallback callback) {
+    public synchronized void forget(@Nullable ForgetCallback callback) {
         if (canForget()) {
             mForgetCallback = callback;
             mWifiManager.forget(mTargetWifiConfig.networkId, new ForgetActionListener());
@@ -501,7 +407,7 @@ public class StandardWifiEntry extends WifiEntry {
     }
 
     @Override
-    public boolean canSignIn() {
+    public synchronized boolean canSignIn() {
         return mNetworkCapabilities != null
                 && mNetworkCapabilities.hasCapability(
                         NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL);
@@ -522,21 +428,22 @@ public class StandardWifiEntry extends WifiEntry {
      * See https://github.com/zxing/zxing/wiki/Barcode-Contents#wi-fi-network-config-android-ios-11
      */
     @Override
-    public boolean canShare() {
+    public synchronized boolean canShare() {
         if (getWifiConfiguration() == null) {
             return false;
         }
 
-        switch (mTargetSecurity) {
-            case SECURITY_NONE:
-            case SECURITY_OWE:
-            case SECURITY_WEP:
-            case SECURITY_PSK:
-            case SECURITY_SAE:
-                return true;
-            default:
-                return false;
+        for (int securityType : mTargetSecurityTypes) {
+            switch (securityType) {
+                case SECURITY_TYPE_OPEN:
+                case SECURITY_TYPE_OWE:
+                case SECURITY_TYPE_WEP:
+                case SECURITY_TYPE_PSK:
+                case SECURITY_TYPE_SAE:
+                    return true;
+            }
         }
+        return false;
     }
 
     /**
@@ -544,7 +451,7 @@ public class StandardWifiEntry extends WifiEntry {
      * See https://www.wi-fi.org/discover-wi-fi/wi-fi-easy-connect
      */
     @Override
-    public boolean canEasyConnect() {
+    public synchronized boolean canEasyConnect() {
         if (getWifiConfiguration() == null) {
             return false;
         }
@@ -554,20 +461,15 @@ public class StandardWifiEntry extends WifiEntry {
         }
 
         // DPP 1.0 only supports WPA2 and WPA3.
-        switch (mTargetSecurity) {
-            case SECURITY_PSK:
-            case SECURITY_SAE:
-                return true;
-            default:
-                return false;
-        }
+        return mTargetSecurityTypes.contains(SECURITY_TYPE_PSK)
+                || mTargetSecurityTypes.contains(SECURITY_TYPE_SAE);
     }
 
     @Override
     @MeteredChoice
-    public int getMeteredChoice() {
-        if (getWifiConfiguration() != null) {
-            final int meteredOverride = getWifiConfiguration().meteredOverride;
+    public synchronized int getMeteredChoice() {
+        if (!isSuggestion() && mTargetWifiConfig != null) {
+            final int meteredOverride = mTargetWifiConfig.meteredOverride;
             if (meteredOverride == WifiConfiguration.METERED_OVERRIDE_METERED) {
                 return METERED_CHOICE_METERED;
             } else if (meteredOverride == WifiConfiguration.METERED_OVERRIDE_NOT_METERED) {
@@ -583,7 +485,7 @@ public class StandardWifiEntry extends WifiEntry {
     }
 
     @Override
-    public void setMeteredChoice(int meteredChoice) {
+    public synchronized void setMeteredChoice(int meteredChoice) {
         if (!canSetMeteredChoice()) {
             return;
         }
@@ -605,7 +507,7 @@ public class StandardWifiEntry extends WifiEntry {
 
     @Override
     @Privacy
-    public int getPrivacy() {
+    public synchronized int getPrivacy() {
         if (mTargetWifiConfig != null
                 && mTargetWifiConfig.macRandomizationSetting
                 == WifiConfiguration.RANDOMIZATION_NONE) {
@@ -616,7 +518,7 @@ public class StandardWifiEntry extends WifiEntry {
     }
 
     @Override
-    public void setPrivacy(int privacy) {
+    public synchronized void setPrivacy(int privacy) {
         if (!canSetPrivacy()) {
             return;
         }
@@ -627,7 +529,7 @@ public class StandardWifiEntry extends WifiEntry {
     }
 
     @Override
-    public boolean isAutoJoinEnabled() {
+    public synchronized boolean isAutoJoinEnabled() {
         if (mTargetWifiConfig == null) {
             return false;
         }
@@ -641,8 +543,8 @@ public class StandardWifiEntry extends WifiEntry {
     }
 
     @Override
-    public void setAutoJoinEnabled(boolean enabled) {
-        if (!canSetAutoJoinEnabled()) {
+    public synchronized void setAutoJoinEnabled(boolean enabled) {
+        if (mTargetWifiConfig == null || !canSetAutoJoinEnabled()) {
             return;
         }
 
@@ -650,66 +552,79 @@ public class StandardWifiEntry extends WifiEntry {
     }
 
     @Override
-    public String getSecurityString(boolean concise) {
-        switch(mTargetSecurity) {
-            case SECURITY_EAP:
-                switch (mEapType) {
-                    case EAP_WPA:
-                        return concise ? mContext.getString(
-                                R.string.wifitrackerlib_wifi_security_short_eap_wpa) :
-                                mContext.getString(R.string.wifitrackerlib_wifi_security_eap_wpa);
-                    case EAP_WPA2_WPA3:
-                        return concise ? mContext.getString(
-                                R.string.wifitrackerlib_wifi_security_short_eap_wpa2_wpa3) :
-                                mContext.getString(
-                                R.string.wifitrackerlib_wifi_security_eap_wpa2_wpa3);
-                    case EAP_UNKNOWN:
-                    default:
-                        return concise ? mContext.getString(
-                                R.string.wifitrackerlib_wifi_security_short_eap) :
-                                mContext.getString(R.string.wifitrackerlib_wifi_security_eap);
-                }
-            case SECURITY_EAP_SUITE_B:
-                return concise ? mContext.getString(
-                        R.string.wifitrackerlib_wifi_security_short_eap_suiteb) :
-                        mContext.getString(R.string.wifitrackerlib_wifi_security_eap_suiteb);
-            case SECURITY_PSK:
-                switch (mPskType) {
-                    case PSK_WPA:
-                        return concise ? mContext.getString(
-                                R.string.wifitrackerlib_wifi_security_short_wpa) :
-                                mContext.getString(R.string.wifitrackerlib_wifi_security_wpa);
-                    case PSK_WPA2:
-                        return concise ? mContext.getString(
-                                R.string.wifitrackerlib_wifi_security_short_wpa2_wpa3) :
-                                mContext.getString(R.string.wifitrackerlib_wifi_security_wpa2_wpa3);
-                    case PSK_WPA_WPA2:
-                    case PSK_UNKNOWN:
-                    default:
-                        return concise ? mContext.getString(
-                                R.string.wifitrackerlib_wifi_security_short_wpa_wpa2_wpa3) :
-                                mContext.getString(
-                                R.string.wifitrackerlib_wifi_security_wpa_wpa2_wpa3);
-                }
-            case SECURITY_WEP:
-                return mContext.getString(R.string.wifitrackerlib_wifi_security_wep);
-            case SECURITY_SAE:
-                return concise ? mContext.getString(
-                        R.string.wifitrackerlib_wifi_security_short_sae) :
-                        mContext.getString(R.string.wifitrackerlib_wifi_security_sae);
-            case SECURITY_OWE:
-                return concise ? mContext.getString(
-                        R.string.wifitrackerlib_wifi_security_short_owe) :
-                        mContext.getString(R.string.wifitrackerlib_wifi_security_owe);
-            case SECURITY_NONE:
-            default:
-                return concise ? "" : mContext.getString(
-                        R.string.wifitrackerlib_wifi_security_none);
+    public synchronized String getSecurityString(boolean concise) {
+        if (mTargetSecurityTypes.size() == 0) {
+            return concise ? "" : mContext.getString(R.string.wifitrackerlib_wifi_security_none);
         }
+        if (mTargetSecurityTypes.size() == 1) {
+            final int security = mTargetSecurityTypes.get(0);
+            switch(security) {
+                case SECURITY_TYPE_EAP:
+                    return concise ? mContext.getString(
+                            R.string.wifitrackerlib_wifi_security_short_eap_wpa_wpa2) :
+                            mContext.getString(
+                                    R.string.wifitrackerlib_wifi_security_eap_wpa_wpa2);
+                case SECURITY_TYPE_EAP_WPA3_ENTERPRISE:
+                    return concise ? mContext.getString(
+                            R.string.wifitrackerlib_wifi_security_short_eap_wpa3) :
+                            mContext.getString(
+                                    R.string.wifitrackerlib_wifi_security_eap_wpa3);
+                case SECURITY_TYPE_EAP_WPA3_ENTERPRISE_192_BIT:
+                    return concise ? mContext.getString(
+                            R.string.wifitrackerlib_wifi_security_short_eap_suiteb) :
+                            mContext.getString(R.string.wifitrackerlib_wifi_security_eap_suiteb);
+                case SECURITY_TYPE_PSK:
+                    return concise ? mContext.getString(
+                            R.string.wifitrackerlib_wifi_security_short_wpa_wpa2) :
+                            mContext.getString(
+                                    R.string.wifitrackerlib_wifi_security_wpa_wpa2);
+                case SECURITY_TYPE_WEP:
+                    return mContext.getString(R.string.wifitrackerlib_wifi_security_wep);
+                case SECURITY_TYPE_SAE:
+                    return concise ? mContext.getString(
+                            R.string.wifitrackerlib_wifi_security_short_sae) :
+                            mContext.getString(R.string.wifitrackerlib_wifi_security_sae);
+                case SECURITY_TYPE_OWE:
+                    return concise ? mContext.getString(
+                            R.string.wifitrackerlib_wifi_security_short_owe) :
+                            mContext.getString(R.string.wifitrackerlib_wifi_security_owe);
+                case SECURITY_TYPE_OPEN:
+                    return concise ? "" : mContext.getString(
+                            R.string.wifitrackerlib_wifi_security_none);
+            }
+        }
+        if (mTargetSecurityTypes.size() == 2) {
+            if (mTargetSecurityTypes.contains(SECURITY_TYPE_OPEN)
+                    && mTargetSecurityTypes.contains(SECURITY_TYPE_OWE)) {
+                StringJoiner sj = new StringJoiner("/");
+                sj.add(mContext.getString(R.string.wifitrackerlib_wifi_security_none));
+                sj.add(concise ? mContext.getString(
+                        R.string.wifitrackerlib_wifi_security_short_owe) :
+                        mContext.getString(R.string.wifitrackerlib_wifi_security_owe));
+                return sj.toString();
+            }
+            if (mTargetSecurityTypes.contains(SECURITY_TYPE_PSK)
+                    && mTargetSecurityTypes.contains(SECURITY_TYPE_SAE)) {
+                return concise ? mContext.getString(
+                        R.string.wifitrackerlib_wifi_security_short_wpa_wpa2_wpa3) :
+                        mContext.getString(
+                                R.string.wifitrackerlib_wifi_security_wpa_wpa2_wpa3);
+            }
+            if (mTargetSecurityTypes.contains(SECURITY_TYPE_EAP)
+                    && mTargetSecurityTypes.contains(SECURITY_TYPE_EAP_WPA3_ENTERPRISE)) {
+                return concise ? mContext.getString(
+                        R.string.wifitrackerlib_wifi_security_short_eap_wpa_wpa2_wpa3) :
+                        mContext.getString(
+                                R.string.wifitrackerlib_wifi_security_eap_wpa_wpa2_wpa3);
+            }
+        }
+        // Unknown security types
+        Log.e(TAG, "Couldn't get string for security types: " + mTargetSecurityTypes);
+        return concise ? "" : mContext.getString(R.string.wifitrackerlib_wifi_security_none);
     }
 
     @Override
-    public boolean shouldEditBeforeConnect() {
+    public synchronized boolean shouldEditBeforeConnect() {
         WifiConfiguration wifiConfig = getWifiConfiguration();
         if (wifiConfig == null) {
             return false;
@@ -731,7 +646,7 @@ public class StandardWifiEntry extends WifiEntry {
     }
 
     @WorkerThread
-    void updateScanResultInfo(@Nullable List<ScanResult> scanResults)
+    synchronized void updateScanResultInfo(@Nullable List<ScanResult> scanResults)
             throws IllegalArgumentException {
         if (scanResults == null) scanResults = new ArrayList<>();
 
@@ -745,9 +660,10 @@ public class StandardWifiEntry extends WifiEntry {
         }
         // Populate the cached scan result map
         mMatchingScanResults.clear();
+        final Set<Integer> keySecurityTypes = mKey.getScanResultKey().getSecurityTypes();
         for (ScanResult scan : scanResults) {
-            for (@Security int security : getSecurityTypesFromScanResult(scan)) {
-                if (!isSecurityTypeSupported(security)) {
+            for (int security : getSecurityTypesFromScanResult(scan)) {
+                if (!keySecurityTypes.contains(security) || !isSecurityTypeSupported(security)) {
                     continue;
                 }
                 if (!mMatchingScanResults.containsKey(security)) {
@@ -757,17 +673,15 @@ public class StandardWifiEntry extends WifiEntry {
             }
         }
 
-        updateTargetSecurityTypes();
+        updateSecurityTypes();
         updateTargetScanResultInfo();
         notifyOnUpdated();
     }
 
-    private void updateTargetScanResultInfo() {
+    private synchronized void updateTargetScanResultInfo() {
         // Update the level using the scans matching the target security type
         final ScanResult bestScanResult = getBestScanResultByLevel(mTargetScanResults);
         if (bestScanResult != null) {
-            updateEapType(bestScanResult);
-            updatePskType(bestScanResult);
             updateTransitionModeCapa(bestScanResult);
         }
 
@@ -775,10 +689,8 @@ public class StandardWifiEntry extends WifiEntry {
             mLevel = bestScanResult != null
                     ? mWifiManager.calculateSignalLevel(bestScanResult.level)
                     : WIFI_LEVEL_UNREACHABLE;
-            synchronized (mLock) {
-                // Average speed is used to prevent speed label flickering from multiple APs.
-                mSpeed = getAverageSpeedFromScanResults(mScoreCache, mTargetScanResults);
-            }
+            // Average speed is used to prevent speed label flickering from multiple APs.
+            mSpeed = getAverageSpeedFromScanResults(mScoreCache, mTargetScanResults);
         }
 
         updateWifiGenerationInfo(mTargetScanResults);
@@ -786,7 +698,7 @@ public class StandardWifiEntry extends WifiEntry {
 
     @WorkerThread
     @Override
-    void updateNetworkCapabilities(@Nullable NetworkCapabilities capabilities) {
+    synchronized void updateNetworkCapabilities(@Nullable NetworkCapabilities capabilities) {
         super.updateNetworkCapabilities(capabilities);
 
         // Auto-open an available captive portal if the user manually connected to this network.
@@ -797,51 +709,18 @@ public class StandardWifiEntry extends WifiEntry {
     }
 
     @WorkerThread
-    void onScoreCacheUpdated() {
+    synchronized void onScoreCacheUpdated() {
         if (mWifiInfo != null) {
             mSpeed = getSpeedFromWifiInfo(mScoreCache, mWifiInfo);
         } else {
-            synchronized (mLock) {
-                // Average speed is used to prevent speed label flickering from multiple APs.
-                mSpeed = getAverageSpeedFromScanResults(mScoreCache, mTargetScanResults);
-            }
+            // Average speed is used to prevent speed label flickering from multiple APs.
+            mSpeed = getAverageSpeedFromScanResults(mScoreCache, mTargetScanResults);
         }
         notifyOnUpdated();
     }
 
-    private void updateEapType(ScanResult result) {
-        if (result.capabilities.contains("RSN-EAP")) {
-            // WPA2-Enterprise and WPA3-Enterprise (non 192-bit) advertise RSN-EAP-CCMP
-            mEapType = EAP_WPA2_WPA3;
-        } else if (result.capabilities.contains("WPA-EAP")) {
-            // WPA-Enterprise advertises WPA-EAP-TKIP
-            mEapType = EAP_WPA;
-        } else {
-            mEapType = EAP_UNKNOWN;
-        }
-    }
-
-    private void updatePskType(ScanResult result) {
-        if (mTargetSecurity != SECURITY_PSK) {
-            mPskType = PSK_UNKNOWN;
-            return;
-        }
-
-        final boolean wpa = result.capabilities.contains("WPA-PSK");
-        final boolean wpa2 = result.capabilities.contains("RSN-PSK");
-        if (wpa2 && wpa) {
-            mPskType = PSK_WPA_WPA2;
-        } else if (wpa2) {
-            mPskType = PSK_WPA2;
-        } else if (wpa) {
-            mPskType = PSK_WPA;
-        } else {
-            mPskType = PSK_UNKNOWN;
-        }
-    }
-
     @WorkerThread
-    void updateConfig(@Nullable List<WifiConfiguration> wifiConfigs)
+    synchronized void updateConfig(@Nullable List<WifiConfiguration> wifiConfigs)
             throws IllegalArgumentException {
         if (wifiConfigs == null) {
             wifiConfigs = Collections.emptyList();
@@ -859,95 +738,97 @@ public class StandardWifiEntry extends WifiEntry {
                                 + ", Actual: " + sanitizeSsid(config.SSID)
                                 + ", Config: " + config);
             }
-            @Security int securityType = getSecurityTypeFromWifiConfiguration(config);
-            if (!securityTypes.contains(securityType)) {
-                throw new IllegalArgumentException(
-                        "Attempted to update with wrong security!"
-                                + " Expected one of: " + securityTypes
-                                + ", Actual: " + securityType
-                                + ", Config: " + config);
+            for (int securityType : getSecurityTypesFromWifiConfiguration(config)) {
+                if (!securityTypes.contains(securityType)) {
+                    throw new IllegalArgumentException(
+                            "Attempted to update with wrong security!"
+                                    + " Expected one of: " + securityTypes
+                                    + ", Actual: " + securityType
+                                    + ", Config: " + config);
+                }
+                if (isSecurityTypeSupported(securityType)) {
+                    mMatchingWifiConfigs.put(securityType, config);
+                }
             }
-            mMatchingWifiConfigs.put(securityType, config);
         }
-        updateTargetSecurityTypes();
+        updateSecurityTypes();
         updateTargetScanResultInfo();
         notifyOnUpdated();
     }
 
-    private boolean isSecurityTypeSupported(@Security int security) {
+    private boolean isSecurityTypeSupported(int security) {
         switch (security) {
-            case SECURITY_SAE:
+            case SECURITY_TYPE_SAE:
                 return mIsWpa3SaeSupported;
-            case SECURITY_EAP_SUITE_B:
+            case SECURITY_TYPE_EAP_WPA3_ENTERPRISE_192_BIT:
                 return mIsWpa3SuiteBSupported;
-            case SECURITY_OWE:
+            case SECURITY_TYPE_OWE:
                 return mIsEnhancedOpenSupported;
             default:
                 return true;
         }
     }
 
-    private void updateTargetSecurityTypes() {
-        SortedSet<Integer> targetSecurityTypes = new TreeSet<>();
+    @Override
+    protected synchronized void updateSecurityTypes() {
+        mTargetSecurityTypes.clear();
         if (mWifiInfo != null) {
-            targetSecurityTypes.add(getSecurityTypeFromWifiInfo(mWifiInfo));
-        }
-        Set<Integer> keySecurityTypes = mKey.getScanResultKey().getSecurityTypes();
-        // First try to find security types that matches both scans and configs
-        if (targetSecurityTypes.isEmpty()
-                && !mMatchingScanResults.isEmpty() && !mMatchingWifiConfigs.isEmpty()) {
-            for (@Security int security : keySecurityTypes) {
-                if (mMatchingScanResults.containsKey(security)
-                        && mMatchingWifiConfigs.containsKey(security)
-                        && isSecurityTypeSupported(security)) {
-                    targetSecurityTypes.add(security);
-                }
+            final int wifiInfoSecurity = mWifiInfo.getCurrentSecurityType();
+            if (wifiInfoSecurity != SECURITY_TYPE_UNKNOWN) {
+                mTargetSecurityTypes.add(mWifiInfo.getCurrentSecurityType());
             }
-        }
-        // If no scan + config match, prioritize the security types of available scans, then
-        // available configs, and finally just use the security types from the ScanResultKey
-        if (targetSecurityTypes.isEmpty() && !mMatchingScanResults.isEmpty()) {
-            for (@Security int security : keySecurityTypes) {
-                if (mMatchingScanResults.containsKey(security)
-                        && isSecurityTypeSupported(security)) {
-                    targetSecurityTypes.add(security);
-                }
-            }
-        }
-        if (targetSecurityTypes.isEmpty() && !mMatchingWifiConfigs.isEmpty()) {
-            for (@Security int security : keySecurityTypes) {
-                if (mMatchingWifiConfigs.containsKey(security)
-                        && isSecurityTypeSupported(security)) {
-                    targetSecurityTypes.add(security);
-                }
-            }
-        }
-        if (targetSecurityTypes.isEmpty()) {
-            targetSecurityTypes.addAll(keySecurityTypes);
-        }
-        // TODO: Refactor to allow multiple target security types instead of only picking one.
-        if (targetSecurityTypes.contains(SECURITY_OWE)) {
-            // Special case for preferring OWE security over open networks
-            mTargetSecurity = SECURITY_OWE;
-        } else {
-            // Pick the lowest security type for wider compatibility
-            mTargetSecurity = targetSecurityTypes.first();
         }
 
-        mTargetWifiConfig = mMatchingWifiConfigs.get(mTargetSecurity);
-        synchronized (mLock) {
-            mTargetScanResults.clear();
-            if (mMatchingScanResults.containsKey(mTargetSecurity)) {
-                mTargetScanResults.addAll(mMatchingScanResults.get(mTargetSecurity));
+        Set<Integer> configSecurityTypes = mMatchingWifiConfigs.keySet();
+        if (mTargetSecurityTypes.isEmpty() && mKey.isTargetingNewNetworks()) {
+            // If we are targeting new networks for configuration, then we should select the
+            // security type of all visible scan results if we don't have any configs that
+            // can connect to them. This will let us configure this entry as a new network.
+            boolean configMatchesScans = false;
+            Set<Integer> scanSecurityTypes = mMatchingScanResults.keySet();
+            for (int configSecurity : configSecurityTypes) {
+                if (scanSecurityTypes.contains(configSecurity)) {
+                    configMatchesScans = true;
+                    break;
+                }
+            }
+            if (!configMatchesScans) {
+                mTargetSecurityTypes.addAll(scanSecurityTypes);
             }
         }
+
+        // Use security types of any configs we have
+        if (mTargetSecurityTypes.isEmpty()) {
+            mTargetSecurityTypes.addAll(configSecurityTypes);
+        }
+
+        // Default to the key security types. This shouldn't happen since we should always have
+        // scans or configs.
+        if (mTargetSecurityTypes.isEmpty()) {
+            mTargetSecurityTypes.addAll(mKey.getScanResultKey().getSecurityTypes());
+        }
+
+        // The target wifi config should match the security type we return in getSecurity(), since
+        // clients (QR code/DPP, modify network page) may expect them to match.
+        mTargetWifiConfig = mMatchingWifiConfigs.get(
+                getSingleSecurityTypeFromMultipleSecurityTypes(mTargetSecurityTypes));
+        // Collect target scan results in a set to remove duplicates when one scan matches multiple
+        // security types.
+        Set<ScanResult> targetScanResultSet = new ArraySet<>();
+        for (int security : mTargetSecurityTypes) {
+            if (mMatchingScanResults.containsKey(security)) {
+                targetScanResultSet.addAll(mMatchingScanResults.get(security));
+            }
+        }
+        mTargetScanResults.clear();
+        mTargetScanResults.addAll(targetScanResultSet);
     }
 
     /**
      * Sets whether the suggested config for this entry is shareable to the user or not.
      */
     @WorkerThread
-    void setUserShareable(boolean isUserShareable) {
+    synchronized void setUserShareable(boolean isUserShareable) {
         mIsUserShareable = isUserShareable;
     }
 
@@ -955,12 +836,12 @@ public class StandardWifiEntry extends WifiEntry {
      * Returns whether the suggested config for this entry is shareable to the user or not.
      */
     @WorkerThread
-    boolean isUserShareable() {
+    synchronized boolean isUserShareable() {
         return mIsUserShareable;
     }
 
     @WorkerThread
-    protected boolean connectionInfoMatches(@NonNull WifiInfo wifiInfo,
+    protected synchronized boolean connectionInfoMatches(@NonNull WifiInfo wifiInfo,
             @NonNull NetworkInfo networkInfo) {
         if (wifiInfo.isPasspointAp() || wifiInfo.isOsuAp()) {
             return false;
@@ -973,7 +854,7 @@ public class StandardWifiEntry extends WifiEntry {
         return false;
     }
 
-    private void updateRecommendationServiceLabel() {
+    private synchronized void updateRecommendationServiceLabel() {
         final NetworkScorerAppData scorer = ((NetworkScoreManager) mContext
                 .getSystemService(Context.NETWORK_SCORE_SERVICE)).getActiveScorer();
         if (scorer != null) {
@@ -982,18 +863,24 @@ public class StandardWifiEntry extends WifiEntry {
     }
 
     @NonNull
-    static StandardWifiEntryKey ssidAndSecurityToStandardWifiEntryKey(@NonNull String ssid,
-            @Security int security) {
+    static StandardWifiEntryKey ssidAndSecurityTypeToStandardWifiEntryKey(
+            @NonNull String ssid, int security) {
+        return ssidAndSecurityTypeToStandardWifiEntryKey(
+                ssid, security, false /* isTargetingNewNetworks */);
+    }
+
+    @NonNull
+    static StandardWifiEntryKey ssidAndSecurityTypeToStandardWifiEntryKey(
+            @NonNull String ssid, int security, boolean isTargetingNewNetworks) {
         return new StandardWifiEntryKey(
-                new ScanResultKey(ssid, Collections.singletonList(security)));
+                new ScanResultKey(ssid, Collections.singletonList(security)),
+                isTargetingNewNetworks);
     }
 
     @Override
-    protected String getScanResultDescription() {
-        synchronized (mLock) {
-            if (mTargetScanResults.size() == 0) {
-                return "";
-            }
+    protected synchronized String getScanResultDescription() {
+        if (mTargetScanResults.size() == 0) {
+            return "";
         }
 
         final StringBuilder description = new StringBuilder();
@@ -1006,15 +893,12 @@ public class StandardWifiEntry extends WifiEntry {
         return description.toString();
     }
 
-    private String getScanResultDescription(int minFrequency, int maxFrequency) {
-        final List<ScanResult> scanResults;
-        synchronized (mLock) {
-            scanResults = mTargetScanResults.stream()
-                    .filter(scanResult -> scanResult.frequency >= minFrequency
-                            && scanResult.frequency <= maxFrequency)
-                    .sorted(Comparator.comparingInt(scanResult -> -1 * scanResult.level))
-                    .collect(Collectors.toList());
-        }
+    private synchronized String getScanResultDescription(int minFrequency, int maxFrequency) {
+        final List<ScanResult> scanResults = mTargetScanResults.stream()
+                .filter(scanResult -> scanResult.frequency >= minFrequency
+                        && scanResult.frequency <= maxFrequency)
+                .sorted(Comparator.comparingInt(scanResult -> -1 * scanResult.level))
+                .collect(Collectors.toList());
 
         final int scanResultCount = scanResults.size();
         if (scanResultCount == 0) {
@@ -1034,7 +918,7 @@ public class StandardWifiEntry extends WifiEntry {
         return description.toString();
     }
 
-    private String getScanResultDescription(ScanResult scanResult, long nowMs) {
+    private synchronized String getScanResultDescription(ScanResult scanResult, long nowMs) {
         final StringBuilder description = new StringBuilder();
         description.append(" \n{");
         description.append(scanResult.BSSID);
@@ -1059,27 +943,48 @@ public class StandardWifiEntry extends WifiEntry {
      *     1) ScanResult key (SSID + grouped security types)
      *     2) Suggestion profile key
      *     3) Is network request or not
+     *     4) Should prioritize configuring a new network (i.e. target the security type of an
+     *     in-range unsaved network, rather than a config that has no scans)
      */
     static class StandardWifiEntryKey {
         private static final String KEY_SCAN_RESULT_KEY = "SCAN_RESULT_KEY";
         private static final String KEY_SUGGESTION_PROFILE_KEY = "SUGGESTION_PROFILE_KEY";
         private static final String KEY_IS_NETWORK_REQUEST = "IS_NETWORK_REQUEST";
+        private static final String KEY_IS_TARGETING_NEW_NETWORKS = "IS_TARGETING_NEW_NETWORKS";
 
         @NonNull private ScanResultKey mScanResultKey;
         @Nullable private String mSuggestionProfileKey;
         private boolean mIsNetworkRequest;
+        private boolean mIsTargetingNewNetworks = false;
 
         /**
          * Creates a StandardWifiEntryKey matching a ScanResultKey
          */
         StandardWifiEntryKey(@NonNull ScanResultKey scanResultKey) {
+            this(scanResultKey, false /* isTargetingNewNetworks */);
+        }
+
+        /**
+         * Creates a StandardWifiEntryKey matching a ScanResultKey and sets whether the entry
+         * should target new networks or not.
+         */
+        StandardWifiEntryKey(@NonNull ScanResultKey scanResultKey, boolean isTargetingNewNetworks) {
             mScanResultKey = scanResultKey;
+            mIsTargetingNewNetworks = isTargetingNewNetworks;
         }
 
         /**
          * Creates a StandardWifiEntryKey matching a WifiConfiguration
          */
         StandardWifiEntryKey(@NonNull WifiConfiguration config) {
+            this(config, false /* isTargetingNewNetworks */);
+        }
+
+        /**
+         * Creates a StandardWifiEntryKey matching a WifiConfiguration and sets whether the entry
+         * should target new networks or not.
+         */
+        StandardWifiEntryKey(@NonNull WifiConfiguration config, boolean isTargetingNewNetworks) {
             mScanResultKey = new ScanResultKey(config);
             if (config.fromWifiNetworkSuggestion) {
                 mSuggestionProfileKey = new StringJoiner(",")
@@ -1090,6 +995,7 @@ public class StandardWifiEntry extends WifiEntry {
             } else if (config.fromWifiNetworkSpecifier) {
                 mIsNetworkRequest = true;
             }
+            mIsTargetingNewNetworks = isTargetingNewNetworks;
         }
 
         /**
@@ -1112,6 +1018,10 @@ public class StandardWifiEntry extends WifiEntry {
                 if (keyJson.has(KEY_IS_NETWORK_REQUEST)) {
                     mIsNetworkRequest = keyJson.getBoolean(KEY_IS_NETWORK_REQUEST);
                 }
+                if (keyJson.has(KEY_IS_TARGETING_NEW_NETWORKS)) {
+                    mIsTargetingNewNetworks = keyJson.getBoolean(
+                            KEY_IS_TARGETING_NEW_NETWORKS);
+                }
             } catch (JSONException e) {
                 Log.e(TAG, "JSONException while converting StandardWifiEntryKey to string: " + e);
             }
@@ -1133,6 +1043,9 @@ public class StandardWifiEntry extends WifiEntry {
                 if (mIsNetworkRequest) {
                     keyJson.put(KEY_IS_NETWORK_REQUEST, mIsNetworkRequest);
                 }
+                if (mIsTargetingNewNetworks) {
+                    keyJson.put(KEY_IS_TARGETING_NEW_NETWORKS, mIsTargetingNewNetworks);
+                }
             } catch (JSONException e) {
                 Log.wtf(TAG, "JSONException while converting StandardWifiEntryKey to string: " + e);
             }
@@ -1152,6 +1065,10 @@ public class StandardWifiEntry extends WifiEntry {
 
         boolean isNetworkRequest() {
             return mIsNetworkRequest;
+        }
+
+        boolean isTargetingNewNetworks() {
+            return mIsTargetingNewNetworks;
         }
 
         @Override
@@ -1178,30 +1095,37 @@ public class StandardWifiEntry extends WifiEntry {
         private static final String KEY_SECURITY_TYPES = "SECURITY_TYPES";
 
         @Nullable private String mSsid;
-        @NonNull private Set<Integer> mSecurityTypes = new HashSet<>();
+        @NonNull private Set<Integer> mSecurityTypes = new ArraySet<>();
 
         ScanResultKey() {
         }
 
         ScanResultKey(@Nullable String ssid, List<Integer> securityTypes) {
             mSsid = ssid;
-            for (@Security int security : securityTypes) {
+            for (int security : securityTypes) {
                 mSecurityTypes.add(security);
                 // Add any security types that merge to the same WifiEntry
                 switch (security) {
-                    // Group Open and OWE networks together
-                    case SECURITY_NONE:
-                        mSecurityTypes.add(SECURITY_OWE);
+                    // Group OPEN and OWE networks together
+                    case SECURITY_TYPE_OPEN:
+                        mSecurityTypes.add(SECURITY_TYPE_OWE);
                         break;
-                    case SECURITY_OWE:
-                        mSecurityTypes.add(SECURITY_NONE);
+                    case SECURITY_TYPE_OWE:
+                        mSecurityTypes.add(SECURITY_TYPE_OPEN);
                         break;
                     // Group PSK and SAE networks together
-                    case SECURITY_PSK:
-                        mSecurityTypes.add(SECURITY_SAE);
+                    case SECURITY_TYPE_PSK:
+                        mSecurityTypes.add(SECURITY_TYPE_SAE);
                         break;
-                    case SECURITY_SAE:
-                        mSecurityTypes.add(SECURITY_PSK);
+                    case SECURITY_TYPE_SAE:
+                        mSecurityTypes.add(SECURITY_TYPE_PSK);
+                        break;
+                    // Group EAP and EAP_WPA3_ENTERPRISE networks together
+                    case SECURITY_TYPE_EAP:
+                        mSecurityTypes.add(SECURITY_TYPE_EAP_WPA3_ENTERPRISE);
+                        break;
+                    case SECURITY_TYPE_EAP_WPA3_ENTERPRISE:
+                        mSecurityTypes.add(SECURITY_TYPE_EAP);
                         break;
                 }
             }
@@ -1219,8 +1143,8 @@ public class StandardWifiEntry extends WifiEntry {
          * Creates a ScanResultKey from a WifiConfiguration's SSID and security type grouping.
          */
         ScanResultKey(@NonNull WifiConfiguration wifiConfiguration) {
-            this(sanitizeSsid(wifiConfiguration.SSID), Collections.singletonList(
-                    getSecurityTypeFromWifiConfiguration(wifiConfiguration)));
+            this(sanitizeSsid(wifiConfiguration.SSID),
+                    getSecurityTypesFromWifiConfiguration(wifiConfiguration));
         }
 
         /**
@@ -1252,7 +1176,7 @@ public class StandardWifiEntry extends WifiEntry {
                 }
                 if (!mSecurityTypes.isEmpty()) {
                     final JSONArray securityTypesJson = new JSONArray();
-                    for (@Security int security : mSecurityTypes) {
+                    for (int security : mSecurityTypes) {
                         securityTypesJson.put(security);
                     }
                     keyJson.put(KEY_SECURITY_TYPES, securityTypesJson);
