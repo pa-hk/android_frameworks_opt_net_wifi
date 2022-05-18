@@ -49,7 +49,6 @@ import android.util.Log;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
-import androidx.annotation.VisibleForTesting;
 import androidx.annotation.WorkerThread;
 
 import java.util.ArrayList;
@@ -61,7 +60,6 @@ import java.util.StringJoiner;
 /**
  * WifiEntry representation of a subscribed Passpoint network, uniquely identified by FQDN.
  */
-@VisibleForTesting
 public class PasspointWifiEntry extends WifiEntry implements WifiEntry.WifiEntryCallback {
     static final String TAG = "PasspointWifiEntry";
     public static final String KEY_PREFIX = "PasspointWifiEntry:";
@@ -469,6 +467,20 @@ public class PasspointWifiEntry extends WifiEntry implements WifiEntry.WifiEntry
         if (!mCurrentRoamingScanResults.isEmpty()) {
             return Utils.getStandardString(
                     mContext, mCurrentRoamingScanResults.get(0).getWifiStandard());
+        }
+        return "";
+    }
+
+    @Override
+    public synchronized String getBandString() {
+        if (mWifiInfo != null) {
+            return Utils.getBandString(mContext, mWifiInfo.getFrequency());
+        }
+        if (!mCurrentHomeScanResults.isEmpty()) {
+            return Utils.getBandString(mContext, mCurrentHomeScanResults.get(0).frequency);
+        }
+        if (!mCurrentRoamingScanResults.isEmpty()) {
+            return Utils.getBandString(mContext, mCurrentHomeScanResults.get(0).frequency);
         }
         return "";
     }
