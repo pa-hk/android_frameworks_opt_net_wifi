@@ -72,7 +72,6 @@ import android.util.Log;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
-import androidx.annotation.VisibleForTesting;
 import androidx.annotation.WorkerThread;
 import androidx.core.os.BuildCompat;
 
@@ -97,7 +96,6 @@ import java.util.stream.Collectors;
  *
  * This type of WifiEntry can represent both open and saved networks.
  */
-@VisibleForTesting
 public class StandardWifiEntry extends WifiEntry {
     static final String TAG = "StandardWifiEntry";
     public static final String KEY_PREFIX = "StandardWifiEntry:";
@@ -672,6 +670,17 @@ public class StandardWifiEntry extends WifiEntry {
         }
         if (!mTargetScanResults.isEmpty()) {
             return Utils.getStandardString(mContext, mTargetScanResults.get(0).getWifiStandard());
+        }
+        return "";
+    }
+
+    @Override
+    public synchronized String getBandString() {
+        if (mWifiInfo != null) {
+            return Utils.getBandString(mContext, mWifiInfo.getFrequency());
+        }
+        if (!mTargetScanResults.isEmpty()) {
+            return Utils.getBandString(mContext, mTargetScanResults.get(0).frequency);
         }
         return "";
     }
