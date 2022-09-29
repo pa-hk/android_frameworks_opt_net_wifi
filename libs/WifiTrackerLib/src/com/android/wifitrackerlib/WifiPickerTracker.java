@@ -196,6 +196,16 @@ public class WifiPickerTracker extends BaseWifiTracker {
      */
     @AnyThread
     public @Nullable MergedCarrierEntry getMergedCarrierEntry() {
+        if (!isInitialized() && mMergedCarrierEntry == null) {
+            // Settings currently relies on the MergedCarrierEntry being available before
+            // handleOnStart() is called in order to display the W+ toggle. Populate it here if
+            // we aren't initialized yet.
+            int subId = SubscriptionManager.getDefaultDataSubscriptionId();
+            if (subId != SubscriptionManager.INVALID_SUBSCRIPTION_ID) {
+                mMergedCarrierEntry = new MergedCarrierEntry(mWorkerHandler, mWifiManager,
+                        /* forSavedNetworksPage */ false, mContext, subId);
+            }
+        }
         return mMergedCarrierEntry;
     }
 
@@ -706,7 +716,6 @@ public class WifiPickerTracker extends BaseWifiTracker {
         mStandardWifiConfigCache.clear();
         mSuggestedConfigCache.clear();
         mNetworkRequestConfigCache.clear();
-        final List<WifiConfiguration> networkRequestConfigs = new ArrayList<>();
         for (WifiConfiguration config : configs) {
             if (config.carrierMerged) {
                 continue;

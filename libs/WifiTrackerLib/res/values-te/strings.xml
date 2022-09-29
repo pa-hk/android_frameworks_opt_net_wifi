@@ -22,7 +22,7 @@
     <string name="wifitrackerlib_wifi_no_internet_no_reconnect" msgid="6618216332537706908">"ఆటోమేటిక్‌గా కనెక్ట్ కాదు"</string>
     <string name="wifitrackerlib_wifi_no_internet" msgid="4998563744669636949">"ఇంటర్నెట్ యాక్సెస్ లేదు"</string>
     <string name="wifitrackerlib_wifi_disabled_password_failure" msgid="2850244218754633550">"ప్రామాణీకరణ సమస్య"</string>
-    <string name="wifitrackerlib_wifi_check_password_try_again" msgid="2327777719175574699">"పాస్‌వర్డ్‌ను తనిఖీ చేసి, మళ్లీ ట్రై చేయండి"</string>
+    <string name="wifitrackerlib_wifi_check_password_try_again" msgid="2327777719175574699">"పాస్‌వర్డ్‌ను చెక్ చేసి, మళ్లీ ట్రై చేయండి"</string>
     <string name="wifitrackerlib_wifi_disabled_network_failure" msgid="3046956554224277166">"IP కాన్ఫిగరేషన్ వైఫల్యం"</string>
     <string name="wifitrackerlib_wifi_disabled_generic" msgid="4278806060337007814">"డిజేబుల్ చేయబడింది"</string>
     <string name="wifitrackerlib_wifi_ap_unable_to_handle_new_sta" msgid="931922372010639716">"యాక్సెస్ పాయింట్ తాత్కాలికంగా నిండి ఉంది"</string>
@@ -78,12 +78,8 @@
     <string name="wifitrackerlib_wifi_standard_11ax" msgid="4071875115186480116">"Wi‑Fi 6"</string>
     <string name="wifitrackerlib_wifi_standard_11ad" msgid="4955749187120493383">"WiGig"</string>
     <string name="wifitrackerlib_wifi_standard_11be" msgid="1886834788680487835">"Wi‑Fi 7"</string>
-    <!-- no translation found for wifitrackerlib_wifi_band_unknown (5576746583228374334) -->
-    <skip />
-    <!-- no translation found for wifitrackerlib_wifi_band_24_ghz (5374362780653321244) -->
-    <skip />
-    <!-- no translation found for wifitrackerlib_wifi_band_5_ghz (2179047349922091556) -->
-    <skip />
-    <!-- no translation found for wifitrackerlib_wifi_band_6_ghz (6532408050869498777) -->
-    <skip />
+    <string name="wifitrackerlib_wifi_band_unknown" msgid="5576746583228374334">"తెలియదు"</string>
+    <string name="wifitrackerlib_wifi_band_24_ghz" msgid="5374362780653321244">"2.4 GHz"</string>
+    <string name="wifitrackerlib_wifi_band_5_ghz" msgid="2179047349922091556">"5 GHz"</string>
+    <string name="wifitrackerlib_wifi_band_6_ghz" msgid="6532408050869498777">"6 GHz"</string>
 </resources>

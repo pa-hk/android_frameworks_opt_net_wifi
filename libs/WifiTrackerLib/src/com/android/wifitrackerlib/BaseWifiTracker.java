@@ -85,6 +85,8 @@ public class BaseWifiTracker implements LifecycleObserver {
 
     private int mWifiState = WifiManager.WIFI_STATE_DISABLED;
 
+    private boolean mIsInitialized = false;
+
     // Registered on the worker thread
     private final BroadcastReceiver mBroadcastReceiver = new BroadcastReceiver() {
         @Override
@@ -247,7 +249,7 @@ public class BaseWifiTracker implements LifecycleObserver {
 
     /**
      * Constructor for BaseWifiTracker.
-     * @param wifiTrackerInjector injector for commonly referenced objects.
+     * @param injector Injector for commonly referenced objects.
      * @param lifecycle Lifecycle this is tied to for lifecycle callbacks.
      * @param context Context for registering broadcast receiver and for resource strings.
      * @param wifiManager Provides all Wi-Fi info.
@@ -258,6 +260,7 @@ public class BaseWifiTracker implements LifecycleObserver {
      * @param maxScanAgeMillis Max age for tracked WifiEntries.
      * @param scanIntervalMillis Interval between initiating scans.
      */
+    @SuppressWarnings("StaticAssignmentInConstructor")
     BaseWifiTracker(
             @NonNull WifiTrackerInjector injector,
             @NonNull Lifecycle lifecycle, @NonNull Context context,
@@ -311,6 +314,7 @@ public class BaseWifiTracker implements LifecycleObserver {
             NonSdkApiWrapper.registerSystemDefaultNetworkCallback(
                     mConnectivityManager, mDefaultNetworkCallback, mWorkerHandler);
             handleOnStart();
+            mIsInitialized = true;
         });
     }
 
@@ -326,6 +330,15 @@ public class BaseWifiTracker implements LifecycleObserver {
             mConnectivityManager.unregisterNetworkCallback(mNetworkCallback);
             mConnectivityManager.unregisterNetworkCallback(mDefaultNetworkCallback);
         });
+    }
+
+    /**
+     * Returns true if this WifiTracker has already been initialized in the worker thread via
+     * handleOnStart()
+     */
+    @AnyThread
+    boolean isInitialized() {
+        return mIsInitialized;
     }
 
     /**

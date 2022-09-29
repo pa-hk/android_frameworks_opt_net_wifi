@@ -41,7 +41,7 @@
     <string name="wifitrackerlib_private_dns_broken" msgid="6049401148262718707">"Nije moguće pristupiti privatnom DNS serveru"</string>
     <string name="wifitrackerlib_wifi_connected_cannot_provide_internet" msgid="3803471522215612745">"Povezano s uređajem. Nije moguće pružiti internetsku vezu."</string>
     <string name="wifi_connected_low_quality" msgid="4478331645458058445">"Nizak kvalitet"</string>
-    <string name="wifitrackerlib_admin_restricted_network" msgid="5439914801076897515">"Organizacija ne dozvoljava"</string>
+    <string name="wifitrackerlib_admin_restricted_network" msgid="5439914801076897515">"Ne dozvoljava vaša organizacija"</string>
     <string name="wifitrackerlib_wifi_security_short_eap_wpa_wpa2" msgid="4815223667006927841">"WPA/WPA2-EAP"</string>
     <string name="wifitrackerlib_wifi_security_eap_wpa_wpa2" msgid="6425661975745405271">"WPA/WPA2-Enterprise"</string>
     <string name="wifitrackerlib_wifi_security_short_eap_wpa3" msgid="6210273302049534874">"WPA3-EAP"</string>
@@ -78,12 +78,8 @@
     <string name="wifitrackerlib_wifi_standard_11ax" msgid="4071875115186480116">"WiFi 6"</string>
     <string name="wifitrackerlib_wifi_standard_11ad" msgid="4955749187120493383">"WiGig"</string>
     <string name="wifitrackerlib_wifi_standard_11be" msgid="1886834788680487835">"WiFi 7"</string>
-    <!-- no translation found for wifitrackerlib_wifi_band_unknown (5576746583228374334) -->
-    <skip />
-    <!-- no translation found for wifitrackerlib_wifi_band_24_ghz (5374362780653321244) -->
-    <skip />
-    <!-- no translation found for wifitrackerlib_wifi_band_5_ghz (2179047349922091556) -->
-    <skip />
-    <!-- no translation found for wifitrackerlib_wifi_band_6_ghz (6532408050869498777) -->
-    <skip />
+    <string name="wifitrackerlib_wifi_band_unknown" msgid="5576746583228374334">"Nepoznato"</string>
+    <string name="wifitrackerlib_wifi_band_24_ghz" msgid="5374362780653321244">"2,4 GHz"</string>
+    <string name="wifitrackerlib_wifi_band_5_ghz" msgid="2179047349922091556">"5 GHz"</string>
+    <string name="wifitrackerlib_wifi_band_6_ghz" msgid="6532408050869498777">"6 GHz"</string>
 </resources>

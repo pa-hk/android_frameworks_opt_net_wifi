@@ -63,7 +63,7 @@
     <string name="wifitrackerlib_wifi_security_passpoint" msgid="3980446437188585906">"Passpoint"</string>
     <string name="wifitrackerlib_wifi_passpoint_expired" msgid="7974960573887452566">"ਮਿਆਦ ਮੁੱਕ ਗਈ"</string>
     <string name="wifitrackerlib_tap_to_sign_up" msgid="3897017015910817402">"ਸਾਈਨ-ਅੱਪ ਕਰਨ ਲਈ ਟੈਪ ਕਰੋ"</string>
-    <string name="wifitrackerlib_tap_to_renew_subscription_and_connect" msgid="6048420776676138069">"ਗਾਹਕੀ ਦੇ ਨਵੀਨੀਕਰਨ ਅਤੇ ਕਨੈਕਟ ਹੋਣ ਲਈ ਟੈਪ ਕਰੋ"</string>
+    <string name="wifitrackerlib_tap_to_renew_subscription_and_connect" msgid="6048420776676138069">"ਸਬਸਕ੍ਰਿਪਸ਼ਨ ਦੇ ਨਵੀਨੀਕਰਨ ਅਤੇ ਕਨੈਕਟ ਹੋਣ ਲਈ ਟੈਪ ਕਰੋ"</string>
     <string name="wifitrackerlib_osu_opening_provider" msgid="7128677439450712558">"<xliff:g id="PASSPOINTPROVIDER">%1$s</xliff:g> ਖੋਲ੍ਹਿਆ ਜਾ ਰਿਹਾ ਹੈ"</string>
     <string name="wifitrackerlib_osu_connect_failed" msgid="3872233609000700930">"ਕਨੈਕਟ ਨਹੀਂ ਕੀਤਾ ਜਾ ਸਕਿਆ"</string>
     <string name="wifitrackerlib_osu_completing_sign_up" msgid="4359503050543182480">"ਸਾਈਨ-ਅੱਪ ਮੁਕੰਮਲ ਕੀਤਾ ਜਾ ਰਿਹਾ ਹੈ…"</string>
@@ -78,12 +78,8 @@
     <string name="wifitrackerlib_wifi_standard_11ax" msgid="4071875115186480116">"ਵਾਈ-ਫਾਈ 6"</string>
     <string name="wifitrackerlib_wifi_standard_11ad" msgid="4955749187120493383">"WiGig"</string>
     <string name="wifitrackerlib_wifi_standard_11be" msgid="1886834788680487835">"ਵਾਈ-ਫਾਈ 7"</string>
-    <!-- no translation found for wifitrackerlib_wifi_band_unknown (5576746583228374334) -->
-    <skip />
-    <!-- no translation found for wifitrackerlib_wifi_band_24_ghz (5374362780653321244) -->
-    <skip />
-    <!-- no translation found for wifitrackerlib_wifi_band_5_ghz (2179047349922091556) -->
-    <skip />
-    <!-- no translation found for wifitrackerlib_wifi_band_6_ghz (6532408050869498777) -->
-    <skip />
+    <string name="wifitrackerlib_wifi_band_unknown" msgid="5576746583228374334">"ਅਗਿਆਤ"</string>
+    <string name="wifitrackerlib_wifi_band_24_ghz" msgid="5374362780653321244">"2.4 GHz"</string>
+    <string name="wifitrackerlib_wifi_band_5_ghz" msgid="2179047349922091556">"5 GHz"</string>
+    <string name="wifitrackerlib_wifi_band_6_ghz" msgid="6532408050869498777">"6 GHz"</string>
 </resources>
