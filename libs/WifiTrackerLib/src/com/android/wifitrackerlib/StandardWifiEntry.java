@@ -189,10 +189,6 @@ public class StandardWifiEntry extends WifiEntry {
 
     @Override
     public synchronized String getSummary(boolean concise) {
-        if (hasAdminRestrictions()) {
-            return mContext.getString(R.string.wifitrackerlib_admin_restricted_network);
-        }
-
         StringJoiner sj = new StringJoiner(mContext.getString(
                 R.string.wifitrackerlib_summary_separator));
 
@@ -552,6 +548,9 @@ public class StandardWifiEntry extends WifiEntry {
             return;
         }
 
+        // Refresh the current config so we don't overwrite any changes that we haven't gotten
+        // the CONFIGURED_NETWORKS_CHANGED broadcast for yet.
+        refreshTargetWifiConfig();
         if (meteredChoice == METERED_CHOICE_AUTO) {
             mTargetWifiConfig.meteredOverride = WifiConfiguration.METERED_OVERRIDE_NONE;
         } else if (meteredChoice == METERED_CHOICE_METERED) {
@@ -584,7 +583,9 @@ public class StandardWifiEntry extends WifiEntry {
         if (!canSetPrivacy()) {
             return;
         }
-
+        // Refresh the current config so we don't overwrite any changes that we haven't gotten
+        // the CONFIGURED_NETWORKS_CHANGED broadcast for yet.
+        refreshTargetWifiConfig();
         mTargetWifiConfig.macRandomizationSetting = privacy == PRIVACY_RANDOMIZED_MAC
                 ? WifiConfiguration.RANDOMIZATION_AUTO : WifiConfiguration.RANDOMIZATION_NONE;
         mWifiManager.save(mTargetWifiConfig, null /* listener */);
@@ -845,6 +846,15 @@ public class StandardWifiEntry extends WifiEntry {
                 return mIsEnhancedOpenSupported;
             default:
                 return true;
+        }
+    }
+
+    private void refreshTargetWifiConfig() {
+        for (WifiConfiguration config : mWifiManager.getPrivilegedConfiguredNetworks()) {
+            if (config.networkId == mTargetWifiConfig.networkId) {
+                mTargetWifiConfig = config;
+                break;
+            }
         }
     }
 
