@@ -13,7 +13,7 @@ java_defaults {
         "WifiTrackerLibRes",
         "SettingsLibHelpUtils",
     ],
-    min_sdk_version: "S",
+    min_sdk_version: "29",
 }
 
 android_library {
