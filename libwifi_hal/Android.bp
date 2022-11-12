@@ -87,4 +87,3 @@ cc_defaults {
         "libwifi-hal_headers",
     ],
 }
-
