@@ -21,6 +21,8 @@ import static com.android.wifitrackerlib.TestUtils.buildWifiConfiguration;
 
 import static com.google.common.truth.Truth.assertThat;
 
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.verify;
@@ -29,10 +31,12 @@ import static org.mockito.Mockito.when;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.net.ConnectivityDiagnosticsManager;
 import android.net.ConnectivityManager;
 import android.net.NetworkInfo;
 import android.net.wifi.ScanResult;
 import android.net.wifi.WifiConfiguration;
+import android.net.wifi.WifiEnterpriseConfig;
 import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
 import android.net.wifi.hotspot2.PasspointConfiguration;
@@ -63,11 +67,14 @@ public class SavedNetworkTrackerTest {
     private static final long MAX_SCAN_AGE_MILLIS = 15_000;
     private static final long SCAN_INTERVAL_MILLIS = 10_000;
 
+    private static final String TEST_CACERT_NOT_REQUIRED_ALIAS = "cacert_not_required";
+
     @Mock private WifiTrackerInjector mInjector;
     @Mock private Lifecycle mMockLifecycle;
     @Mock private Context mMockContext;
     @Mock private WifiManager mMockWifiManager;
     @Mock private ConnectivityManager mMockConnectivityManager;
+    @Mock private ConnectivityDiagnosticsManager mMockConnectivityDiagnosticsManager;
     @Mock private Clock mMockClock;
     @Mock private SavedNetworkTracker.SavedNetworkTrackerCallback mMockCallback;
     @Mock private WifiInfo mMockWifiInfo;
@@ -107,6 +114,8 @@ public class SavedNetworkTrackerTest {
         when(mMockWifiManager.isWpa3SuiteBSupported()).thenReturn(true);
         when(mMockWifiManager.isEnhancedOpenSupported()).thenReturn(true);
         when(mMockConnectivityManager.getNetworkInfo(any())).thenReturn(mMockNetworkInfo);
+        when(mMockContext.getSystemService(ConnectivityDiagnosticsManager.class))
+                .thenReturn(mMockConnectivityDiagnosticsManager);
         when(mMockClock.millis()).thenReturn(START_MILLIS);
     }
 
@@ -506,5 +515,33 @@ public class SavedNetworkTrackerTest {
 
         assertThat(entry.getConnectedState()).isEqualTo(WifiEntry.CONNECTED_STATE_DISCONNECTED);
 
+    }
+
+    @Test
+    public void testCertificateRequired() throws Exception {
+        final SavedNetworkTracker savedNetworkTracker = createTestSavedNetworkTracker();
+
+        final WifiConfiguration config = new WifiConfiguration();
+        config.SSID = "\"ssid\"";
+        config.networkId = 1;
+        config.setSecurityParams(WifiConfiguration.SECURITY_TYPE_EAP);
+        config.enterpriseConfig.setEapMethod(WifiEnterpriseConfig.Eap.PEAP);
+
+        when(mMockWifiManager.getConfiguredNetworks())
+                .thenReturn(Collections.singletonList(config));
+        when(mMockWifiManager.getScanResults()).thenReturn(Arrays.asList(
+                buildScanResult("ssid", "bssid", START_MILLIS)));
+        when(mMockWifiInfo.getNetworkId()).thenReturn(1);
+        when(mMockWifiInfo.getRssi()).thenReturn(-50);
+        when(mMockNetworkInfo.getDetailedState()).thenReturn(NetworkInfo.DetailedState.CONNECTED);
+        savedNetworkTracker.onStart();
+        mTestLooper.dispatchAll();
+        verify(mMockContext).registerReceiver(mBroadcastReceiverCaptor.capture(),
+                any(), any(), any());
+
+        // Check another CA cert alias.
+        assertFalse(savedNetworkTracker.isCertificateRequired(TEST_CACERT_NOT_REQUIRED_ALIAS));
+        assertEquals(0, savedNetworkTracker
+                .getCertificateRequesterNames(TEST_CACERT_NOT_REQUIRED_ALIAS).size());
     }
 }
