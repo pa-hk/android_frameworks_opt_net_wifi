@@ -40,6 +40,7 @@ import androidx.annotation.MainThread;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.annotation.WorkerThread;
+import androidx.core.os.BuildCompat;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -48,6 +49,7 @@ import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
@@ -247,8 +249,6 @@ public class WifiEntry {
 
     private int mDeviceWifiStandard;
     private int mWifiStandard = ScanResult.WIFI_STANDARD_LEGACY;
-    private boolean mHe8ssCapableAp;
-    private boolean mVhtMax8SpatialStreamsSupport;
     private boolean mIsPskSaeTransitionMode;
     private boolean mIsOweTransitionMode;
 
@@ -260,6 +260,10 @@ public class WifiEntry {
         mForSavedNetworksPage = forSavedNetworksPage;
         mWifiManager = wifiManager;
         updatetDeviceWifiGenerationInfo();
+    }
+
+    public static boolean isGbkSsidSupported() {
+        return WifiTrackerInjector.isGbkSsidSupported();
     }
 
     // Info available for all WifiEntries //
@@ -980,6 +984,12 @@ public class WifiEntry {
             sj.add(String.format("%.1f,", mWifiInfo.getRetriedTxPacketsPerSecond()));
             sj.add(String.format("%.1f ", mWifiInfo.getLostTxPacketsPerSecond()));
             sj.add(String.format("rx=%.1f", mWifiInfo.getSuccessfulRxPacketsPerSecond()));
+            if (BuildCompat.isAtLeastT() && mWifiInfo.getApMldMacAddress() != null) {
+                sj.add("mldMac = " + mWifiInfo.getApMldMacAddress());
+                sj.add("linkId = " + mWifiInfo.getApMloLinkId());
+                sj.add("affLinks = " + Arrays.toString(
+                        mWifiInfo.getAffiliatedMloLinks().toArray()));
+            }
         }
         return sj.toString();
     }
@@ -1068,10 +1078,6 @@ public class WifiEntry {
                 .append(getSecurityTypes())
                 .append(",standard:")
                 .append(getWifiStandard())
-                .append(",he8ssAp:")
-                .append(isHe8ssCapableAp())
-                .append(",vhtMax8ssCapa:")
-                .append(isVhtMax8SpatialStreamsSupported())
                 .append(",connected:")
                 .append(getConnectedState() == CONNECTED_STATE_CONNECTED ? "true" : "false")
                 .append(",connectedInfo:")
@@ -1116,8 +1122,6 @@ public class WifiEntry {
             mDeviceWifiStandard = ScanResult.WIFI_STANDARD_11N;
         else
             mDeviceWifiStandard = ScanResult.WIFI_STANDARD_LEGACY;
-
-        mVhtMax8SpatialStreamsSupport = mWifiManager.isVht8ssCapableDevice();
     }
 
     /**
@@ -1131,46 +1135,20 @@ public class WifiEntry {
         return mWifiInfo.getWifiStandard();
     }
 
-    /**
-     * Returns true if AP is HE 8SS capable connection/AP
-     */
-    public boolean isHe8ssCapableAp() {
-        if (getConnectedInfo() == null || mWifiInfo == null ||
-                getConnectedState() != CONNECTED_STATE_CONNECTED)
-            return mHe8ssCapableAp;
-
-        return mWifiInfo.isHe8ssCapableAp();
-    }
-
-    /**
-     * Returns true if VHT 8SS capable connection/AP
-     */
-    public boolean isVhtMax8SpatialStreamsSupported() {
-        if (getConnectedInfo() == null || mWifiInfo == null ||
-                getConnectedState() != CONNECTED_STATE_CONNECTED)
-            return mVhtMax8SpatialStreamsSupport;
-
-        return mWifiInfo.isVhtMax8SpatialStreamsSupported();
-    }
-
     protected void updateWifiGenerationInfo(@Nullable List<ScanResult> scanResults) {
         int currResultWifiStandard;
         int minConnectionCapability = mDeviceWifiStandard;
 
         // Capture minimum possible connection capability of all scan results
-        mHe8ssCapableAp = true;
         for (ScanResult result : scanResults) {
             currResultWifiStandard = result.getWifiStandard();
-
-            // Check if atleast one bssid present without HE and 8SS support
-            if (!result.capabilities.contains("WFA-HE-READY") && mHe8ssCapableAp)
-                mHe8ssCapableAp = false;
 
             if (currResultWifiStandard < minConnectionCapability)
                 minConnectionCapability = currResultWifiStandard;
             /*Do not include VHT support for 2ghz when device capability is 11AC
               and AP operating in 11AX */
-            else if (result.is24GHz() && currResultWifiStandard == ScanResult.WIFI_STANDARD_11AX &&
+            else if (result.getBand() == ScanResult.WIFI_BAND_24_GHZ &&
+                     currResultWifiStandard == ScanResult.WIFI_STANDARD_11AX &&
                      minConnectionCapability == ScanResult.WIFI_STANDARD_11AC)
                 minConnectionCapability = ScanResult.WIFI_STANDARD_11N;
         }

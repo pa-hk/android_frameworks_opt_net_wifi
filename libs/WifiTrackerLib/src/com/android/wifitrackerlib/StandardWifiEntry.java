@@ -81,6 +81,7 @@ import org.json.JSONObject;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -181,15 +182,14 @@ public class StandardWifiEntry extends WifiEntry {
 
     @Override
     public String getTitle() {
+        if (isGbkSsidSupported()) {
+            return Utils.getReadableText(mKey.getScanResultKey().getSsid());
+        }
         return mKey.getScanResultKey().getSsid();
     }
 
     @Override
     public synchronized String getSummary(boolean concise) {
-        if (hasAdminRestrictions()) {
-            return mContext.getString(R.string.wifitrackerlib_admin_restricted_network);
-        }
-
         StringJoiner sj = new StringJoiner(mContext.getString(
                 R.string.wifitrackerlib_summary_separator));
 
@@ -360,20 +360,32 @@ public class StandardWifiEntry extends WifiEntry {
             if (mTargetSecurityTypes.contains(SECURITY_TYPE_OWE)) {
                 // OWE network
                 final WifiConfiguration oweConfig = new WifiConfiguration();
-                oweConfig.SSID = "\"" + mKey.getScanResultKey().getSsid() + "\"";
+                if (isGbkSsidSupported()) {
+                    oweConfig.SSID = mKey.getScanResultKey().getSsid();
+                } else {
+                    oweConfig.SSID = "\"" + mKey.getScanResultKey().getSsid() + "\"";
+                }
                 oweConfig.setSecurityParams(WifiConfiguration.SECURITY_TYPE_OWE);
                 mWifiManager.connect(oweConfig, new ConnectActionListener());
                 if (mTargetSecurityTypes.contains(SECURITY_TYPE_OPEN)) {
                     // Add an extra Open config for OWE transition networks
                     final WifiConfiguration openConfig = new WifiConfiguration();
-                    openConfig.SSID = "\"" + mKey.getScanResultKey().getSsid() + "\"";
+                    if (isGbkSsidSupported()) {
+                        openConfig.SSID = mKey.getScanResultKey().getSsid();
+                    } else {
+                        openConfig.SSID = "\"" + mKey.getScanResultKey().getSsid() + "\"";
+                    }
                     openConfig.setSecurityParams(WifiConfiguration.SECURITY_TYPE_OPEN);
                     mWifiManager.save(openConfig, null);
                 }
             } else if (mTargetSecurityTypes.contains(SECURITY_TYPE_OPEN)) {
                 // Open network
                 final WifiConfiguration openConfig = new WifiConfiguration();
-                openConfig.SSID = "\"" + mKey.getScanResultKey().getSsid() + "\"";
+                if (isGbkSsidSupported()) {
+                    openConfig.SSID = mKey.getScanResultKey().getSsid();
+                } else {
+                    openConfig.SSID = "\"" + mKey.getScanResultKey().getSsid() + "\"";
+                }
                 openConfig.setSecurityParams(WifiConfiguration.SECURITY_TYPE_OPEN);
                 mWifiManager.connect(openConfig, new ConnectActionListener());
             } else {
@@ -403,7 +415,12 @@ public class StandardWifiEntry extends WifiEntry {
                             DisconnectCallback.DISCONNECT_STATUS_FAILURE_UNKNOWN);
                 }
             }, 10_000 /* delayMillis */);
-            mWifiManager.disableEphemeralNetwork("\"" + mKey.getScanResultKey().getSsid() + "\"");
+            if (!isGbkSsidSupported()) {
+                mWifiManager.disableEphemeralNetwork(
+                   "\"" + mKey.getScanResultKey().getSsid() + "\"");
+            } else {
+                mWifiManager.disableEphemeralNetwork(mKey.getScanResultKey().getSsid());
+            }
             mWifiManager.disconnect();
         }
     }
@@ -532,6 +549,9 @@ public class StandardWifiEntry extends WifiEntry {
             return;
         }
 
+        // Refresh the current config so we don't overwrite any changes that we haven't gotten
+        // the CONFIGURED_NETWORKS_CHANGED broadcast for yet.
+        refreshTargetWifiConfig();
         if (meteredChoice == METERED_CHOICE_AUTO) {
             mTargetWifiConfig.meteredOverride = WifiConfiguration.METERED_OVERRIDE_NONE;
         } else if (meteredChoice == METERED_CHOICE_METERED) {
@@ -564,7 +584,9 @@ public class StandardWifiEntry extends WifiEntry {
         if (!canSetPrivacy()) {
             return;
         }
-
+        // Refresh the current config so we don't overwrite any changes that we haven't gotten
+        // the CONFIGURED_NETWORKS_CHANGED broadcast for yet.
+        refreshTargetWifiConfig();
         mTargetWifiConfig.macRandomizationSetting = privacy == PRIVACY_RANDOMIZED_MAC
                 ? WifiConfiguration.RANDOMIZATION_AUTO : WifiConfiguration.RANDOMIZATION_NONE;
         mWifiManager.save(mTargetWifiConfig, null /* listener */);
@@ -716,10 +738,14 @@ public class StandardWifiEntry extends WifiEntry {
 
         final String ssid = mKey.getScanResultKey().getSsid();
         for (ScanResult scan : scanResults) {
-            if (!TextUtils.equals(scan.SSID, ssid)) {
+            String tmpSsid = scan.SSID;
+            if (isGbkSsidSupported()) {
+                tmpSsid = scan.getWifiSsid().toString();
+            }
+            if (!TextUtils.equals(tmpSsid, ssid)) {
                 throw new IllegalArgumentException(
                         "Attempted to update with wrong SSID! Expected: "
-                                + ssid + ", Actual: " + scan.SSID + ", ScanResult: " + scan);
+                                + ssid + ", Actual: " + tmpSsid + ", ScanResult: " + scan);
             }
         }
         // Populate the cached scan result map
@@ -782,7 +808,11 @@ public class StandardWifiEntry extends WifiEntry {
         final Set<Integer> securityTypes = scanResultKey.getSecurityTypes();
         mMatchingWifiConfigs.clear();
         for (WifiConfiguration config : wifiConfigs) {
-            if (!TextUtils.equals(ssid, sanitizeSsid(config.SSID))) {
+            String tmpSsid = config.SSID;
+            if (!isGbkSsidSupported()) {
+                tmpSsid = sanitizeSsid(config.SSID);
+            }
+            if (!TextUtils.equals(ssid, tmpSsid)) {
                 throw new IllegalArgumentException(
                         "Attempted to update with wrong SSID!"
                                 + " Expected: " + ssid
@@ -817,6 +847,15 @@ public class StandardWifiEntry extends WifiEntry {
                 return mIsEnhancedOpenSupported;
             default:
                 return true;
+        }
+    }
+
+    private void refreshTargetWifiConfig() {
+        for (WifiConfiguration config : mWifiManager.getPrivilegedConfiguredNetworks()) {
+            if (config.networkId == mTargetWifiConfig.networkId) {
+                mTargetWifiConfig = config;
+                break;
+            }
         }
     }
 
@@ -977,7 +1016,8 @@ public class StandardWifiEntry extends WifiEntry {
         if (BuildCompat.isAtLeastT() && wifiStandard == ScanResult.WIFI_STANDARD_11BE) {
             description.append(",mldMac=").append(scanResult.getApMldMacAddress());
             description.append(",linkId=").append(scanResult.getApMloLinkId());
-            description.append(",affLinks=").append(scanResult.getAffiliatedMloLinks());
+            description.append(",affLinks=").append(
+                    Arrays.toString(scanResult.getAffiliatedMloLinks().toArray()));
         }
         final int ageSeconds = (int) (nowMs - scanResult.timestamp / 1000) / 1000;
         description.append(",").append(ageSeconds).append("s");
@@ -1030,15 +1070,25 @@ public class StandardWifiEntry extends WifiEntry {
                 int policyType = policy.getPolicyType();
                 Set<WifiSsid> ssids = policy.getSsids();
 
-                if (policyType == WifiSsidPolicy.WIFI_SSID_POLICY_TYPE_ALLOWLIST
-                        && !ssids.contains(
-                        WifiSsid.fromBytes(getSsid().getBytes(StandardCharsets.UTF_8)))) {
+                String ssid;
+                if (isGbkSsidSupported()) {
+                    ssid = getSsid();
+                } else {
+                    ssid = "\"" + getSsid() + "\"";
+                }
+
+                boolean isContained = false;
+                try {
+                    isContained = ssids.contains(WifiSsid.fromString(ssid));
+                } catch (IllegalArgumentException e) {
+                    Log.e(TAG, "updateAdminRestrictions e = " + e);
+                }
+
+                if (policyType == WifiSsidPolicy.WIFI_SSID_POLICY_TYPE_ALLOWLIST && !isContained) {
                     mIsAdminRestricted = true;
                     return;
                 }
-                if (policyType == WifiSsidPolicy.WIFI_SSID_POLICY_TYPE_DENYLIST
-                        && ssids.contains(
-                        WifiSsid.fromBytes(getSsid().getBytes(StandardCharsets.UTF_8)))) {
+                if (policyType == WifiSsidPolicy.WIFI_SSID_POLICY_TYPE_DENYLIST && isContained) {
                     mIsAdminRestricted = true;
                     return;
                 }
@@ -1257,14 +1307,16 @@ public class StandardWifiEntry extends WifiEntry {
          * @param scanResult
          */
         ScanResultKey(@NonNull ScanResult scanResult) {
-            this(scanResult.SSID, getSecurityTypesFromScanResult(scanResult));
+            this(WifiEntry.isGbkSsidSupported() ? scanResult.getWifiSsid().toString() :
+                        scanResult.SSID, getSecurityTypesFromScanResult(scanResult));
         }
 
         /**
          * Creates a ScanResultKey from a WifiConfiguration's SSID and security type grouping.
          */
         ScanResultKey(@NonNull WifiConfiguration wifiConfiguration) {
-            this(sanitizeSsid(wifiConfiguration.SSID),
+            this(WifiEntry.isGbkSsidSupported() ? wifiConfiguration.SSID :
+                    sanitizeSsid(wifiConfiguration.SSID),
                     getSecurityTypesFromWifiConfiguration(wifiConfiguration));
         }
 
