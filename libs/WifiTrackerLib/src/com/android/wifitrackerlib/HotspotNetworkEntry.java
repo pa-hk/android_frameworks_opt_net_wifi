@@ -20,7 +20,6 @@ import static android.os.Build.VERSION_CODES;
 
 import android.annotation.TargetApi;
 import android.content.Context;
-import android.net.NetworkInfo;
 import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
 import android.net.wifi.sharedconnectivity.app.HotspotNetwork;
@@ -30,6 +29,7 @@ import android.os.Handler;
 import android.util.Log;
 
 import androidx.annotation.IntDef;
+import androidx.annotation.IntRange;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.annotation.WorkerThread;
@@ -146,8 +146,10 @@ public class HotspotNetworkEntry extends WifiEntry {
     }
 
     @WorkerThread
-    protected synchronized boolean connectionInfoMatches(@NonNull WifiInfo wifiInfo,
-            @NonNull NetworkInfo networkInfo) {
+    protected synchronized boolean connectionInfoMatches(@NonNull WifiInfo wifiInfo) {
+        if (wifiInfo.isPasspointAp() || wifiInfo.isOsuAp()) {
+            return false;
+        }
         return Objects.equals(mKey.getBssid(), wifiInfo.getBSSID());
     }
 
@@ -169,14 +171,6 @@ public class HotspotNetworkEntry extends WifiEntry {
                 + mHotspotNetworkData.getNetworkProviderInfo().getModelName();
     }
 
-    @Override
-    public int getLevel() {
-        if (mHotspotNetworkData == null) {
-            return 0;
-        }
-        return mHotspotNetworkData.getNetworkProviderInfo().getConnectionStrength();
-    }
-
     /**
      * Alternate summary string to be used on Network & internet page.
      *
@@ -189,6 +183,19 @@ public class HotspotNetworkEntry extends WifiEntry {
         // TODO(b/271869550): Fully implement this WIP string.
         return mHotspotNetworkData.getNetworkName() + " from "
                 + mHotspotNetworkData.getNetworkProviderInfo().getDeviceName();
+    }
+
+    /**
+     * Connection strength between the host device and the internet.
+     *
+     * @return Displayed connection strength in the range 0 to 3.
+     */
+    @IntRange(from = 0, to = 3)
+    public int getUpstreamConnectionStrength() {
+        if (mHotspotNetworkData == null) {
+            return 0;
+        }
+        return mHotspotNetworkData.getNetworkProviderInfo().getConnectionStrength();
     }
 
     /**
@@ -215,6 +222,17 @@ public class HotspotNetworkEntry extends WifiEntry {
             return NetworkProviderInfo.DEVICE_TYPE_UNKNOWN;
         }
         return mHotspotNetworkData.getNetworkProviderInfo().getDeviceType();
+    }
+
+    /**
+     * The battery percentage of the host device.
+     */
+    @IntRange(from = 0, to = 100)
+    public int getBatteryPercentage() {
+        if (mHotspotNetworkData == null) {
+            return 0;
+        }
+        return mHotspotNetworkData.getNetworkProviderInfo().getBatteryPercentage();
     }
 
     @Override
