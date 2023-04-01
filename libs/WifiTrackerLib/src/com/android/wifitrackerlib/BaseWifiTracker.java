@@ -16,10 +16,11 @@
 
 package com.android.wifitrackerlib;
 
-import static android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED;
 import static android.net.NetworkCapabilities.TRANSPORT_CELLULAR;
 import static android.net.NetworkCapabilities.TRANSPORT_WIFI;
+import static android.os.Build.VERSION_CODES;
 
+import android.annotation.TargetApi;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -30,9 +31,14 @@ import android.net.LinkProperties;
 import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.NetworkRequest;
-import android.net.TransportInfo;
-import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
+import android.net.wifi.sharedconnectivity.app.HotspotNetwork;
+import android.net.wifi.sharedconnectivity.app.HotspotNetworkConnectionStatus;
+import android.net.wifi.sharedconnectivity.app.KnownNetwork;
+import android.net.wifi.sharedconnectivity.app.KnownNetworkConnectionStatus;
+import android.net.wifi.sharedconnectivity.app.SharedConnectivityClientCallback;
+import android.net.wifi.sharedconnectivity.app.SharedConnectivityManager;
+import android.net.wifi.sharedconnectivity.app.SharedConnectivitySettingsState;
 import android.os.Handler;
 import android.os.Looper;
 import android.telephony.SubscriptionManager;
@@ -44,11 +50,14 @@ import androidx.annotation.MainThread;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.annotation.WorkerThread;
+import androidx.core.os.BuildCompat;
 import androidx.lifecycle.Lifecycle;
 import androidx.lifecycle.LifecycleObserver;
 import androidx.lifecycle.OnLifecycleEvent;
 
 import java.time.Clock;
+import java.util.List;
+import java.util.concurrent.Executor;
 
 /**
  * Base class for WifiTracker functionality.
@@ -79,6 +88,8 @@ public class BaseWifiTracker implements LifecycleObserver {
     private final String mTag;
 
     private static boolean sVerboseLogging;
+
+    public static final boolean ENABLE_SHARED_CONNECTIVITY_FEATURE = false;
 
     public static boolean isVerboseLoggingEnabled() {
         return BaseWifiTracker.sVerboseLogging;
@@ -115,8 +126,6 @@ public class BaseWifiTracker implements LifecycleObserver {
                 handleConfiguredNetworksChangedAction(intent);
             } else if (WifiManager.NETWORK_STATE_CHANGED_ACTION.equals(action)) {
                 handleNetworkStateChangedAction(intent);
-            } else if (WifiManager.RSSI_CHANGED_ACTION.equals(action)) {
-                handleRssiChangedAction();
             } else if (TelephonyManager.ACTION_DEFAULT_DATA_SUBSCRIPTION_CHANGED.equals(action)) {
                 handleDefaultSubscriptionChanged(intent.getIntExtra(
                         "subscription", SubscriptionManager.INVALID_SUBSCRIPTION_ID));
@@ -136,10 +145,8 @@ public class BaseWifiTracker implements LifecycleObserver {
     protected final long mMaxScanAgeMillis;
     protected final long mScanIntervalMillis;
     protected final ScanResultUpdater mScanResultUpdater;
-    protected boolean mIsWifiValidated;
-    protected boolean mIsWifiDefaultRoute;
-    protected boolean mIsCellDefaultRoute;
-    protected Network mPrimaryNetwork;
+
+    @Nullable protected SharedConnectivityManager mSharedConnectivityManager = null;
 
     public boolean isGbkSsidSupported() {
         return mInjector.isGbkSsidSupported();
@@ -151,82 +158,46 @@ public class BaseWifiTracker implements LifecycleObserver {
             .clearCapabilities()
             .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
             .addTransportType(TRANSPORT_WIFI)
+            .addTransportType(TRANSPORT_CELLULAR) // For VCN-over-Wifi
             .build();
 
     private final ConnectivityManager.NetworkCallback mNetworkCallback =
-            new ConnectivityManager.NetworkCallback() {
+            new ConnectivityManager.NetworkCallback(
+                    ConnectivityManager.NetworkCallback.FLAG_INCLUDE_LOCATION_INFO) {
                 @Override
                 @WorkerThread
                 public void onLinkPropertiesChanged(@NonNull Network network,
                         @NonNull LinkProperties lp) {
-                    if (!isPrimaryWifiNetwork(
-                            mConnectivityManager.getNetworkCapabilities(network))) {
-                        return;
-                    }
-                    mPrimaryNetwork = network;
-                    handleLinkPropertiesChanged(lp);
+                    handleLinkPropertiesChanged(network, lp);
                 }
 
                 @Override
                 @WorkerThread
                 public void onCapabilitiesChanged(@NonNull Network network,
                         @NonNull NetworkCapabilities networkCapabilities) {
-                    if (!isPrimaryWifiNetwork(networkCapabilities)) {
-                        return;
-                    }
-                    mPrimaryNetwork = network;
-                    final boolean oldWifiValidated = mIsWifiValidated;
-                    mIsWifiValidated = networkCapabilities.hasCapability(NET_CAPABILITY_VALIDATED);
-                    if (isVerboseLoggingEnabled() && mIsWifiValidated != oldWifiValidated) {
-                        Log.v(mTag, "Is Wifi validated: " + mIsWifiValidated);
-                    }
-                    handleNetworkCapabilitiesChanged(networkCapabilities);
+                    handleNetworkCapabilitiesChanged(network, networkCapabilities);
                 }
 
                 @Override
                 @WorkerThread
                 public void onLost(@NonNull Network network) {
-                    if (!isPrimaryWifiNetwork(
-                            mConnectivityManager.getNetworkCapabilities(network))) {
-                        return;
-                    }
-                    mIsWifiValidated = false;
-                    mPrimaryNetwork = null;
+                    handleNetworkLost(network);
                 }
             };
 
     private final ConnectivityManager.NetworkCallback mDefaultNetworkCallback =
-            new ConnectivityManager.NetworkCallback() {
+            new ConnectivityManager.NetworkCallback(
+                    ConnectivityManager.NetworkCallback.FLAG_INCLUDE_LOCATION_INFO) {
                 @Override
                 @WorkerThread
                 public void onCapabilitiesChanged(@NonNull Network network,
                         @NonNull NetworkCapabilities networkCapabilities) {
-                    final boolean oldWifiDefault = mIsWifiDefaultRoute;
-                    final boolean oldCellDefault = mIsCellDefaultRoute;
-                    // raw Wifi or VPN-over-Wifi or VCN-over-Wifi is default => Wifi is default.
-                    mIsWifiDefaultRoute = networkCapabilities.hasTransport(TRANSPORT_WIFI)
-                            || NonSdkApiWrapper.isVcnOverWifi(networkCapabilities);
-                    mIsCellDefaultRoute = !mIsWifiDefaultRoute
-                            && networkCapabilities.hasTransport(TRANSPORT_CELLULAR);
-                    if (mIsWifiDefaultRoute != oldWifiDefault
-                            || mIsCellDefaultRoute != oldCellDefault) {
-                        if (isVerboseLoggingEnabled()) {
-                            Log.v(mTag, "Wifi is the default route: " + mIsWifiDefaultRoute);
-                            Log.v(mTag, "Cell is the default route: " + mIsCellDefaultRoute);
-                        }
-                        handleDefaultRouteChanged();
-                    }
+                    handleDefaultNetworkCapabilitiesChanged(network, networkCapabilities);
                 }
 
                 @WorkerThread
                 public void onLost(@NonNull Network network) {
-                    mIsWifiDefaultRoute = false;
-                    mIsCellDefaultRoute = false;
-                    if (isVerboseLoggingEnabled()) {
-                        Log.v(mTag, "Wifi is the default route: false");
-                        Log.v(mTag, "Cell is the default route: false");
-                    }
-                    handleDefaultRouteChanged();
+                    handleDefaultNetworkLost();
                 }
             };
 
@@ -240,32 +211,60 @@ public class BaseWifiTracker implements LifecycleObserver {
         }
     };
 
-    private boolean isPrimaryWifiNetwork(@Nullable NetworkCapabilities networkCapabilities) {
-        if (networkCapabilities == null) {
-            return false;
+    @TargetApi(VERSION_CODES.UPSIDE_DOWN_CAKE)
+    private final Executor mSharedConnectivityExecutor = new Executor() {
+        @Override
+        public void execute(Runnable command) {
+            mWorkerHandler.post(command);
         }
-        final TransportInfo transportInfo = networkCapabilities.getTransportInfo();
-        if (!(transportInfo instanceof WifiInfo)) {
-            return false;
-        }
-        return NonSdkApiWrapper.isPrimary((WifiInfo) transportInfo);
-    }
+    };
 
-    protected void updateDefaultRouteInfo() {
-        final NetworkCapabilities defaultNetworkCapabilities = mConnectivityManager
-                .getNetworkCapabilities(mConnectivityManager.getActiveNetwork());
-        if (defaultNetworkCapabilities != null) {
-            mIsWifiDefaultRoute = defaultNetworkCapabilities.hasTransport(TRANSPORT_WIFI);
-            mIsCellDefaultRoute = defaultNetworkCapabilities.hasTransport(TRANSPORT_CELLULAR);
-        } else {
-            mIsWifiDefaultRoute = false;
-            mIsCellDefaultRoute = false;
-        }
-        if (isVerboseLoggingEnabled()) {
-            Log.v(mTag, "Wifi is the default route: " + mIsWifiDefaultRoute);
-            Log.v(mTag, "Cell is the default route: " + mIsCellDefaultRoute);
-        }
-    }
+    @TargetApi(VERSION_CODES.UPSIDE_DOWN_CAKE)
+    private final SharedConnectivityClientCallback mSharedConnectivityCallback =
+            new SharedConnectivityClientCallback() {
+                @Override
+                public void onHotspotNetworksUpdated(@NonNull List<HotspotNetwork> networks) {
+                    handleHotspotNetworksUpdated(networks);
+                }
+
+                @Override
+                public void onKnownNetworksUpdated(@NonNull List<KnownNetwork> networks) {
+                    handleKnownNetworksUpdated(networks);
+                }
+
+                @Override
+                public void onSharedConnectivitySettingsChanged(
+                        @NonNull SharedConnectivitySettingsState state) {
+                    handleSharedConnectivitySettingsChanged(state);
+                }
+
+                @Override
+                public void onHotspotNetworkConnectionStatusChanged(
+                        @NonNull HotspotNetworkConnectionStatus status) {
+                    handleHotspotNetworkConnectionStatusChanged(status);
+                }
+
+                @Override
+                public void onKnownNetworkConnectionStatusChanged(
+                        @NonNull KnownNetworkConnectionStatus status) {
+                    handleKnownNetworkConnectionStatusChanged(status);
+                }
+
+                @Override
+                public void onServiceConnected() {
+                    handleServiceConnected();
+                }
+
+                @Override
+                public void onServiceDisconnected() {
+                    handleServiceDisconnected();
+                }
+
+                @Override
+                public void onRegisterCallbackFailed(Exception exception) {
+                    handleRegisterCallbackFailed(exception);
+                }
+            };
 
     /**
      * Constructor for BaseWifiTracker.
@@ -300,6 +299,10 @@ public class BaseWifiTracker implements LifecycleObserver {
         mConnectivityManager = connectivityManager;
         mConnectivityDiagnosticsManager =
                 context.getSystemService(ConnectivityDiagnosticsManager.class);
+        if (ENABLE_SHARED_CONNECTIVITY_FEATURE && BuildCompat.isAtLeastU()) {
+            mSharedConnectivityManager =
+                    context.getSystemService(SharedConnectivityManager.class);
+        }
         mMainHandler = mainHandler;
         mWorkerHandler = workerHandler;
         mMaxScanAgeMillis = maxScanAgeMillis;
@@ -311,7 +314,6 @@ public class BaseWifiTracker implements LifecycleObserver {
                 maxScanAgeMillis + scanIntervalMillis);
         mScanner = new BaseWifiTracker.Scanner(workerHandler.getLooper());
         sVerboseLogging = mWifiManager.isVerboseLoggingEnabled();
-        updateDefaultRouteInfo();
     }
 
     /**
@@ -321,13 +323,11 @@ public class BaseWifiTracker implements LifecycleObserver {
     @MainThread
     public void onStart() {
         mWorkerHandler.post(() -> {
-            updateDefaultRouteInfo();
             IntentFilter filter = new IntentFilter();
             filter.addAction(WifiManager.WIFI_STATE_CHANGED_ACTION);
             filter.addAction(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION);
             filter.addAction(WifiManager.CONFIGURED_NETWORKS_CHANGED_ACTION);
             filter.addAction(WifiManager.NETWORK_STATE_CHANGED_ACTION);
-            filter.addAction(WifiManager.RSSI_CHANGED_ACTION);
             filter.addAction(TelephonyManager.ACTION_DEFAULT_DATA_SUBSCRIPTION_CHANGED);
             mContext.registerReceiver(mBroadcastReceiver, filter,
                     /* broadcastPermission */ null, mWorkerHandler);
@@ -335,6 +335,10 @@ public class BaseWifiTracker implements LifecycleObserver {
                     mWorkerHandler);
             mConnectivityDiagnosticsManager.registerConnectivityDiagnosticsCallback(mNetworkRequest,
                     command -> mWorkerHandler.post(command), mConnectivityDiagnosticsCallback);
+            if (mSharedConnectivityManager != null && BuildCompat.isAtLeastU()) {
+                mSharedConnectivityManager.registerCallback(mSharedConnectivityExecutor,
+                        mSharedConnectivityCallback);
+            }
             NonSdkApiWrapper.registerSystemDefaultNetworkCallback(
                     mConnectivityManager, mDefaultNetworkCallback, mWorkerHandler);
             handleOnStart();
@@ -356,6 +360,14 @@ public class BaseWifiTracker implements LifecycleObserver {
                 mConnectivityManager.unregisterNetworkCallback(mDefaultNetworkCallback);
                 mConnectivityDiagnosticsManager.unregisterConnectivityDiagnosticsCallback(
                         mConnectivityDiagnosticsCallback);
+                if (mSharedConnectivityManager != null && BuildCompat.isAtLeastU()) {
+                    boolean result =
+                            mSharedConnectivityManager.unregisterCallback(
+                                    mSharedConnectivityCallback);
+                    if (!result) {
+                        Log.e(mTag, "onStop: unregisterCallback failed");
+                    }
+                }
             } catch (IllegalArgumentException e) {
                 // Already unregistered in onDestroyed().
             }
@@ -375,6 +387,14 @@ public class BaseWifiTracker implements LifecycleObserver {
             mConnectivityManager.unregisterNetworkCallback(mDefaultNetworkCallback);
             mConnectivityDiagnosticsManager.unregisterConnectivityDiagnosticsCallback(
                     mConnectivityDiagnosticsCallback);
+            if (mSharedConnectivityManager != null && BuildCompat.isAtLeastU()) {
+                boolean result =
+                        mSharedConnectivityManager.unregisterCallback(
+                                mSharedConnectivityCallback);
+                if (!result) {
+                    Log.e(mTag, "onDestroyed: unregisterCallback failed");
+                }
+            }
         } catch (IllegalArgumentException e) {
             // Already unregistered in onStop() worker thread runnable.
         }
@@ -445,18 +465,11 @@ public class BaseWifiTracker implements LifecycleObserver {
     }
 
     /**
-     * Handle receiving the WifiManager.RSSI_CHANGED_ACTION broadcast
+     * Handle link property changes for the given network.
      */
     @WorkerThread
-    protected void handleRssiChangedAction() {
-        // Do nothing.
-    }
-
-    /**
-     * Handle link property changes for the current connected Wifi network.
-     */
-    @WorkerThread
-    protected void handleLinkPropertiesChanged(@Nullable LinkProperties linkProperties) {
+    protected void handleLinkPropertiesChanged(
+            @NonNull Network network, @Nullable LinkProperties linkProperties) {
         // Do nothing.
     }
 
@@ -464,12 +477,21 @@ public class BaseWifiTracker implements LifecycleObserver {
      * Handle network capability changes for the current connected Wifi network.
      */
     @WorkerThread
-    protected void handleNetworkCapabilitiesChanged(@Nullable NetworkCapabilities capabilities) {
+    protected void handleNetworkCapabilitiesChanged(
+            @NonNull Network network, @NonNull NetworkCapabilities capabilities) {
         // Do nothing.
     }
 
     /**
-     * Handle network capability changes for the current connected Wifi network.
+     * Handle the loss of a network.
+     */
+    @WorkerThread
+    protected void handleNetworkLost(@NonNull Network network) {
+        // Do nothing.
+    }
+
+    /**
+     * Handle receiving a connectivity report.
      */
     @WorkerThread
     protected void handleConnectivityReportAvailable(
@@ -478,11 +500,19 @@ public class BaseWifiTracker implements LifecycleObserver {
     }
 
     /**
-     * Handle when the default route changes. Whether Wifi is the default route is stored in
-     * mIsWifiDefaultRoute.
+     * Handle default network capabilities changed.
      */
     @WorkerThread
-    protected void handleDefaultRouteChanged() {
+    protected void handleDefaultNetworkCapabilitiesChanged(@NonNull Network network,
+            @NonNull NetworkCapabilities networkCapabilities) {
+        // Do nothing.
+    }
+
+    /**
+     * Handle default network loss.
+     */
+    @WorkerThread
+    protected void handleDefaultNetworkLost() {
         // Do nothing.
     }
 
@@ -491,6 +521,81 @@ public class BaseWifiTracker implements LifecycleObserver {
      */
     @WorkerThread
     protected void handleDefaultSubscriptionChanged(int defaultSubId) {
+        // Do nothing.
+    }
+
+    /**
+     * Handle updates to the list of tether networks from SharedConnectivityManager.
+     */
+    @TargetApi(VERSION_CODES.UPSIDE_DOWN_CAKE)
+    @WorkerThread
+    protected void handleHotspotNetworksUpdated(List<HotspotNetwork> networks) {
+        // Do nothing.
+    }
+
+    /**
+     * Handle updates to the list of known networks from SharedConnectivityManager.
+     */
+    @TargetApi(VERSION_CODES.UPSIDE_DOWN_CAKE)
+    @WorkerThread
+    protected void handleKnownNetworksUpdated(List<KnownNetwork> networks) {
+        // Do nothing.
+    }
+
+    /**
+     * Handle changes to the shared connectivity settings from SharedConnectivityManager.
+     */
+    @TargetApi(VERSION_CODES.UPSIDE_DOWN_CAKE)
+    @WorkerThread
+    protected void handleSharedConnectivitySettingsChanged(
+            @NonNull SharedConnectivitySettingsState state) {
+        // Do nothing.
+    }
+
+    /**
+     * Handle changes to the shared connectivity settings from SharedConnectivityManager.
+     */
+    @TargetApi(VERSION_CODES.UPSIDE_DOWN_CAKE)
+    @WorkerThread
+    protected void handleHotspotNetworkConnectionStatusChanged(
+            @NonNull HotspotNetworkConnectionStatus status) {
+        // Do nothing.
+    }
+
+    /**
+     * Handle changes to the shared connectivity settings from SharedConnectivityManager.
+     */
+    @TargetApi(VERSION_CODES.UPSIDE_DOWN_CAKE)
+    @WorkerThread
+    protected void handleKnownNetworkConnectionStatusChanged(
+            @NonNull KnownNetworkConnectionStatus status) {
+        // Do nothing.
+    }
+
+    /**
+     * Handle service connected callback from SharedConnectivityManager.
+     */
+    @TargetApi(VERSION_CODES.UPSIDE_DOWN_CAKE)
+    @WorkerThread
+    protected void handleServiceConnected() {
+        // Do nothing.
+    }
+
+    /**
+     * Handle service disconnected callback from SharedConnectivityManager.
+     */
+    @TargetApi(VERSION_CODES.UPSIDE_DOWN_CAKE)
+    @WorkerThread
+    protected void handleServiceDisconnected() {
+        // Do nothing.
+    }
+
+    /**
+     * Handle register callback failed callback from SharedConnectivityManager.
+     */
+    @TargetApi(VERSION_CODES.UPSIDE_DOWN_CAKE)
+    @WorkerThread
+    protected void handleRegisterCallbackFailed(Exception exception) {
         // Do nothing.
     }
 
