@@ -211,6 +211,13 @@ public class BaseWifiTracker implements LifecycleObserver {
         }
     };
 
+    private final Executor mConnectivityDiagnosticsExecutor = new Executor() {
+        @Override
+        public void execute(Runnable command) {
+            mWorkerHandler.post(command);
+        }
+    };
+
     @TargetApi(VERSION_CODES.UPSIDE_DOWN_CAKE)
     private final Executor mSharedConnectivityExecutor = new Executor() {
         @Override
@@ -334,7 +341,7 @@ public class BaseWifiTracker implements LifecycleObserver {
             mConnectivityManager.registerNetworkCallback(mNetworkRequest, mNetworkCallback,
                     mWorkerHandler);
             mConnectivityDiagnosticsManager.registerConnectivityDiagnosticsCallback(mNetworkRequest,
-                    command -> mWorkerHandler.post(command), mConnectivityDiagnosticsCallback);
+                    mConnectivityDiagnosticsExecutor, mConnectivityDiagnosticsCallback);
             if (mSharedConnectivityManager != null && BuildCompat.isAtLeastU()) {
                 mSharedConnectivityManager.registerCallback(mSharedConnectivityExecutor,
                         mSharedConnectivityCallback);
