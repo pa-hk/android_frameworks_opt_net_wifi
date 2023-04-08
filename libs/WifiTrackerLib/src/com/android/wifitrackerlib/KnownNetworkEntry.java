@@ -25,15 +25,19 @@ import android.net.wifi.WifiConfiguration;
 import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
 import android.net.wifi.sharedconnectivity.app.KnownNetwork;
+import android.net.wifi.sharedconnectivity.app.KnownNetworkConnectionStatus;
 import android.net.wifi.sharedconnectivity.app.SharedConnectivityManager;
 import android.os.Handler;
+import android.text.BidiFormatter;
 
+import androidx.annotation.IntDef;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.annotation.WorkerThread;
 
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
 import java.util.List;
-import java.util.Objects;
 
 /**
  * WifiEntry representation of a Known Network provided via {@link SharedConnectivityManager}.
@@ -44,6 +48,20 @@ public class KnownNetworkEntry extends StandardWifiEntry{
 
     @Nullable private final SharedConnectivityManager mSharedConnectivityManager;
     @NonNull private final KnownNetwork mKnownNetworkData;
+
+    /**
+     * If editing this IntDef also edit the definition in:
+     * {@link android.net.wifi.sharedconnectivity.app.KnownNetworkConnectionStatus}
+     *
+     * @hide
+     */
+    @Retention(RetentionPolicy.SOURCE)
+    @IntDef({
+            KnownNetworkConnectionStatus.CONNECTION_STATUS_UNKNOWN,
+            KnownNetworkConnectionStatus.CONNECTION_STATUS_SAVED,
+            KnownNetworkConnectionStatus.CONNECTION_STATUS_SAVE_FAILED,
+    })
+    public @interface ConnectionStatus {} // TODO(b/271868642): Add IfThisThanThat lint
 
     KnownNetworkEntry(
             @NonNull WifiTrackerInjector injector, @NonNull Context context,
@@ -72,15 +90,22 @@ public class KnownNetworkEntry extends StandardWifiEntry{
 
     @Override
     public synchronized String getSummary(boolean concise) {
-        return "Known"; // TODO(b/271869550): Fully implement this WIP string.
+        return mContext.getString(R.string.wifitrackerlib_known_network_summary,
+                BidiFormatter.getInstance().unicodeWrap(
+                        mKnownNetworkData.getNetworkProviderInfo().getDeviceName()));
     }
 
     @Override
     public synchronized void connect(@Nullable ConnectCallback callback) {
-        if (mSharedConnectivityManager != null) {
-            mSharedConnectivityManager.connectKnownNetwork(mKnownNetworkData);
+        mConnectCallback = callback;
+        if (mSharedConnectivityManager == null) {
+            if (callback != null) {
+                mCallbackHandler.post(() -> callback.onConnectResult(
+                        ConnectCallback.CONNECT_STATUS_FAILURE_UNKNOWN));
+            }
+            return;
         }
-        // TODO(b/271907257): Integrate data from connection status updates
+        mSharedConnectivityManager.connectKnownNetwork(mKnownNetworkData);
     }
 
     @Override
@@ -95,11 +120,19 @@ public class KnownNetworkEntry extends StandardWifiEntry{
 
     @WorkerThread
     protected synchronized boolean connectionInfoMatches(@NonNull WifiInfo wifiInfo) {
-        if (wifiInfo.isPasspointAp() || wifiInfo.isOsuAp()) {
-            return false;
+        // We never need to show this network as connected, so return false.
+        return false;
+    }
+
+    /**
+     * Trigger ConnectCallback with data from SharedConnectivityService.
+     * @param status KnownNetworkConnectionStatus#ConnectionStatus enum.
+     */
+    public void onConnectionStatusChanged(@ConnectionStatus int status) {
+        if (status == KnownNetworkConnectionStatus.CONNECTION_STATUS_SAVE_FAILED
+                && mConnectCallback != null) {
+            mCallbackHandler.post(() -> mConnectCallback.onConnectResult(
+                    ConnectCallback.CONNECT_STATUS_FAILURE_UNKNOWN));
         }
-        return Objects.equals(getStandardWifiEntryKey().getScanResultKey(),
-                ssidAndSecurityTypeToStandardWifiEntryKey(WifiInfo.sanitizeSsid(wifiInfo.getSSID()),
-                        wifiInfo.getCurrentSecurityType()).getScanResultKey());
     }
 }
