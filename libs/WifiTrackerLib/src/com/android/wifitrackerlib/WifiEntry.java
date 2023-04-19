@@ -1210,7 +1210,9 @@ public class WifiEntry {
     }
 
     private void updatetDeviceWifiGenerationInfo() {
-        if (mWifiManager.isWifiStandardSupported(ScanResult.WIFI_STANDARD_11AX))
+        if (mWifiManager.isWifiStandardSupported(ScanResult.WIFI_STANDARD_11BE))
+            mDeviceWifiStandard = ScanResult.WIFI_STANDARD_11BE;
+        else if (mWifiManager.isWifiStandardSupported(ScanResult.WIFI_STANDARD_11AX))
             mDeviceWifiStandard = ScanResult.WIFI_STANDARD_11AX;
         else if (mWifiManager.isWifiStandardSupported(ScanResult.WIFI_STANDARD_11AC))
             mDeviceWifiStandard = ScanResult.WIFI_STANDARD_11AC;
