@@ -66,6 +66,7 @@ import android.telephony.SubscriptionInfo;
 import android.telephony.SubscriptionManager;
 import android.telephony.TelephonyManager;
 import android.text.TextUtils;
+import android.util.ArrayMap;
 import android.util.ArraySet;
 import android.util.Log;
 
@@ -83,7 +84,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -103,13 +103,13 @@ public class StandardWifiEntry extends WifiEntry {
     @NonNull private final StandardWifiEntryKey mKey;
 
     @NonNull private final WifiTrackerInjector mInjector;
-    @NonNull private final Context mContext;
+    @NonNull protected final Context mContext;
 
     // Map of security type to matching scan results
-    @NonNull private final Map<Integer, List<ScanResult>> mMatchingScanResults = new HashMap<>();
+    @NonNull private final Map<Integer, List<ScanResult>> mMatchingScanResults = new ArrayMap<>();
     // Map of security type to matching WifiConfiguration
     // TODO: Change this to single WifiConfiguration once we can get multiple security type configs.
-    @NonNull private final Map<Integer, WifiConfiguration> mMatchingWifiConfigs = new HashMap<>();
+    @NonNull private final Map<Integer, WifiConfiguration> mMatchingWifiConfigs = new ArrayMap<>();
 
     // List of the target scan results to be displayed. This should match the highest available
     // security from all of the matched WifiConfigurations.
@@ -710,7 +710,8 @@ public class StandardWifiEntry extends WifiEntry {
 
         // The network is disabled because of one of the authentication problems.
         NetworkSelectionStatus networkSelectionStatus = wifiConfig.getNetworkSelectionStatus();
-        if (networkSelectionStatus.getNetworkSelectionStatus() != NETWORK_SELECTION_ENABLED) {
+        if (networkSelectionStatus.getNetworkSelectionStatus() != NETWORK_SELECTION_ENABLED
+                || !networkSelectionStatus.hasEverConnected()) {
             if (networkSelectionStatus.getDisableReasonCounter(DISABLED_AUTHENTICATION_FAILURE) > 0
                     || networkSelectionStatus.getDisableReasonCounter(
                     DISABLED_BY_WRONG_PASSWORD) > 0

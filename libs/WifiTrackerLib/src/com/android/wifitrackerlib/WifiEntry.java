@@ -404,9 +404,10 @@ public class WifiEntry {
 
     /**
      * Returns the security type defined by the SECURITY constants
-     * DEPRECATED: Use getSecurityTypes() which can return multiple security types.
+     * @deprecated Use getSecurityTypes() which can return multiple security types.
      */
     // TODO(b/187554920): Remove this and move all clients to getSecurityTypes()
+    @Deprecated
     @Security
     public int getSecurity() {
         switch (getSingleSecurityTypeFromMultipleSecurityTypes(getSecurityTypes())) {
@@ -910,8 +911,7 @@ public class WifiEntry {
 
         // Treat non-primary, non-OEM connections as disconnected.
         if (!NonSdkApiWrapper.isPrimary(wifiInfo)
-                && !capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_OEM_PAID)
-                && !capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_OEM_PRIVATE)) {
+                && !NonSdkApiWrapper.isOemCapabilities(capabilities)) {
             onNetworkLost(network);
             return;
         }
