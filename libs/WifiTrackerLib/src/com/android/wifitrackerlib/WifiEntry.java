@@ -268,10 +268,6 @@ public class WifiEntry {
         updatetDeviceWifiGenerationInfo();
     }
 
-    public static boolean isGbkSsidSupported() {
-        return WifiTrackerInjector.isGbkSsidSupported();
-    }
-
     // Info available for all WifiEntries //
 
     /** The unique key defining a WifiEntry */

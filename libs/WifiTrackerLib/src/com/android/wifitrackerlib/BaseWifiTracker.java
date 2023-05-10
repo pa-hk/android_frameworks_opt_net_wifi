@@ -152,10 +152,6 @@ public class BaseWifiTracker {
 
     @Nullable protected SharedConnectivityManager mSharedConnectivityManager = null;
 
-    public boolean isGbkSsidSupported() {
-        return mInjector.isGbkSsidSupported();
-    }
-
     // Network request for listening on changes to Wifi link properties and network capabilities
     // such as captive portal availability.
     private final NetworkRequest mNetworkRequest = new NetworkRequest.Builder()
