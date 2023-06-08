@@ -238,6 +238,7 @@ public class WifiEntry {
     protected NetworkInfo mNetworkInfo;
     protected Network mNetwork;
     protected NetworkCapabilities mNetworkCapabilities;
+    protected NetworkCapabilities mDefaultNetworkCapabilities;
     protected ConnectivityDiagnosticsManager.ConnectivityReport mConnectivityReport;
     protected ConnectedInfo mConnectedInfo;
 
@@ -249,7 +250,6 @@ public class WifiEntry {
     protected boolean mCalledDisconnect = false;
 
     protected boolean mIsDefaultNetwork;
-    protected boolean mIsCellDefaultNetwork;
 
     private Optional<ManageSubscriptionAction> mManageSubscriptionAction = Optional.empty();
 
@@ -266,10 +266,6 @@ public class WifiEntry {
         mForSavedNetworksPage = forSavedNetworksPage;
         mWifiManager = wifiManager;
         updatetDeviceWifiGenerationInfo();
-    }
-
-    public static boolean isGbkSsidSupported() {
-        return WifiTrackerInjector.isGbkSsidSupported();
     }
 
     // Info available for all WifiEntries //
@@ -344,11 +340,12 @@ public class WifiEntry {
 
     /**
      * Returns whether the level icon for this network should show an X or not.
+     * By default, this means any connected network that has no/low-quality internet access.
      */
     public boolean shouldShowXLevelIcon() {
         return getConnectedState() != CONNECTED_STATE_DISCONNECTED
                 && mConnectivityReport != null
-                && (!hasInternetAccess() || !mIsDefaultNetwork)
+                && (!hasInternetAccess() || isLowQuality())
                 && !canSignIn()
                 && isPrimaryNetwork();
     }
@@ -390,8 +387,12 @@ public class WifiEntry {
         if (mNetworkCapabilities == null) {
             return false;
         }
+        if (mDefaultNetworkCapabilities == null) {
+            return false;
+        }
         return mNetworkCapabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
-                && mIsCellDefaultNetwork;
+                && mDefaultNetworkCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)
+                && !mDefaultNetworkCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN);
     }
 
     /**
@@ -986,8 +987,7 @@ public class WifiEntry {
             @NonNull Network network,
             @NonNull NetworkCapabilities capabilities) {
         onNetworkCapabilitiesChanged(network, capabilities);
-        mIsCellDefaultNetwork = Utils.getWifiInfo(capabilities) == null
-                && capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR);
+        mDefaultNetworkCapabilities = capabilities;
         mIsDefaultNetwork = network.equals(mNetwork);
         notifyOnUpdated();
     }
@@ -996,7 +996,7 @@ public class WifiEntry {
      * Notifies this WifiEntry that the default network was lost.
      */
     synchronized void onDefaultNetworkLost() {
-        mIsCellDefaultNetwork = false;
+        mDefaultNetworkCapabilities = null;
         mIsDefaultNetwork = false;
         notifyOnUpdated();
     }

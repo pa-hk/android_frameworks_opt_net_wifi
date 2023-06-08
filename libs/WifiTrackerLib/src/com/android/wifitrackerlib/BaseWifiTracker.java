@@ -87,7 +87,7 @@ import java.util.concurrent.Executor;
  * the worker thread and consumed by the main thread.
 */
 
-public class BaseWifiTracker implements LifecycleObserver {
+public class BaseWifiTracker {
     private final String mTag;
 
     private static boolean sVerboseLogging;
@@ -151,10 +151,6 @@ public class BaseWifiTracker implements LifecycleObserver {
     protected final ScanResultUpdater mScanResultUpdater;
 
     @Nullable protected SharedConnectivityManager mSharedConnectivityManager = null;
-
-    public boolean isGbkSsidSupported() {
-        return mInjector.isGbkSsidSupported();
-    }
 
     // Network request for listening on changes to Wifi link properties and network capabilities
     // such as captive portal availability.
@@ -310,7 +306,25 @@ public class BaseWifiTracker implements LifecycleObserver {
             BaseWifiTrackerCallback listener,
             String tag) {
         mInjector = injector;
-        lifecycle.addObserver(this);
+        lifecycle.addObserver(new LifecycleObserver() {
+            @OnLifecycleEvent(Lifecycle.Event.ON_START)
+            @MainThread
+            public void onStart() {
+                BaseWifiTracker.this.onStart();
+            }
+
+            @OnLifecycleEvent(Lifecycle.Event.ON_STOP)
+            @MainThread
+            public void onStop() {
+                BaseWifiTracker.this.onStop();
+            }
+
+            @OnLifecycleEvent(Lifecycle.Event.ON_DESTROY)
+            @MainThread
+            public void onDestroy() {
+                BaseWifiTracker.this.onDestroy();
+            }
+        });
         mContext = context;
         mWifiManager = wifiManager;
         mConnectivityManager = connectivityManager;
@@ -336,7 +350,6 @@ public class BaseWifiTracker implements LifecycleObserver {
     /**
      * Registers the broadcast receiver and network callbacks and starts the scanning mechanism.
      */
-    @OnLifecycleEvent(Lifecycle.Event.ON_START)
     @MainThread
     public void onStart() {
         mWorkerHandler.post(() -> {
@@ -351,6 +364,8 @@ public class BaseWifiTracker implements LifecycleObserver {
                     /* broadcastPermission */ null, mWorkerHandler);
             mConnectivityManager.registerNetworkCallback(mNetworkRequest, mNetworkCallback,
                     mWorkerHandler);
+            mConnectivityManager.registerDefaultNetworkCallback(mDefaultNetworkCallback,
+                    mWorkerHandler);
             mConnectivityDiagnosticsManager.registerConnectivityDiagnosticsCallback(mNetworkRequest,
                     mConnectivityDiagnosticsExecutor, mConnectivityDiagnosticsCallback);
             if (mSharedConnectivityManager != null && mSharedConnectivityCallback != null
@@ -358,8 +373,6 @@ public class BaseWifiTracker implements LifecycleObserver {
                 mSharedConnectivityManager.registerCallback(mSharedConnectivityExecutor,
                         mSharedConnectivityCallback);
             }
-            NonSdkApiWrapper.registerSystemDefaultNetworkCallback(
-                    mConnectivityManager, mDefaultNetworkCallback, mWorkerHandler);
             handleOnStart();
             mIsInitialized = true;
         });
@@ -368,7 +381,6 @@ public class BaseWifiTracker implements LifecycleObserver {
     /**
      * Unregisters the broadcast receiver, network callbacks, and pauses the scanning mechanism.
      */
-    @OnLifecycleEvent(Lifecycle.Event.ON_STOP)
     @MainThread
     public void onStop() {
         mWorkerHandler.post(() -> {
@@ -399,9 +411,8 @@ public class BaseWifiTracker implements LifecycleObserver {
      * Unregisters the broadcast receiver network callbacks in case the Activity is destroyed before
      * the worker thread runnable posted in onStop() runs.
      */
-    @OnLifecycleEvent(Lifecycle.Event.ON_DESTROY)
     @MainThread
-    public void onDestroyed() {
+    public void onDestroy() {
         try {
             mContext.unregisterReceiver(mBroadcastReceiver);
             mConnectivityManager.unregisterNetworkCallback(mNetworkCallback);
@@ -639,7 +650,7 @@ public class BaseWifiTracker implements LifecycleObserver {
             @Override
             public void onResults(WifiScanner.ScanData[] results) {
                 mWorkerHandler.post(() -> {
-                    if (!mIsActive) {
+                    if (!mIsActive || mIsStopped) {
                         return;
                     }
                     if (sVerboseLogging) {
@@ -675,6 +686,9 @@ public class BaseWifiTracker implements LifecycleObserver {
             @Override
             public void onFailure(int reason, String description) {
                 mWorkerHandler.post(() -> {
+                    if (!mIsActive || mIsStopped) {
+                        return;
+                    }
                     Log.e(mTag, "Failed to scan! Reason: " + reason + ", ");
                     // First scan failed, start scanning normally anyway.
                     postScan();
@@ -724,6 +738,10 @@ public class BaseWifiTracker implements LifecycleObserver {
         }
 
         private void postScan() {
+            if (!mIsActive || mIsStopped) {
+                Log.wtf(mTag, "Tried to run scan loop when we've already stopped!");
+                return;
+            }
             if (mWifiManager.startScan()) {
                 mRetry = 0;
             } else if (++mRetry >= SCAN_RETRY_TIMES) {
